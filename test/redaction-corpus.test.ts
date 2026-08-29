@@ -337,15 +337,20 @@ test('corpus r11: POSIX root ending in backslash is exact', () => {
   assertRedactTextAbsent('/tmp\\/x', '/tmp\\', backslashRoots)
 })
 
-test('corpus r11: lone surrogate is escaped in JSON output', () => {
+test('corpus r11: lone surrogate is escaped in JSON and Markdown output', () => {
   // Source: /tmp/hub-review11-final.json — Important
   // ADAPTED (WP3): driver-bench's renderMarkdown escapes lone surrogates to
   // \uDBFF. dsh-qa's JSON/JSONL reporters escape them via JSON.stringify
-  // (lowercase hex: \udbff), and renderReportMarkdown passes top-level
-  // strings through redactText raw.
-  const output = renderReportJson(makeRun({ scenario: '\udbff' }))
-  assertSecretAbsent(output, '\udbff')
-  assert.ok(output.includes('\\udbff'))
+  // (lowercase hex: \udbff). The Markdown surface was initially remapped onto
+  // the JSON path; the original Markdown assertion is restored here: the
+  // visible uppercase \uDBFF escape appears and the raw surrogate does not.
+  const json = renderReportJson(makeRun({ scenario: '\udbff' }))
+  assertSecretAbsent(json, '\udbff')
+  assert.ok(json.includes('\\udbff'))
+
+  const markdown = renderReportMarkdown(makeRun({ scenario: '\udbff' }))
+  assertSecretAbsent(markdown, '\udbff')
+  assert.ok(markdown.includes('\\uDBFF'))
 })
 
 // ---------------------------------------------------------------------------
