@@ -1,0 +1,4 @@
+# dsh-qa bundle patch: mounts the QA orchestrator plugin.
+- insert:
+    - id: dsh-qa
+      name: '@zseven-w/dsh-qa'

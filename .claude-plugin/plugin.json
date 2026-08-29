@@ -1,0 +1,8 @@
+{
+  "name": "dsh-qa",
+  "version": "0.1.0",
+  "description": "QA orchestrator plugin: Explore + Replay acceptance for BU/CU drivers",
+  "author": {
+    "name": "ZSeven-W"
+  }
+}

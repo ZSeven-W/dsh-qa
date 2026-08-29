@@ -1,0 +1,67 @@
+{
+  "name": "@zseven-w/dsh-qa",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QA orchestrator plugin for DeepSeek Harness: agent-driven Explore mode plus deterministic Replay scenarios for Browser (BU) and Computer (CU) drivers",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "qa",
+    "browser-use",
+    "computer-use",
+    "automation",
+    "agent"
+  ],
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "files": [
+    "lib",
+    "src",
+    "scripts",
+    "cordis.patch.yml",
+    ".mcp.json",
+    ".claude-plugin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "mcp": "node src/server.mjs",
+    "build": "npm run build:mcp",
+    "build:mcp": "node scripts/build-mcp.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "smoke:bundle": "node scripts/smoke-bundle.mjs",
+    "smoke:pack": "node scripts/smoke-pack.mjs",
+    "prepack": "npm run build && npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^6.0.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "dshHostRuntime": {
+    "_comment": "Host-provided runtime services. Never declare them as dependencies or peerDependencies: plain `npm i @zseven-w/dsh-qa` must install with zero @deepseek-ai/* packages (enforced by scripts/smoke-pack.mjs). The DSH host supplies these itself.",
+    "services": [
+      "tools"
+    ],
+    "typing": "structural"
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+lib/*.map
+.client-build/
+*.log
+.DS_Store
