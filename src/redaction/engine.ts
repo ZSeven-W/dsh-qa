@@ -4301,5 +4301,78 @@ export function redactText(text: string, roots?: RedactionRoots): string {
   return redactTextWithRoots(text, normalized)
 }
 
+// ---------------------------------------------------------------------------
+// dsh-qa artifact-path projection (dsh-qa-specific addition — diverges from
+// the frozen upstream engine; see docs/REDACTION_SPEC.md §7). Artifact/evidence
+// paths in a QaRunReport are STRUCTURED fields with known positions, not free
+// text: a QA report exists to tell a human where the screenshot, the trace, and
+// the evidence live. Routing those paths through the free-text R3 heuristic
+// would swallow long high-entropy path tails (e.g.
+// /repo/artifacts/qa-full-2026-08-25/computer-visual-observe.png ->
+// $ARTIFACTS[REDACTED]), making the report useless.
+//
+// This is a WHITELIST that is still fail-closed:
+//   - if the path resolves (after normalization and symlink/alias
+//     canonicalization consistent with the engine's root handling) UNDER a
+//     configured redaction root, emit the aliased readable form with NO R3
+//     pass over it (an embedded token-shaped segment is therefore ALIASED, not
+//     redacted — see the spec for the fail-closed rationale);
+//   - otherwise, or on any normalization/validation failure, emit '[REDACTED]'
+//     for the WHOLE path. A partially-preserved unknown path is never emitted,
+//     and a traversal (.. resolved before the containment check) can never
+//     escape into a readable alias.
+// Free-text occurrences of paths keep going through the normal engine, R3
+// included.
+// ---------------------------------------------------------------------------
+
+const ROOT_ALIAS_RENDERED: Record<RootKey, string> = {
+  workspace: '$WORKSPACE',
+  temp: '$TMP',
+  artifacts: '$ARTIFACTS',
+}
+
+function isPathWithin(base: string, candidate: string): boolean {
+  return candidate === base || candidate.startsWith(base + '/')
+}
+
+export function projectArtifactPath(value: string, normalized: NormalizedRedactionRoots | undefined): string {
+  if (normalized === undefined) {
+    return '[REDACTED]'
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    return '[REDACTED]'
+  }
+  if (WINDOWS_DRIVE_ROOT.test(value) || WINDOWS_UNC_ROOT.test(value)) {
+    return '[REDACTED]'
+  }
+  if (hasUnsafeRootCharacter(value) || !value.startsWith('/')) {
+    return '[REDACTED]'
+  }
+  let resolved: string
+  try {
+    resolved = normalizeRoot(value)
+  } catch {
+    return '[REDACTED]'
+  }
+  // Canonicalize through realpath when the path exists on disk (resolves
+  // symlinks and aliases exactly as the engine canonicalizes configured
+  // roots); fall back to the resolved spelling when it does not exist yet.
+  let candidate: string
+  try {
+    candidate = normalizeRoot(realpathSync(resolved))
+  } catch {
+    candidate = resolved
+  }
+  for (const key of ROOT_KEYS) {
+    for (const alias of normalized.aliases[key]) {
+      if (isPathWithin(alias, candidate)) {
+        const relative = candidate.slice(alias.length).replace(/^\/+/, '')
+        return relative.length === 0 ? ROOT_ALIAS_RENDERED[key] : ROOT_ALIAS_RENDERED[key] + '/' + relative
+      }
+    }
+  }
+  return '[REDACTED]'
+}
+
 export { validateRoots, redactTextWithRoots, isSensitiveKey }
 export type { NormalizedRedactionRoots }

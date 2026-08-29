@@ -496,3 +496,71 @@ The following decisions block Phase 2 and must be made at the manual review gate
 - [ ] `pnpm typecheck && pnpm test` fully green (spec-only change; run as proof before commit).
 - [ ] Committed as ONE commit with the exact message `docs: draft redaction spec v2`.
 - [ ] Phase 2 (implementation) is FORBIDDEN until the owner approves this spec manually.
+
+---
+
+## 7. dsh-qa-specific additions (DIVERGES from the frozen upstream)
+
+This section is **dsh-qa-specific** and is **not** present in
+dsh-driver-bench's `docs/REDACTION_SPEC.md` at the frozen base `a7af98d` (nor in
+the synced fixes `23b0546` / `4642e38`). It is the normative contract for a seam
+that exists only in dsh-qa.
+
+### 7.1 Artifact-path projection (fail-closed whitelist)
+
+A QA report's whole job is to tell a human where the screenshot, the trace, and
+the evidence live. Routing those paths through the free-text R3 heuristic makes
+the report useless: a long, high-entropy path tail such as
+`$ARTIFACTS/qa-full-2026-08-25/computer-visual-observe.png` measures ≥ 4.0
+bits/code point and is swallowed whole as `$ARTIFACTS[REDACTED]`.
+
+Artifact paths in a `QaRunReport` are **structured fields with known positions**
+(`report.artifacts[].path`), not free text. They are projected through a
+dedicated **path projection** (`projectArtifactPath` in `src/redaction/engine.ts`,
+re-exported from `src/redaction/index.ts`) rather than the free-text engine.
+Only `report.artifacts[].path` is routed this way; every other string leaf —
+including free-text occurrences of paths inside messages, console output, and
+evidence blobs — keeps going through the normal engine with R3 enabled
+(over-redaction there stays acceptable).
+
+The path projection is a **whitelist that is still fail-closed**:
+
+1. Normalize the path (POSIX resolution), then canonicalize it through
+   `realpath` when it exists, exactly as the engine canonicalizes configured
+   roots (symlink/alias spellings are covered by the root alias set).
+2. If the canonical/resolved path sits **under** a configured redaction root
+   (`$WORKSPACE` / `$TMP` / `$ARTIFACTS`), emit the aliased readable form
+   (`$ARTIFACTS/qa-full-2026-08-25/computer-visual-observe.png`) with **no R3
+   pass** over it.
+3. Otherwise — the path does not resolve under a configured root, or any
+   normalization/validation step fails (relative path, Windows drive/UNC,
+   NUL/control/format characters, non-string, no configured roots) — emit
+   `[REDACTED]` for the **whole** path. A partially-preserved unknown path is
+   never emitted.
+
+**Embedded credential decision (documented):** a path under a configured root
+whose segments contain a credential-shaped value (e.g. a token-shaped
+high-entropy segment) is **aliased readably, not redacted**. Rationale against
+fail-closed: the path projection's fail-closed boundary is *containment* — it
+emits a value only when the path provably resolves under a configured root and
+otherwise redacts the whole path — not *content screening*. Re-introducing R3
+(or any entropy heuristic) over path segments would defeat the projection's
+purpose, because R3 cannot distinguish a token-shaped segment from a benign
+descriptive filename (`computer-visual-observe.png` itself measures ≥ 4.0
+bits/char). The structured path field is tool-owned (produced by dsh-qa's own
+artifact writer, not attacker-influenced free text), and the adversarial
+free-text surface remains fully covered by the normal engine with R3 enabled.
+
+**Traversal:** canonicalization resolves `..` before the containment check, so
+`<root>/../../etc/passwd` normalizes outside the root and is `[REDACTED]` whole;
+the literal alias-shaped string `$ARTIFACTS/../../etc/passwd` is not an absolute
+path and is `[REDACTED]` whole. A traversal can never escape into a readable
+alias.
+
+### 7.2 Schema
+
+`QaRunReport.artifacts` is an optional array of `{ path, kind }` records
+(`src/contracts.ts`). `path` is the structured artifact path routed through the
+projection above; `kind` is a free-text label (`screenshot` / `trace` /
+`evidence`) that still passes through the normal engine.
+

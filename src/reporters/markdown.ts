@@ -1,4 +1,4 @@
-import { projectRedactedJsonValue, redactText, type RedactionRoots } from '../redaction/index.ts';
+import { projectRedactedJsonValue, projectArtifactPath, redactText, type RedactionRoots } from '../redaction/index.ts';
 import type { QaRunReport } from '../contracts.ts';
 
 // Backtick character for inline code spans (built from a code point so the
@@ -81,6 +81,17 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     lines.push('- step: ' + (report.failure.stepIndex === null ? 'final assertion' : String(report.failure.stepIndex)));
     lines.push('- message: ' + md(report.failure.message));
     lines.push('- reproduction: ' + String(report.failure.reproduction.length) + ' step(s)');
+  }
+  if (report.artifacts !== undefined && report.artifacts.length > 0) {
+    lines.push('');
+    lines.push('## Artifacts');
+    for (const artifact of report.artifacts) {
+      // Artifact paths are STRUCTURED fields: projected through the dedicated
+      // fail-closed path whitelist (readable alias, no R3 pass), never the
+      // free-text engine. The kind label still passes through the engine.
+      const projectedPath = projectArtifactPath(artifact.path, roots);
+      lines.push('- ' + md(artifact.kind) + ': ' + TICK + escapeLoneSurrogates(projectedPath) + TICK);
+    }
   }
   lines.push('');
   return lines.join('\n');

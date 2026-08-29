@@ -129,6 +129,19 @@ export interface QaRunFailure {
   reproduction: QaReproductionStep[];
 }
 
+/**
+ * A structured artifact/evidence path in a QaRunReport. "path" is an absolute
+ * filesystem path under a configured redaction root (workspace/temp/artifacts)
+ * and is projected through the dedicated fail-closed path whitelist
+ * (projectArtifactPath), not the free-text redaction engine. "kind" is a
+ * free-text label (e.g. "screenshot", "trace", "evidence") that still passes
+ * through the normal engine.
+ */
+export interface QaArtifact {
+  path: string;
+  kind: string;
+}
+
 export interface QaRunReport {
   schemaVersion: 1;
   scenario: string;
@@ -139,5 +152,7 @@ export interface QaRunReport {
   steps: QaStepResult[];
   assertions: QaAssertionResult[];
   evidence: QaEvidence | null;
+  /** Structured artifact/evidence paths (screenshot/trace/evidence). */
+  artifacts?: QaArtifact[];
   failure?: QaRunFailure;
 }
