@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa web fixture</title>
+</head>
+<body>
+  <main>
+    <h1>Release validation</h1>
+    <form>
+      <label for="release-name">Release name</label>
+      <input id="release-name" name="name" autocomplete="off" />
+      <button type="button" id="validate">Run validation</button>
+    </form>
+    <div id="result" role="status" aria-live="polite">IDLE</div>
+    <button type="button" id="publish">Publish release</button>
+  </main>
+  <script>
+    (function () {
+      document.getElementById('validate').addEventListener('click', function () {
+        document.getElementById('result').textContent = 'PASS';
+      });
+      // Synthetic bearer credential placed where console evidence capture sees
+      // it; the driver must redact it before it reaches evidence.
+      console.log('Authorization: Bearer qa_bearer_SECRET_20260825');
+      // Synthetic URL query secret placed where network evidence capture sees
+      // it; the driver strips query strings from network URLs.
+      fetch('/api/probe?token=qa_query_SECRET_20260825').catch(function () {});
+    })();
+  </script>
+</body>
+</html>

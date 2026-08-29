@@ -40,11 +40,15 @@ await import('./build-mcp.mjs');
 const bundlePath = join(ROOT, 'lib', 'server.mjs');
 if (!existsSync(bundlePath)) fail('lib/server.mjs was not produced by build:mcp');
 
-// 1b. Host-owned packages must never be inlined: the bundle may reference the
-//     bare specifiers only (later work packages import them lazily).
+// 1b. Host-owned packages must never be inlined. The bundle may reference the
+//     sibling driver by bare specifier (the server imports it lazily and keeps
+//     it external), but its implementation must not be embedded.
 const bundleText = readFileSync(bundlePath, 'utf8');
 if (bundleText.includes('node_modules/.pnpm/@deepseek-ai')) fail('bundle contains inlined @deepseek-ai/* code');
-if (bundleText.includes('@zseven-w/dsh-browser')) fail('bundle contains inlined @zseven-w/dsh-browser code');
+if (!bundleText.includes('@zseven-w/dsh-browser')) fail('bundle is missing the external @zseven-w/dsh-browser import');
+if (/class BrowserManager|discoverInstalledBrowser|SEMANTIC_SELECTOR/.test(bundleText)) {
+  fail('bundle contains inlined @zseven-w/dsh-browser code');
+}
 if (bundleText.includes('@zseven-w/dsh-computer')) fail('bundle contains inlined @zseven-w/dsh-computer code');
 console.log('[smoke:bundle] bundle assertions OK: no host-owned packages inlined');
 
