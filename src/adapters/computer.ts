@@ -56,6 +56,19 @@ interface Binding {
   windowTitle?: string;
 }
 
+/** Computer-only window capture projection (PNG bytes + SoM summary). */
+export interface QaComputerVisualCapture {
+  observationId: string;
+  observationFingerprint: string;
+  png: Uint8Array;
+  width: number;
+  height: number;
+  sha256: string;
+  usable: boolean;
+  marks: number;
+  omitted: number;
+}
+
 const EDITABLE_ROLES = new Set(['AXTextField', 'AXTextArea', 'AXSearchField']);
 
 function receiptCode(receipt: ComputerActionReceipt): string | undefined {
@@ -146,6 +159,26 @@ export class ComputerAdapter implements QaDriverAdapter {
       ...(code === undefined ? {} : { code }),
       ...(receipt.reason === '' ? {} : { reason: receipt.reason }),
       dispatched: receipt.nativeAccepted || receipt.status === 'confirmed' || receipt.status === 'unknown',
+    };
+  }
+
+  /**
+   * Window-only visual observation with native Set-of-Mark labels. The PNG is
+   * returned as bytes so callers can persist it as a structured artifact; only
+   * the metadata (dimensions, digest, mark count) belongs in JSON.
+   */
+  async visualObserve(ownerId: string, observationId: string): Promise<QaComputerVisualCapture> {
+    const capture = await this.#driver.visualObserve({ observationId }, { scopeId: ownerId });
+    return {
+      observationId: capture.observationId,
+      observationFingerprint: capture.observationFingerprint,
+      png: capture.png,
+      width: capture.capture.pixelWidth,
+      height: capture.capture.pixelHeight,
+      sha256: capture.capture.artifact.sha256,
+      usable: capture.capture.quality.usable,
+      marks: capture.marks.length,
+      omitted: capture.omitted.length,
     };
   }
 

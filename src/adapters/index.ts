@@ -1,5 +1,5 @@
 export { BrowserAdapter } from './browser.ts';
-export { ComputerAdapter } from './computer.ts';
+export { ComputerAdapter, type QaComputerVisualCapture } from './computer.ts';
 export {
   COMPUTER_DRIVER_SPECIFIER,
   loadComputerDriver,

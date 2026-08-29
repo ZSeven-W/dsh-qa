@@ -6,4 +6,5 @@ lib/*.map
 .pnpm-store/
 *.tgz
 fixtures/native/build/
+test/.tmp-native/
 
