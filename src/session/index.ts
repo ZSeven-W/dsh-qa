@@ -2,6 +2,12 @@ export { toLosslessJson, type JsonValue } from './lossless.ts';
 export type {
   QaAction,
   QaActionReceipt,
+  QaApprovalGate,
+  QaApprovalOutcome,
+  QaComputerAppIdentity,
+  QaComputerEvidence,
+  QaComputerHelperStatus,
+  QaComputerWindowIdentity,
   QaDriverAdapter,
   QaEvidence,
   QaEvidenceOptions,

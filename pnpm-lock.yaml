@@ -21,6 +21,9 @@ importers:
       '@zseven-w/dsh-browser':
         specifier: link:../dsh-browser
         version: link:../dsh-browser
+      '@zseven-w/dsh-computer':
+        specifier: link:../dsh-computer
+        version: link:../dsh-computer
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12

@@ -8,6 +8,7 @@ import type {
 import type {
   QaAction,
   QaActionReceipt,
+  QaApprovalGate,
   QaDriverAdapter,
   QaEvidence,
   QaEvidenceOptions,
@@ -54,7 +55,10 @@ export class BrowserAdapter implements QaDriverAdapter {
     };
   }
 
-  async act(ownerId: string, action: QaAction): Promise<QaActionReceipt> {
+  // The approval gate only applies to the computer driver. The browser driver
+  // has no approval gate, so the parameter is accepted and deliberately ignored
+  // here to keep the session core driver-agnostic.
+  async act(ownerId: string, action: QaAction, _approval?: QaApprovalGate): Promise<QaActionReceipt> {
     const receipt = await this.#driver.act(ownerId, action as BrowserAction);
     return {
       status: receipt.status,

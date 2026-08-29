@@ -1,6 +1,7 @@
 import type {
   QaAction,
   QaActionReceipt,
+  QaApprovalGate,
   QaDriverAdapter,
   QaEvidence,
   QaEvidenceOptions,
@@ -83,9 +84,9 @@ export class QaSession {
     return this.#adapter.observe(this.#ownerId, options);
   }
 
-  async act(action: QaAction): Promise<QaActResult> {
+  async act(action: QaAction, approval?: QaApprovalGate): Promise<QaActResult> {
     this.#assertStarted();
-    const receipt = await this.#adapter.act(this.#ownerId, action);
+    const receipt = await this.#adapter.act(this.#ownerId, action, approval);
     if (receipt.status === 'rejected' || receipt.status === 'failed') {
       return { receipt, observation: null, outcome: 'failed', evidence: [receipt] };
     }

@@ -46,6 +46,7 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "@zseven-w/dsh-browser": "link:../dsh-browser",
+    "@zseven-w/dsh-computer": "link:../dsh-computer",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3"
   },
