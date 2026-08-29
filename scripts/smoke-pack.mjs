@@ -15,7 +15,7 @@
 // script calls npm pack itself - that would recurse). Run it explicitly.
 
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -148,15 +148,41 @@ async function handshake() {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Pack the current tree. prepack runs build + typecheck + tests first.
-console.log('[smoke:pack] 1/4 npm pack (prepack runs build + typecheck + test) ...');
+// 1. Build, typecheck, and test (the prepack gate, run explicitly here).
+console.log('[smoke:pack] 1/5 build + typecheck + test (prepack gate) ...');
+run('npm', ['run', 'build'], { cwd: ROOT });
+run('npm', ['run', 'typecheck'], { cwd: ROOT });
+run('npm', ['run', 'test'], { cwd: ROOT });
+
+// ---------------------------------------------------------------------------
+// 2. Pack a sanitized copy of the tree. Sibling `link:` dependencies
+//    (@zseven-w/dsh-browser, and later dsh-computer) are dev-only local
+//    linkages: plain npm cannot install a `link:` specifier from a tarball
+//    (it fails with EUNSUPPORTEDPROTOCOL), and the driver is loaded lazily as
+//    an external optional path, so the packed manifest must never ship them.
+console.log('\n[smoke:pack] 2/5 npm pack (sanitized manifest; link: deps stripped) ...');
 const packDir = mkdtempSync(join(tmpdir(), 'dsh-qa-pack-'));
 tempDirs.push(packDir);
 // Hermetic npm cache: a shared ~/.npm cache can be stale or hold leftovers,
 // which would fail this test with EPERM instead of testing the tarball.
 const cacheDir = mkdtempSync(join(tmpdir(), 'dsh-qa-npm-cache-'));
 tempDirs.push(cacheDir);
-const packOut = run('npm', ['pack', '--cache', cacheDir, '--pack-destination', packDir], { cwd: ROOT, env: { npm_config_cache: cacheDir } });
+const packSource = mkdtempSync(join(tmpdir(), 'dsh-qa-pack-src-'));
+tempDirs.push(packSource);
+const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+  const section = manifest[field];
+  if (!section || typeof section !== 'object') continue;
+  for (const name of Object.keys(section)) {
+    const spec = section[name];
+    if (typeof spec === 'string' && spec.startsWith('link:')) delete section[name];
+  }
+}
+writeFileSync(join(packSource, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+for (const entry of ['lib', 'src', 'scripts', 'cordis.patch.yml', '.mcp.json', '.claude-plugin', 'README.md', 'LICENSE']) {
+  cpSync(join(ROOT, entry), join(packSource, entry), { recursive: true });
+}
+const packOut = run('npm', ['pack', '--ignore-scripts', '--cache', cacheDir, '--pack-destination', packDir], { cwd: packSource, env: { npm_config_cache: cacheDir } });
 console.log(packOut.split('\n').slice(-6).join('\n'));
 const tarballs = readdirSync(packDir).filter((f) => f.endsWith('.tgz'));
 if (tarballs.length !== 1) fail('expected exactly one tarball in ' + packDir + ', found ' + JSON.stringify(tarballs));
@@ -164,8 +190,8 @@ const tarballPath = join(packDir, tarballs[0]);
 console.log('[smoke:pack] tarball: ' + tarballPath + ' (' + statSync(tarballPath).size + ' bytes)');
 
 // ---------------------------------------------------------------------------
-// 2. Install into a brand-new empty directory.
-console.log('\n[smoke:pack] 2/4 npm init -y && npm i ' + tarballPath);
+// 3. Install into a brand-new empty directory.
+console.log('\n[smoke:pack] 3/5 npm init -y && npm i ' + tarballPath);
 const installDir = mkdtempSync(join(tmpdir(), 'dsh-qa-install-'));
 tempDirs.push(installDir);
 console.log(run('npm', ['init', '-y', '--cache', cacheDir], { cwd: installDir, env: { npm_config_cache: cacheDir } }).split('\n').slice(0, 3).join('\n'));
@@ -174,8 +200,8 @@ console.log(installOut.split('\n').slice(-12).join('\n'));
 if (/ERESOLVE/.test(installOut)) fail('npm i printed ERESOLVE - host packages must never be declared as (optional) peers');
 
 // ---------------------------------------------------------------------------
-// 3. No @deepseek-ai/* may land in node_modules. The DSH host owns them.
-console.log('\n[smoke:pack] 3/4 asserting no @deepseek-ai/* in node_modules');
+// 4. No @deepseek-ai/* may land in node_modules. The DSH host owns them.
+console.log('\n[smoke:pack] 4/5 asserting no @deepseek-ai/* in node_modules');
 const nmDir = join(installDir, 'node_modules');
 if (!existsSync(nmDir)) fail('node_modules missing after install');
 if (existsSync(join(nmDir, '@deepseek-ai'))) {
@@ -198,7 +224,7 @@ console.log('[smoke:pack] package.json guard OK: 0 @deepseek-ai/* peers; dshHost
   JSON.stringify(installedPkg.dshHostRuntime.services) + '; version=' + installedPkg.version);
 
 // ---------------------------------------------------------------------------
-// 4. The installed bundle must serve the full roster from the installed copy.
+// 5. The installed bundle must serve the full roster from the installed copy.
 await handshake();
 const manifestPath = join(installDir, 'node_modules', PKG_NAME, '.claude-plugin', 'plugin.json');
 let manifestVersion;

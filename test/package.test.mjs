@@ -38,6 +38,10 @@ test('zero host packages in dependencies or peerDependencies', () => {
   assert.ok(Array.isArray(pkg.dshHostRuntime?.services), 'dshHostRuntime.services documents the host runtime');
 });
 
+test('sibling browser driver is a link dependency, never vendored', () => {
+  assert.equal(pkg.dependencies?.['@zseven-w/dsh-browser'], 'link:../dsh-browser');
+});
+
 test('.mcp.json points the plugin at the committed bundle', () => {
   const entry = mcpJson.mcpServers['dsh-qa'];
   assert.ok(entry, 'mcpServers.dsh-qa present');

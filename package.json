@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",
+    "@zseven-w/dsh-browser": "link:../dsh-browser",
     "zod": "^4.0.0"
   },
   "devDependencies": {

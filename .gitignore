@@ -3,3 +3,5 @@ lib/*.map
 .client-build/
 *.log
 .DS_Store
+.pnpm-store/
+*.tgz
