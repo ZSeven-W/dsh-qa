@@ -5,3 +5,5 @@ lib/*.map
 .DS_Store
 .pnpm-store/
 *.tgz
+fixtures/native/build/
+
