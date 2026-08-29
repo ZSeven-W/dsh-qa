@@ -43,6 +43,11 @@ test('sibling browser driver is a dev-only link dependency, never a runtime dep'
   assert.equal(pkg.dependencies?.['@zseven-w/dsh-browser'], undefined);
 });
 
+test('sibling computer driver is a dev-only link dependency, never a runtime dep', () => {
+  assert.equal(pkg.devDependencies?.['@zseven-w/dsh-computer'], 'link:../dsh-computer');
+  assert.equal(pkg.dependencies?.['@zseven-w/dsh-computer'], undefined);
+});
+
 test('.mcp.json points the plugin at the committed bundle', () => {
   const entry = mcpJson.mcpServers['dsh-qa'];
   assert.ok(entry, 'mcpServers.dsh-qa present');

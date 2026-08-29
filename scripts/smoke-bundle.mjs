@@ -49,7 +49,10 @@ if (!bundleText.includes('@zseven-w/dsh-browser')) fail('bundle is missing the e
 if (/class BrowserManager|discoverInstalledBrowser|SEMANTIC_SELECTOR/.test(bundleText)) {
   fail('bundle contains inlined @zseven-w/dsh-browser code');
 }
-if (bundleText.includes('@zseven-w/dsh-computer')) fail('bundle contains inlined @zseven-w/dsh-computer code');
+if (!bundleText.includes('@zseven-w/dsh-computer')) fail('bundle is missing the external @zseven-w/dsh-computer import');
+if (/class ComputerController|classifyComputerActionRisk|COMPUTER_DRIVER_SERVICE/.test(bundleText)) {
+  fail('bundle contains inlined @zseven-w/dsh-computer code');
+}
 console.log('[smoke:bundle] bundle assertions OK: no host-owned packages inlined');
 
 // 2. Fresh temp dir - the installed plugin copy. Nothing but the payload.

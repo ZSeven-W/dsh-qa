@@ -100,6 +100,27 @@ function assertHelperReady(status) {
   }
 }
 
+// Transient Accessibility-tree settling after launch can reject an action with
+// a stale/fingerprint/identity reason; the driver's own remedy is to observe
+// again. We retry ONLY those transient reasons and never a safety rejection
+// (secure-text, approval).
+const STALE_RE = /fingerprint changed|identity changed|stale|unknown reference|observe again|consumed by another action/i
+
+async function actStable(session, resolveAction, gate) {
+  let last = null
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const observation = await session.observe({ ttlMs: 30_000 })
+    const action = resolveAction(observation)
+    if (action === null) throw new Error('action target not found on a fresh observation')
+    last = await session.act(action, gate)
+    if (last.outcome !== 'failed' || !STALE_RE.test(last.receipt.reason ?? '')) {
+      return last
+    }
+    await sleep(400)
+  }
+  return last
+}
+
 test('computer native acceptance flow', { timeout: 600_000 }, async () => {
   if (process.platform !== 'darwin') {
     throw new Error('computer native tests require macOS (darwin); current platform is ' + process.platform)
@@ -124,7 +145,7 @@ test('computer native acceptance flow', { timeout: 600_000 }, async () => {
     assertHelperReady(preflight.computer.status)
 
     pid = await launchFixture(appPath)
-    await sleep(500)
+    await sleep(2000)
     const info = await session.start({ bundleId: FIXTURE_BUNDLE_ID, pid, windowTitle: FIXTURE_WINDOW_TITLE })
     assert.equal(info.headless, false)
 
@@ -133,7 +154,10 @@ test('computer native acceptance flow', { timeout: 600_000 }, async () => {
     const plainField = initial.nodes.find((n) => n.tag === 'fixture.plainText')
     assert.ok(plainField, 'plain text field present')
     assert.equal(plainField.secure, false)
-    const typed = await session.act({ kind: 'type', ref: plainField.ref, text: 'v1.0.0' })
+    const typed = await actStable(session, (obs) => {
+      const n = obs.nodes.find((c) => c.tag === 'fixture.plainText')
+      return n ? { kind: 'type', ref: n.ref, text: 'v1.0.0' } : null
+    })
     assert.equal(typed.outcome, 'ok')
     assert.equal(typed.receipt.status, 'confirmed')
     const reObserved = await session.observe()
@@ -146,7 +170,10 @@ test('computer native acceptance flow', { timeout: 600_000 }, async () => {
     assert.equal(secureField.secure, true)
     let secureGateCalls = 0
     const secureGate = { request: async () => { secureGateCalls += 1; return 'allowed-once' } }
-    const secureResult = await session.act({ kind: 'type', ref: secureField.ref, text: 'hunter2' }, secureGate)
+    const secureResult = await actStable(session, (obs) => {
+      const n = obs.nodes.find((c) => c.tag === 'fixture.securePassword')
+      return n ? { kind: 'type', ref: n.ref, text: 'hunter2' } : null
+    }, secureGate)
     assert.equal(secureResult.outcome, 'failed')
     assert.equal(secureResult.receipt.status, 'rejected')
     assert.equal(secureResult.receipt.code, 'secure-text')
@@ -157,9 +184,10 @@ test('computer native acceptance flow', { timeout: 600_000 }, async () => {
     assert.equal(secureAfter.value, null, 'secure value is never exposed')
 
     // ---- safe button accepted; unknown receipt resolved by fresh observation ----
-    const safeButton = afterSecure.nodes.find((n) => n.tag === 'fixture.safeAction')
-    assert.ok(safeButton, 'safe button present')
-    const safeResult = await session.act({ kind: 'click', ref: safeButton.ref })
+    const safeResult = await actStable(session, (obs) => {
+      const n = obs.nodes.find((c) => c.tag === 'fixture.safeAction')
+      return n ? { kind: 'click', ref: n.ref } : null
+    })
     assert.equal(safeResult.outcome, 'unknown', 'a click receipt is never promoted to success')
     assert.equal(safeResult.receipt.status, 'unknown')
     const afterSafe = await session.observe()
@@ -167,21 +195,22 @@ test('computer native acceptance flow', { timeout: 600_000 }, async () => {
     assert.equal(statusNode.value, 'PASS: CU complete flow', 'effect proven by a fresh observation, not the receipt')
 
     // ---- Publish release rejected without host approval --------------------
-    const publishButton = afterSafe.nodes.find((n) => n.tag === 'fixture.publishRelease')
-    assert.ok(publishButton, 'Publish release control present')
-    const denied = await session.act({ kind: 'click', ref: publishButton.ref })
+    const denied = await actStable(session, (obs) => {
+      const n = obs.nodes.find((c) => c.tag === 'fixture.publishRelease')
+      return n ? { kind: 'click', ref: n.ref } : null
+    })
     assert.equal(denied.outcome, 'failed')
     assert.equal(denied.receipt.status, 'rejected')
     assert.equal(denied.receipt.code, 'APPROVAL_REQUIRED')
     assert.equal(denied.receipt.dispatched, false)
 
     // ---- allowed-once dispatches exactly once; fresh observation proves it ----
-    const prePublish = await session.observe()
-    const publishAgain = prePublish.nodes.find((n) => n.tag === 'fixture.publishRelease')
-    assert.ok(publishAgain, 'Publish release control re-observed')
     let onceGateCalls = 0
     const onceGate = { request: async () => { onceGateCalls += 1; return 'allowed-once' } }
-    const allowed = await session.act({ kind: 'click', ref: publishAgain.ref }, onceGate)
+    const allowed = await actStable(session, (obs) => {
+      const n = obs.nodes.find((c) => c.tag === 'fixture.publishRelease')
+      return n ? { kind: 'click', ref: n.ref } : null
+    }, onceGate)
     assert.equal(allowed.receipt.status, 'unknown')
     assert.equal(allowed.receipt.dispatched, true)
     assert.equal(onceGateCalls, 1, 'an allowed-once decision is requested exactly once')

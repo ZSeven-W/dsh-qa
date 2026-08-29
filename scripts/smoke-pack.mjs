@@ -211,6 +211,12 @@ if (installedPkg.devDependencies?.['@zseven-w/dsh-browser'] !== 'link:../dsh-bro
 if (installedPkg.dependencies?.['@zseven-w/dsh-browser'] !== undefined) {
   fail('@zseven-w/dsh-browser must not be a runtime dependency (it is a dev/test-only linkage)');
 }
+if (installedPkg.devDependencies?.['@zseven-w/dsh-computer'] !== 'link:../dsh-computer') {
+  fail('installed devDependencies is missing the @zseven-w/dsh-computer link: spec - the manifest was sanitized (pack the real tree)');
+}
+if (installedPkg.dependencies?.['@zseven-w/dsh-computer'] !== undefined) {
+  fail('@zseven-w/dsh-computer must not be a runtime dependency (it is a dev/test-only linkage)');
+}
 for (const name of Object.keys(installedPkg.peerDependencies || {})) {
   if (name.startsWith('@deepseek-ai/')) {
     fail('peer ' + name + ' is still in peerDependencies - @deepseek-ai/* must be host runtime only (see dshHostRuntime)');
