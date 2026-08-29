@@ -16,7 +16,24 @@ deterministic **Replay** scenario that runs on every release.
   permanently refused, approval gates passed through, `unknown` receipts require
   re-observation.
 
-Status: **private, v0.1 in development** (WP1 scaffold).
+Status: **private, v0.1 in development** (WP1 scaffold + WP2: QA session core,
+browser adapter, and web fixture).
+
+## Session core (WP2)
+
+`src/session/` implements the QA loop `observe -> act -> re-observe -> evaluate ->
+evidence -> cleanup` on top of a driver adapter interface, with these hard rules:
+
+- an `unknown` action receipt is never treated as success — the outcome is decided
+  only by a fresh observation;
+- `rejected` / `failed` receipts propagate as step failures with the receipt
+  attached as evidence;
+- every session cleans up (`driver.stop`) even on failure.
+
+`src/adapters/browser.ts` adapts `@zseven-w/dsh-browser` (declared as a
+`link:../dsh-browser` sibling dependency, never vendored) to that interface
+without weakening any driver safety semantics. `fixtures/web/index.html` is a
+self-contained loopback fixture that reproduces the 2026-08-25 acceptance flow.
 
 ## dshHostRuntime
 
