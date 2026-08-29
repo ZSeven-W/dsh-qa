@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrowserAdapter } from './adapters/browser.ts';
+import { loadBrowserManager } from './adapters/loadBrowser.ts';
 import { QaSessionManager, toLosslessJson } from './session/index.ts';
 
 const SERVER_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,8 +42,8 @@ let managerPromise;
 async function getManager() {
   if (!managerPromise) {
     managerPromise = (async () => {
-      const { BrowserManager } = await import('@zseven-w/dsh-browser');
-      return new QaSessionManager(new BrowserAdapter(new BrowserManager()));
+      const browserManager = await loadBrowserManager();
+      return new QaSessionManager(new BrowserAdapter(browserManager));
     })();
     managerPromise = managerPromise.catch((error) => {
       managerPromise = undefined;

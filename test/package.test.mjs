@@ -38,8 +38,9 @@ test('zero host packages in dependencies or peerDependencies', () => {
   assert.ok(Array.isArray(pkg.dshHostRuntime?.services), 'dshHostRuntime.services documents the host runtime');
 });
 
-test('sibling browser driver is a link dependency, never vendored', () => {
-  assert.equal(pkg.dependencies?.['@zseven-w/dsh-browser'], 'link:../dsh-browser');
+test('sibling browser driver is a dev-only link dependency, never a runtime dep', () => {
+  assert.equal(pkg.devDependencies?.['@zseven-w/dsh-browser'], 'link:../dsh-browser');
+  assert.equal(pkg.dependencies?.['@zseven-w/dsh-browser'], undefined);
 });
 
 test('.mcp.json points the plugin at the committed bundle', () => {

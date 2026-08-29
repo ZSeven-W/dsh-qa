@@ -31,7 +31,8 @@ evidence -> cleanup` on top of a driver adapter interface, with these hard rules
 - every session cleans up (`driver.stop`) even on failure.
 
 `src/adapters/browser.ts` adapts `@zseven-w/dsh-browser` (declared as a
-`link:../dsh-browser` sibling dependency, never vendored) to that interface
+`link:../dsh-browser` dev-only `devDependencies` linkage, never a runtime
+dependency and never vendored) to that interface
 without weakening any driver safety semantics. `fixtures/web/index.html` is a
 self-contained loopback fixture that reproduces the 2026-08-25 acceptance flow.
 

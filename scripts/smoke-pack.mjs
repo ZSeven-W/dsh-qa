@@ -1,7 +1,10 @@
 // Smoke test for the packed tarball. It guards the packaging failure class
 // that bit dsh-crew's early releases:
 //
-//   1. npm pack the current tree (prepack runs build + typecheck + tests);
+//   1. npm pack the REAL repository root (no sanitized copy, no manifest
+//      rewriting) - the tarball is exactly what `npm pack` / `npm publish`
+//      ships. The prepack gate (build + typecheck + test) is run explicitly
+//      here instead of via npm's prepack hook;
 //   2. install the tarball with plain npm into a brand-new empty directory;
 //   3. the install must succeed with NO ERESOLVE, and must NOT pull any
 //      @deepseek-ai/* package into node_modules (@deepseek-ai/* is host
@@ -15,7 +18,7 @@
 // script calls npm pack itself - that would recurse). Run it explicitly.
 
 import { execFileSync, spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -70,6 +73,7 @@ function run(cmd, args, { cwd, timeoutMs = 300_000, env = {} } = {}) {
 
 async function handshake() {
   const serverPath = join(installDir, 'node_modules', PKG_NAME, 'lib', 'server.mjs');
+  if (!existsSync(serverPath)) fail('installed ' + PKG_NAME + '/lib/server.mjs is missing after install');
   console.log('\n=== installed lib/server.mjs ===');
   console.log('$ node ' + serverPath);
   child = spawn(process.execPath, [serverPath], { cwd: installDir, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -155,34 +159,19 @@ run('npm', ['run', 'typecheck'], { cwd: ROOT });
 run('npm', ['run', 'test'], { cwd: ROOT });
 
 // ---------------------------------------------------------------------------
-// 2. Pack a sanitized copy of the tree. Sibling `link:` dependencies
-//    (@zseven-w/dsh-browser, and later dsh-computer) are dev-only local
-//    linkages: plain npm cannot install a `link:` specifier from a tarball
-//    (it fails with EUNSUPPORTEDPROTOCOL), and the driver is loaded lazily as
-//    an external optional path, so the packed manifest must never ship them.
-console.log('\n[smoke:pack] 2/5 npm pack (sanitized manifest; link: deps stripped) ...');
+// 2. Pack the REAL repository root. The tarball is what `npm publish` (or a
+//    plain `npm pack`) actually ships: no manifest rewriting, no subset copy.
+//    A `link:` spec in devDependencies (@zseven-w/dsh-browser) is legal here:
+//    devDependencies of an installed package are never fetched, so the install
+//    below proves the real artifact installs cleanly.
+console.log('\n[smoke:pack] 2/5 npm pack the real repository root (no sanitized copy) ...');
 const packDir = mkdtempSync(join(tmpdir(), 'dsh-qa-pack-'));
 tempDirs.push(packDir);
 // Hermetic npm cache: a shared ~/.npm cache can be stale or hold leftovers,
 // which would fail this test with EPERM instead of testing the tarball.
 const cacheDir = mkdtempSync(join(tmpdir(), 'dsh-qa-npm-cache-'));
 tempDirs.push(cacheDir);
-const packSource = mkdtempSync(join(tmpdir(), 'dsh-qa-pack-src-'));
-tempDirs.push(packSource);
-const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
-  const section = manifest[field];
-  if (!section || typeof section !== 'object') continue;
-  for (const name of Object.keys(section)) {
-    const spec = section[name];
-    if (typeof spec === 'string' && spec.startsWith('link:')) delete section[name];
-  }
-}
-writeFileSync(join(packSource, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
-for (const entry of ['lib', 'src', 'scripts', 'cordis.patch.yml', '.mcp.json', '.claude-plugin', 'README.md', 'LICENSE']) {
-  cpSync(join(ROOT, entry), join(packSource, entry), { recursive: true });
-}
-const packOut = run('npm', ['pack', '--ignore-scripts', '--cache', cacheDir, '--pack-destination', packDir], { cwd: packSource, env: { npm_config_cache: cacheDir } });
+const packOut = run('npm', ['pack', '--ignore-scripts', '--cache', cacheDir, '--pack-destination', packDir], { cwd: ROOT, env: { npm_config_cache: cacheDir } });
 console.log(packOut.split('\n').slice(-6).join('\n'));
 const tarballs = readdirSync(packDir).filter((f) => f.endsWith('.tgz'));
 if (tarballs.length !== 1) fail('expected exactly one tarball in ' + packDir + ', found ' + JSON.stringify(tarballs));
@@ -212,6 +201,16 @@ console.log('[smoke:pack] node_modules/@deepseek-ai absent. top level: ' + readd
 // Declaration guard: the host-runtime stack is documented in the inert
 // dshHostRuntime field, never in peerDependencies.
 const installedPkg = JSON.parse(readFileSync(join(installDir, 'node_modules', PKG_NAME, 'package.json'), 'utf8'));
+// The manifest must be the REAL one, not a sanitized copy: the dev-only
+// `link:` driver specifier is still present in devDependencies, and plain npm
+// still installed the tarball cleanly (a dependency's devDependencies are
+// never fetched).
+if (installedPkg.devDependencies?.['@zseven-w/dsh-browser'] !== 'link:../dsh-browser') {
+  fail('installed devDependencies is missing the @zseven-w/dsh-browser link: spec - the manifest was sanitized (pack the real tree)');
+}
+if (installedPkg.dependencies?.['@zseven-w/dsh-browser'] !== undefined) {
+  fail('@zseven-w/dsh-browser must not be a runtime dependency (it is a dev/test-only linkage)');
+}
 for (const name of Object.keys(installedPkg.peerDependencies || {})) {
   if (name.startsWith('@deepseek-ai/')) {
     fail('peer ' + name + ' is still in peerDependencies - @deepseek-ai/* must be host runtime only (see dshHostRuntime)');

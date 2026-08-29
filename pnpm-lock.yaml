@@ -11,9 +11,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.17.5
         version: 1.30.0(zod@4.5.2)
-      '@zseven-w/dsh-browser':
-        specifier: link:../dsh-browser
-        version: link:../dsh-browser
       zod:
         specifier: ^4.0.0
         version: 4.5.2
@@ -21,6 +18,9 @@ importers:
       '@types/node':
         specifier: ^26.2.0
         version: 26.4.0
+      '@zseven-w/dsh-browser':
+        specifier: link:../dsh-browser
+        version: link:../dsh-browser
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
