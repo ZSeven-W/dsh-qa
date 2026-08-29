@@ -197,10 +197,10 @@ replacement) is replaced by `[REDACTED]` when **both**:
 2. its Shannon entropy is **≥ 4.0 bits per code point**, computed over the token's code-point
    frequencies: `H = −Σ p(i) · log₂ p(i)`.
 
-**Proposed default thresholds (configurable — see Open Question 2):** `minLength = 20`,
-`minEntropyBitsPerChar = 4.0`. Phase 2 must expose them as reporter configuration
-(`highEntropyTokenMinLength`, `highEntropyTokenMinEntropyBitsPerChar`) rather than hard-coded
-constants.
+**Thresholds (compile-time constants):** `highEntropyTokenMinLength = 20`,
+`highEntropyTokenMinEntropyBitsPerChar = 4.0`. They are fixed constants, not a runtime
+configuration surface: a deterministic reporter must never mutate its redaction thresholds at
+runtime, so there is no configuration setter and no module-global mutable state.
 
 Notes:
 - The corpus record-only secret `AKIAIOSFODNN7EXAMPLE` measures ≈ 3.90 bits/code point (20 code
@@ -210,7 +210,9 @@ Notes:
   length floor, so R3 can never re-redact engine output (idempotence, §2.6).
 - R3 is fail-closed at the margin: entropy computed over the normalized token, and any token at or
   above both thresholds is redacted even when it is plausibly benign (see Open Question 4 for the
-  documented over-redaction consequences, e.g. 40-hex commit hashes measure exactly 4.0).
+  documented over-redaction consequences, e.g. standard-base64 blobs measure ≥ 4.0 bits/char). A
+  40-hex commit hash does **not** reach this floor: its bits/char measures ≈ 3.68–3.88 in practice
+  (maximum 3.971, since 40 is not divisible by 16), so it is never redacted by R3.
 
 ### 2.4 R4 — Fail-closed semantics
 
@@ -448,8 +450,8 @@ The following decisions block Phase 2 and must be made at the manual review gate
 2. **(b) R3 entropy thresholds.** Confirm the proposed defaults — token length ≥ **20 code points**
    AND Shannon entropy ≥ **4.0 bits/code point** — or pick alternatives (e.g. 4.5 spares uniform-hex
    tokens such as 40-char commit hashes; ≤ 3.9 makes R3 alone cover
-   `AKIAIOSFODNN7EXAMPLE`). Also confirm the configuration surface
-   (`highEntropyTokenMinLength`, `highEntropyTokenMinEntropyBitsPerChar`).
+   `AKIAIOSFODNN7EXAMPLE`). The thresholds are compile-time constants (§2.3); there is no runtime
+   configuration surface to confirm.
 3. **(c) Protocol-relative and bare localhost-relative URLs — DECIDED.** A protocol-relative token
    starting with `//` that contains `@` BEFORE the first path slash (userinfo shape, e.g.
    `//user:pass@host/path`) is redacted ENTIRELY as `[REDACTED_URL]`. All other protocol-relative
@@ -467,14 +469,16 @@ The following decisions block Phase 2 and must be made at the manual review gate
    - Split/stranded URL tails (`\n@host/path`, ` <@host/path`, query tails) are swallowed with
      the span (rows 24, 25, 29, 30, 93, 94, 97). Rationale: preserving any tail byte risks a later
      pass re-reading it as URL/credential material.
-   - R3 at 4.0 bits/char redacts 40-hex commit hashes and base64 blobs that appear as bare tokens
-     under non-sensitive keys. Rationale: fail-closed prefers over-redaction; Q2 can raise the floor.
+   - R3 at 4.0 bits/char redacts base64 blobs that appear as bare tokens under non-sensitive keys,
+     but not 40-hex commit hashes (which measure ≈ 3.68–3.88 bits/char, at most 3.971, so they stay
+     below the floor). Rationale: fail-closed prefers over-redaction; Q2 can raise the floor.
    - If Q1's recommended option is approved, qualified `id` terminals redact
      `aws_access_key_id`-style keys everywhere, including in free text.
    - **DECIDED — commit identity:** bench-generated report metadata must present commit identity
-     as a git **short hash** (≤ 12 chars, below R3's 20-length floor). A full 40-hex commit hash
-     being redacted by R3 (4.0 bits/char at the 20-length floor) is expected fail-closed behavior,
-     not a bug. Reporters must emit the short hash; no engine change is required for this.
+     as a git **short hash** (≤ 12 chars). A full 40-hex commit hash is **not** redacted by R3 (it
+     measures ≈ 3.68–3.88 bits/char, at most 3.971, below the 4.0 floor); the short-hash spelling is
+     required as a standalone formatting decision. Reporters must emit the short hash; no engine
+     change is required for this.
 5. **(e) Marker vocabulary.** Keep the two-marker vocabulary (`[REDACTED]` vs `[REDACTED_URL]`)
    as specified in §3? Recommended: yes — the distinct URL marker preserves the class of the redacted
    material and is the hook for the v2.1 whitelist.

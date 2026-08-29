@@ -21,7 +21,6 @@ import {
   redactTextWithRoots,
   validateRoots,
   isSensitiveKey,
-  configureHighEntropyThresholds,
   type RedactionRoots,
   type NormalizedRedactionRoots,
 } from './engine.ts';
@@ -31,7 +30,6 @@ export {
   redactTextWithRoots,
   validateRoots,
   isSensitiveKey,
-  configureHighEntropyThresholds,
 };
 export type { RedactionRoots, NormalizedRedactionRoots };
 

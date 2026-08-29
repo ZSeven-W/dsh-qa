@@ -27,6 +27,7 @@ type RootKey = keyof RedactionRoots
 const ROOT_KEYS: readonly RootKey[] = ['workspace', 'temp', 'artifacts']
 
 const ROOT_ALIAS_PREFIX = '\u0001'
+const ROOT_ALIAS_PREFIX_CODE = 0x01
 
 const ALIASES: Record<RootKey, string> = {
   workspace: `${ROOT_ALIAS_PREFIX}WORKSPACE`,
@@ -3782,95 +3783,41 @@ function isCredentialTrailingPunctuationCode(code: number): boolean {
   )
 }
 
-// The transform pipeline is a fixed sequence of independent single-pass
-// stages, each linear in the input length, so redaction is O(n) with a small
-// constant factor and never loops (no stage feeds its own output back into
-// itself):
+// The transform pipeline is a fixed sequence of independent single-pass stages,
+// each linear in the input length, so redaction is O(n) with a small constant
+// factor and never loops (no stage feeds its own output back into itself).
+// redactTextWithRoots runs them in this order (spec 2.6):
 //
-//   1. normalizeSeparators      -- one forward pass replacing unsafe controls
-//   1a. redactSplitUrlUserinfo  -- one fail-closed pre-pass recognizing a URL
-//                                  scheme, optional delimiter run, non-empty
-//                                  userinfo, and `@`, so credentials split
-//                                  across a delimiter are redacted before the
-//                                  normal token scanners can stop too early
-//   2. redactFileUrls           -- one linear tokenizer pass replacing
-//                                  configured roots inside local file:// URLs
-//                                  (decode + normalize each pathname before
-//                                  matching); an embedded http(s) scheme after
-//                                  the file token start splits the token so
-//                                  pathname normalization never collapses its
-//                                  slashes into `http:/`
-//   3. sanitizeUrls             -- final http(s) canonicalization: MUST run
-//                                  AFTER file-root replacement so raw characters
-//                                  a decoded file pathname re-emits inside an
-//                                  http(s) path (`{`, `^`, non-ASCII, ...) are
-//                                  WHATWG re-encoded in the SAME call
-//                                  (`http://m/file://$TMP/{` -> `.../%7B`), and
-//                                  MUST run BEFORE auth/credential scanning so
-//                                  those scanners never see raw userinfo (`=`
-//                                  inside `http://user:pa=ss@host` would be
-//                                  misparsed as an assignment separator and leak
-//                                  the remainder); a later literal http(s)
-//                                  scheme inside an http token splits it into an
-//                                  independently sanitized token
-//   4. redactRoots              -- one context-aware linear scanner pass
-//                                  replacing plain absolute roots; precomputes
-//                                  the http(s)/file URL token ranges with the
-//                                  SAME tokenizers stages 2-3 use and only
-//                                  redacts roots in the plain text between
-//                                  those ranges, so list separators (`,`/`;`)
-//                                  and proven plain closers (`) ] } >`) redact
-//                                  every plain-list root while a root-looking
-//                                  segment inside an http authority/port/path
-//                                  or a nonlocal/malformed file authority
-//                                  (`https://example.com:/private/tmp/run/x`,
-//                                  `file://server/private/tmp/run/a`) keeps
-//                                  its byte-identical spelling
-//   5. redactBearerAndBasic     -- one forward scanner pass
-//   6. redactCredentialAssignments -- one forward scanner pass
-//   7. sanitizeUrls             -- fail-closed tail pass: chain splitting and
-//                                  credential/auth redaction can expose a
-//                                  standalone http(s) token that was glued to a
-//                                  previous value (`apikey=http://m/;http://@`
-//                                  splits at `;` and exposes `http://@`), so the
-//                                  whole output is canonicalized once more before
-//                                  the final file closure.
-//   8. redactFileUrls           -- bounded final file closure: credential glue
-//                                  and the tail http canonicalization can expose
-//                                  or normalize a file URL AFTER stage 2
-//                                  (`x-token = abcfile:////,file://localhost/...`
-//                                  splits and exposes the localhost URL;
-//                                  `http://m/file:/\/private/tmp/run/{` is
-//                                  normalized to `file:///private/tmp/run/%7B` by
-//                                  http canonicalization). This final pass catches
-//                                  those spellings and replaces every remaining
-//                                  root, so no raw root can survive into the
-//                                  final http stage.
-//   9. sanitizeUrls             -- final http canonicalization: percent-decoded
-//                                  suffixes the final file pass re-emits inside an
-//                                  http(s) path (`{`, `^`, non-ASCII, ...) are
-//                                  WHATWG re-encoded in the SAME call
-//                                  (`http://m/file://$TMP/{` -> `.../%7B`).
+//   1. normalizeSeparators          -- one forward pass replacing unsafe C0/DEL/
+//                                      C1 controls, line/paragraph separators,
+//                                      and Unicode format characters with the
+//                                      internal separator sentinel, and
+//                                      normalizing CRLF to LF (spec 2.0).
+//   2. redactUrlSpans               -- R1: replace every scheme-shaped token
+//                                      (raw or percent-encoded scheme spelling,
+//                                      plus protocol-relative userinfo) with one
+//                                      [REDACTED_URL] marker (spec 2.1).
+//   3. redactBearerAndBasic         -- R2 auth-scheme forms: Authorization /
+//                                      Bearer / Basic / Digest / unknown-scheme
+//                                      credentials (spec 2.2).
+//   4. redactCredentialAssignments  -- R2 sensitive-key/value assignments
+//                                      (key=value, key: value, quoted forms)
+//                                      (spec 2.2).
+//   5. redactRoots                  -- replace configured absolute POSIX roots
+//                                      with the 0x01-prefixed WORKSPACE/TMP/
+//                                      ARTIFACTS aliases (spec 2.0 / 2.6 step 4).
+//   6. redactHighEntropyTokens      -- R3: replace bare high-entropy tokens
+//                                      (at least 20 code points, Shannon entropy
+//                                      at least 4.0 bits/code point, token
+//                                      boundaries = R1 boundaries plus brackets)
+//                                      with [REDACTED] (spec 2.3).
+//   7. sentinel/alias rendering     -- map the separator sentinel to a space and
+//                                      the 0x01 alias prefix to "$" (spec 2.6
+//                                      step 6).
 //
-// The final closure (stages 8-9) is a bounded constant acyclic sequence, never
-// a fixed-point loop: the final file pass cannot create a backslash spelling
-// (its replacement is `file://`/`file://localhost` plus an aliased path), and
-// the final http pass is a no-op on canonical tokens and only re-encodes
-// aliased suffixes, so it cannot re-expose a root after the final file pass.
-// One file+http iteration therefore reaches a fixed point within a single
-// call: pass 2 (and every later pass) is byte-identical to pass 1, and the
-// whole pipeline stays O(n).
-//
-// Two credential-scanner rules keep the tail pass's fail-closed `[REDACTED_URL]`
-// marker byte-stable on every later pass (see scanStructuredCredentialValue and
-// consumeStructuredValueTail): the marker is never chained into a structured
-// value, and a chain delimiter directly before it is preserved as a safe
-// boundary, so a marker the tail pass emits right after a delimiter that the
-// credential scanner already preserved is kept on every pass.
-// The fixed pipeline with a pre-validated roots record (or undefined when no
-// roots were supplied). redactText validates the caller-facing roots once and
-// delegates here; projectRedactedJsonValue validates roots ONCE up front even
-// when the tree has no string leaves and reuses this internal stage, so the
+// redactText validates the caller-facing roots once and delegates to
+// redactTextWithRoots; projectRedactedJsonValue validates roots ONCE up front
+// even when the tree has no string leaves and reuses the same internal stages.
 
 // ---------------------------------------------------------------------------
 // R1 — URL whole-token redaction (spec §2.1)
@@ -4208,54 +4155,39 @@ function redactUrlSpans(text: string): string {
 // R3 — high-entropy bare tokens (spec §2.3)
 //
 // A bare token (not inside any R1/R2 span, not a root alias, not a marker)
-// whose code-point length is >= minLength and whose Shannon entropy over
-// code-point frequencies is >= minEntropyBitsPerChar becomes [REDACTED].
-// Thresholds are configuration (spec Open Question 2 defaults 20 / 4.0).
+// whose code-point length is >= HIGH_ENTROPY_TOKEN_MIN_LENGTH and whose
+// Shannon entropy over code-point frequencies is >=
+// HIGH_ENTROPY_TOKEN_MIN_ENTROPY_BITS_PER_CHAR becomes [REDACTED]. The
+// thresholds are compile-time constants (spec §2.3): a deterministic reporter
+// must never mutate its redaction thresholds at runtime, so there is no
+// configuration surface and no module-global mutable state.
 // ---------------------------------------------------------------------------
 
-const DEFAULT_HIGH_ENTROPY_MIN_LENGTH = 20
-const DEFAULT_HIGH_ENTROPY_MIN_ENTROPY_BITS_PER_CHAR = 4.0
-
-let highEntropyTokenMinLength = DEFAULT_HIGH_ENTROPY_MIN_LENGTH
-let highEntropyTokenMinEntropyBitsPerChar = DEFAULT_HIGH_ENTROPY_MIN_ENTROPY_BITS_PER_CHAR
-
-/** Reporter configuration surface for the R3 thresholds (spec §2.3). */
-export function configureHighEntropyThresholds(options: {
-  minLength?: number
-  minEntropyBitsPerChar?: number
-}): void {
-  if (options.minLength !== undefined) {
-    if (!Number.isFinite(options.minLength) || options.minLength < 1) {
-      throw new TypeError('configureHighEntropyThresholds: minLength must be a finite number >= 1')
-    }
-    highEntropyTokenMinLength = Math.floor(options.minLength)
-  }
-  if (options.minEntropyBitsPerChar !== undefined) {
-    if (!Number.isFinite(options.minEntropyBitsPerChar) || options.minEntropyBitsPerChar < 0) {
-      throw new TypeError('configureHighEntropyThresholds: minEntropyBitsPerChar must be a finite number >= 0')
-    }
-    highEntropyTokenMinEntropyBitsPerChar = options.minEntropyBitsPerChar
-  }
-}
+const HIGH_ENTROPY_TOKEN_MIN_LENGTH = 20
+const HIGH_ENTROPY_TOKEN_MIN_ENTROPY_BITS_PER_CHAR = 4.0
 
 function isHighEntropyTokenBoundaryCode(code: number): boolean {
+  // Spec §2.3: R3 token boundaries are "the same tokenizer boundaries as R1:
+  // whitespace, quotes, backticks, <, >, controls, format chars" — i.e.
+  // isUrlSpanBoundaryCode (which folds controls/format chars into the
+  // separator sentinel on normalized text). "/" is deliberately NOT a
+  // boundary: a standard base64 secret containing "/" must remain one token
+  // so it reaches the length and entropy thresholds instead of splitting into
+  // sub-20-code-point segments. Bracketing characters are additionally kept
+  // as boundaries so R3 never swallows a whole non-sensitive structured
+  // container (JSON-ish value, markdown link, function call) into one
+  // high-entropy token; the corpus's "non-sensitive containers stay
+  // byte-identical" cases depend on this. Root-alias output and redaction
+  // markers are handled as trusted atoms by the scanner (see
+  // redactHighEntropyTokens), not as part of this boundary predicate.
   return (
     isUrlSpanBoundaryCode(code) ||
-    isSeparatorSentinelCode(code) ||
-    code === 0x01 ||
-    // Bracketing characters delimit code/Markdown structure, not credential
-    // material; keeping them as boundaries prevents R3 from swallowing whole
-    // markdown links or function calls as one "token".
     code === 0x28 ||
     code === 0x29 ||
     code === 0x5b ||
     code === 0x5d ||
     code === 0x7b ||
-    code === 0x7d ||
-    // Path separators delimit filesystem paths (root aliases and their
-    // children are trusted output); credential blobs spanning slashes are
-    // still caught segment-by-segment.
-    code === 0x2f
+    code === 0x7d
   )
 }
 
@@ -4280,19 +4212,45 @@ function markerLengthAt(text: string, index: number): number {
   return 0
 }
 
+// Root-alias atoms are trusted output (pipeline step 4 runs before R3, step 5,
+// and §2.3 excludes "a root-alias replacement" from bare-token candidacy).
+// R3 copies the whole atom verbatim and treats it as a boundary so the alias
+// never glues into a bare-token scan. Two spellings are recognized: the
+// internal 0x01 + NAME form emitted during root aliasing, and the rendered
+// "$" + NAME form present in engine output on re-entry (§3 lists $WORKSPACE/
+// $TMP/$ARTIFACTS as replacement tokens, and §2.6 requires two-pass
+// idempotence). Recognizing both keeps an aliased path byte-identical on the
+// second pass.
+function rootAliasLengthAt(text: string, index: number): number {
+  const code = text.charCodeAt(index)
+  if (code !== ROOT_ALIAS_PREFIX_CODE && code !== 0x24) return 0
+  const next = index + 1
+  if (text.startsWith('WORKSPACE', next)) return 1 + 'WORKSPACE'.length
+  if (text.startsWith('ARTIFACTS', next)) return 1 + 'ARTIFACTS'.length
+  if (text.startsWith('TMP', next)) return 1 + 'TMP'.length
+  return 0
+}
+
+// Combined trusted-atom length: a redaction marker or a root alias, whichever
+// (if any) starts at the given index. Both are copied verbatim and terminate
+// any bare-token scan around them (spec §2.3/§2.6/§3 idempotence).
+function trustedAtomLengthAt(text: string, index: number): number {
+  return markerLengthAt(text, index) || rootAliasLengthAt(text, index)
+}
+
 function redactHighEntropyTokens(text: string): string {
   let result = ''
   let cursor = 0
   const length = text.length
   while (cursor < length) {
-    // Markers are trusted boundaries (spec §3): they pass through
-    // byte-identical and terminate any bare-token scan around them, so an
-    // emitted marker can never be re-redacted and never glues a preceding
-    // assignment into one long high-entropy token.
-    const marker = markerLengthAt(text, cursor)
-    if (marker > 0) {
-      result += text.slice(cursor, cursor + marker)
-      cursor += marker
+    // Markers and root aliases are trusted boundaries (spec §3/§2.6): they
+    // pass through byte-identical and terminate any bare-token scan around
+    // them, so an emitted marker/alias can never be re-redacted and never
+    // glues a preceding assignment into one long high-entropy token.
+    const atom = trustedAtomLengthAt(text, cursor)
+    if (atom > 0) {
+      result += text.slice(cursor, cursor + atom)
+      cursor += atom
       continue
     }
     if (isHighEntropyTokenBoundaryCode(text.charCodeAt(cursor))) {
@@ -4302,13 +4260,13 @@ function redactHighEntropyTokens(text: string): string {
     }
     let end = cursor
     while (end < length && !isHighEntropyTokenBoundaryCode(text.charCodeAt(end))) {
-      if (markerLengthAt(text, end) > 0) break
+      if (trustedAtomLengthAt(text, end) > 0) break
       end += 1
     }
     const token = text.slice(cursor, end)
     let codePoints = 0
     for (const _ of token) codePoints += 1
-    if (codePoints >= highEntropyTokenMinLength && shannonEntropyBitsPerChar(token) >= highEntropyTokenMinEntropyBitsPerChar) {
+    if (codePoints >= HIGH_ENTROPY_TOKEN_MIN_LENGTH && shannonEntropyBitsPerChar(token) >= HIGH_ENTROPY_TOKEN_MIN_ENTROPY_BITS_PER_CHAR) {
       result += '[REDACTED]'
     } else {
       result += token

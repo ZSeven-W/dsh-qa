@@ -126,7 +126,88 @@ function mixedCase(secret: string): FuzzCase {
   return { input: insertWhitespace(joined, randInt(0, 1)), secret }
 }
 
-const GENERATORS = [urlishCase, assignmentCase, authCase, jsonCase, mixedCase] as const
+// ---------------------------------------------------------------------------
+// Bare-token generator (Phase 3b Finding 2). Every other generator embeds the
+// secret in a URL, a sensitive-key assignment, an auth header, or a sensitive
+// JSON key, so R3 (bare high-entropy tokens) was never exercised — the suite
+// would report green even if R3 were deleted. This generator produces a
+// high-entropy secret and places it as a BARE token under a BENIGN key or in
+// free prose, so only R3 can redact it.
+// ---------------------------------------------------------------------------
+
+function distinctChars(alphabet: string, n: number): string {
+  // Partial Fisher-Yates: picks n distinct characters from alphabet, so the
+  // result has exactly n distinct symbols and Shannon entropy log2(n) — for
+  // n >= 20 that is >= 4.32 bits/char, reliably above the R3 4.0 floor even
+  // at the 20-code-point boundary without depending on sampling luck.
+  const arr = alphabet.split('')
+  for (let i = 0; i < n; i++) {
+    const j = randInt(i, arr.length - 1)
+    const tmp = arr[i]!
+    arr[i] = arr[j]!
+    arr[j] = tmp
+  }
+  return arr.slice(0, n).join('')
+}
+
+// A uniformly distributed hex string (each of the 16 hex digits appears
+// exactly "per" times) is the only hex form whose Shannon entropy reaches the
+// 4.0 floor; random hex measures below it (a 40-char hex string tops out at
+// 3.971 bits/char). The shuffle keeps the counts — and therefore the 4.0
+// entropy — while making the spelling non-obvious.
+function uniformHexString(per: number): string {
+  const digits = '0123456789abcdef'
+  const chars: string[] = []
+  for (let k = 0; k < per; k++) for (const d of digits) chars.push(d)
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randInt(0, i)
+    const tmp = chars[i]!
+    chars[i] = chars[j]!
+    chars[j] = tmp
+  }
+  return chars.join('')
+}
+
+function bareSecretToken(): string {
+  const format = pick(['base64', 'urlsafe64', 'hex', 'mixed'] as const)
+  const codePoints = randInt(20, 40)
+  switch (format) {
+    case 'base64': {
+      // Standard base64 alphabet with "/" (Finding 1): "/" is reserved as one
+      // of the distinct characters so the previously-leaking boundary is
+      // always exercised.
+      const rest = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+'
+      return '/' + distinctChars(rest, codePoints - 1)
+    }
+    case 'urlsafe64':
+      return distinctChars('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_', codePoints)
+    case 'hex': {
+      // Hex has only 16 symbols, so it reaches 4.0 bits/char only when the
+      // distribution is perfectly uniform: use a shuffled 16x2 string (32
+      // code points), the shortest hex form that reaches the 4.0 floor.
+      return uniformHexString(2)
+    }
+    case 'mixed':
+      return distinctChars('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-', codePoints)
+  }
+}
+
+function bareTokenCase(_unused: string): FuzzCase {
+  const secret = bareSecretToken()
+  const benign = pick(BENIGN_KEYS)
+  const placement = pick(['prose', 'assignment', 'json'] as const)
+  let input: string
+  if (placement === 'prose') {
+    input = 'before ' + secret + ' after'
+  } else if (placement === 'assignment') {
+    input = benign + ': ' + secret
+  } else {
+    input = JSON.stringify({ [benign]: secret })
+  }
+  return { input, secret }
+}
+
+const GENERATORS = [urlishCase, assignmentCase, authCase, jsonCase, mixedCase, bareTokenCase] as const
 
 // ---------------------------------------------------------------------------
 // Invariant helpers (mirroring the corpus helpers).
@@ -166,9 +247,8 @@ test(`redaction fuzz: ${CASES} seeded cases never leak the injected secret`, () 
   let checkedProjection = 0
   let idempotenceFailures = 0
   for (let i = 0; i < CASES; i++) {
-    const secret = secretToken()
     const generator = GENERATORS[i % GENERATORS.length]!
-    const { input } = generator(secret)
+    const { input, secret } = generator(secretToken())
 
     // Surface 1: free text
     const once = redactText(input)
