@@ -9,9 +9,44 @@ function inline(value: unknown, roots?: RedactionRoots): string {
   return JSON.stringify(projectRedactedJsonValue(value, roots));
 }
 
+function escapeControlCodeUnit(code: number): string {
+  return '\\u' + code.toString(16).toUpperCase().padStart(4, '0');
+}
+
+// Renders every lone (unpaired) UTF-16 surrogate as a visible \uXXXX escape so
+// no raw surrogate code unit can reach report.md (spec R4, corpus r11 contract:
+// \uDBFF appears, the raw surrogate does not). Valid surrogate pairs survive
+// as-is. Redaction runs first; this escaping runs on the redacted text only.
+function escapeLoneSurrogates(text: string): string {
+  let result = '';
+  let index = 0;
+  const length = text.length;
+  while (index < length) {
+    const code = text.charCodeAt(index);
+    const ch = text[index] as string;
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = index + 1 < length ? text.charCodeAt(index + 1) : -1;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        result += ch + (text[index + 1] as string);
+        index += 2;
+      } else {
+        result += escapeControlCodeUnit(code);
+        index += 1;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      result += escapeControlCodeUnit(code);
+      index += 1;
+    } else {
+      result += ch;
+      index += 1;
+    }
+  }
+  return result;
+}
+
 /** Deterministic, redacted report.md content (human-readable). */
 export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots): string {
-  const md = (text: string) => redactText(text, roots);
+  const md = (text: string) => escapeLoneSurrogates(redactText(text, roots));
   const lines: string[] = [];
   lines.push('# QA Replay: ' + md(report.scenario));
   lines.push('');
