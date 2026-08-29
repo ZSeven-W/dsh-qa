@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "name": "fixture-web-form-validation",
+    "description": "Fill the release name, run validation, and assert the result region flips to PASS (reproduces the 2026-08-25 acceptance web flow).",
+    "driver": "browser",
+    "createdAt": "2026-08-29T00:00:00.000Z"
+  },
+  "target": {
+    "launch": "http://127.0.0.1:7399/"
+  },
+  "steps": [
+    {
+      "index": 1,
+      "intent": "Fill the Release name input with a version string.",
+      "action": {
+        "kind": "fill",
+        "target": { "role": "textbox", "name": "Release name" },
+        "text": "v1.0.0"
+      },
+      "assert": {
+        "kind": "node-present",
+        "expected": { "role": "button", "name": "Run validation" }
+      }
+    },
+    {
+      "index": 2,
+      "intent": "Click Run validation.",
+      "action": {
+        "kind": "click",
+        "target": { "role": "button", "name": "Run validation" }
+      },
+      "assert": {
+        "kind": "node-present",
+        "expected": { "role": "status", "name": "PASS" }
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "node-present",
+      "expected": { "role": "status", "name": "PASS" }
+    },
+    {
+      "kind": "page-url",
+      "expected": { "contains": "127.0.0.1" }
+    }
+  ]
+}

@@ -1,7 +1,10 @@
-// Core dsh-qa v0.1 contracts. Scenario/step/assertion shapes are finalized in
-// the Replay work package; these type definitions are the shared vocabulary
-// every work package compiles against, matching the owner-approved plan
-// (QaScenario = { meta, target, steps[], assertions[] }, lossless JSON only).
+// Core dsh-qa v0.1 contracts. The scenario/step/assertion shapes are the
+// Replay (WP4) schema: QaScenario = { meta, target, steps[], assertions[] },
+// lossless JSON only. Every step carries the act plus the assertion that must
+// hold on the FRESH observation after that act; assertions[] are the final
+// assertions evaluated after all steps.
+
+import type { QaActionReceipt, QaEvidence } from './session/adapter.ts';
 
 export type QaDriverKind = 'browser' | 'computer';
 
@@ -33,33 +36,108 @@ export interface QaScenarioTarget {
   launch: string;
 }
 
-export interface QaStep {
-  index: number;
-  action: string;
-  /** Driver-native action payload (lossless JSON only). */
-  argument: unknown;
-  /** Natural-language intent recorded by Explore; Replay asserts on it. */
-  intent: string;
+/** Semantic predicate a scenario action/assertion matches against observable nodes. */
+export interface QaNodePredicate {
+  role?: string;
+  name?: string;
+  tag?: string;
 }
 
+/**
+ * A scenario action: the act plus a semantic target. Refs are opaque and
+ * session-local, so scenarios address nodes semantically; the runner resolves
+ * the target to a concrete ref from the current observation.
+ */
+export type QaScenarioAction =
+  | { kind: 'click'; target: QaNodePredicate }
+  | { kind: 'fill'; target: QaNodePredicate; text: string }
+  | { kind: 'press'; target: QaNodePredicate; key: string }
+  | { kind: 'navigate'; url: string };
+
+export type QaAssertionKind = 'node-present' | 'node-absent' | 'page-url';
+
 export interface QaAssertion {
-  index: number;
-  kind: string;
-  /** Expected observation fragment (lossless JSON only). */
+  kind: QaAssertionKind;
+  /** Expected observation fragment (lossless JSON only), interpreted by kind. */
   expected: unknown;
+  description?: string;
+}
+
+export interface QaStep {
+  /** 1-based step ordinal; must equal its position in steps[]. */
+  index: number;
+  /** Natural-language intent recorded by Explore; Replay asserts on it. */
+  intent: string;
+  /** The act to perform. */
+  action: QaScenarioAction;
+  /** Assertion evaluated against the FRESH observation after this step's act. */
+  assert: QaAssertion;
 }
 
 export interface QaScenario {
   meta: QaScenarioMeta;
   target: QaScenarioTarget;
   steps: QaStep[];
+  /** Final assertions evaluated against the final observation (after all steps). */
   assertions: QaAssertion[];
+}
+
+export type QaRunStatus = 'pass' | 'fail' | 'blocked';
+
+export interface QaObservedNode {
+  role: string;
+  name: string;
+  tag: string;
+}
+
+export interface QaStepResult {
+  index: number;
+  intent: string;
+  status: 'pass' | 'fail';
+  action: QaScenarioAction;
+  receipt: QaActionReceipt | null;
+  /** Session-core outcome for the act: 'ok' | 'unknown' | 'failed'. */
+  outcome: 'ok' | 'unknown' | 'failed';
+  assertion: QaAssertion;
+  assertionPassed: boolean;
+  /** Observed fragment the assertion was evaluated against (lossless JSON). */
+  observed: unknown;
+  expected: unknown;
+}
+
+export interface QaAssertionResult {
+  kind: QaAssertionKind;
+  description?: string;
+  passed: boolean;
+  expected: unknown;
+  observed: unknown;
+}
+
+export interface QaReproductionStep {
+  index: number;
+  intent: string;
+  action: QaScenarioAction;
+  observed: unknown;
+  expected: unknown;
+  receipt: QaActionReceipt | null;
+}
+
+export interface QaRunFailure {
+  /** 1-based failing step index, or null when a final assertion failed. */
+  stepIndex: number | null;
+  message: string;
+  reproduction: QaReproductionStep[];
 }
 
 export interface QaRunReport {
   schemaVersion: 1;
   scenario: string;
-  status: 'pass' | 'fail' | 'blocked';
+  driver: QaDriverKind;
+  status: QaRunStatus;
   startedAt: string;
   finishedAt: string;
+  steps: QaStepResult[];
+  assertions: QaAssertionResult[];
+  evidence: QaEvidence | null;
+  failure?: QaRunFailure;
 }
