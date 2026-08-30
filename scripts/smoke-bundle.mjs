@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, cpSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,6 +40,11 @@ await import('./build-mcp.mjs');
 const bundlePath = join(ROOT, 'lib', 'server.mjs');
 if (!existsSync(bundlePath)) fail('lib/server.mjs was not produced by build:mcp');
 
+console.log('[smoke:bundle] rebuilding lib/index.js from current sources ...');
+await import('./build-entry.mjs');
+const entryPath = join(ROOT, 'lib', 'index.js');
+if (!existsSync(entryPath)) fail('lib/index.js was not produced by build:entry');
+
 // 1b. Host-owned packages must never be inlined. The bundle may reference the
 //     sibling driver by bare specifier (the server imports it lazily and keeps
 //     it external), but its implementation must not be embedded.
@@ -55,12 +60,25 @@ if (/class ComputerController|classifyComputerActionRisk|COMPUTER_DRIVER_SERVICE
 }
 console.log('[smoke:bundle] bundle assertions OK: no host-owned packages inlined');
 
+// 1c. Same guard for the plugin entry: no host-owned packages inlined, and no
+//     sibling-driver implementation embedded (the drivers stay external and
+//     lazy; only their bare specifier strings may appear).
+const entryText = readFileSync(entryPath, 'utf8');
+if (entryText.includes('node_modules/.pnpm/@deepseek-ai')) fail('entry contains inlined @deepseek-ai/* code');
+if (/class BrowserManager|discoverInstalledBrowser|SEMANTIC_SELECTOR/.test(entryText)) {
+  fail('entry contains inlined @zseven-w/dsh-browser code');
+}
+if (/class ComputerController|classifyComputerActionRisk|COMPUTER_DRIVER_SERVICE/.test(entryText)) {
+  fail('entry contains inlined @zseven-w/dsh-computer code');
+}
+console.log('[smoke:bundle] entry bundle assertions OK: no host-owned packages inlined');
+
 // 2. Fresh temp dir - the installed plugin copy. Nothing but the payload.
 const tmp = mkdtempSync(join(tmpdir(), 'dsh-qa-smoke-'));
 let child = null;
 let finished = false;
 try {
-  for (const f of ['lib/server.mjs', 'package.json', '.mcp.json']) {
+  for (const f of ['lib/server.mjs', 'lib/index.js', 'package.json', '.mcp.json']) {
     cpSync(join(ROOT, f), join(tmp, f), { recursive: true });
   }
   if (existsSync(join(tmp, 'node_modules'))) fail('temp copy unexpectedly has node_modules');
@@ -138,10 +156,23 @@ try {
   }
   console.log('[smoke:bundle] tools/list OK: all ' + names.length + ' tools present: ' + names.join(', '));
 
+  // 4. Prove the plugin ENTRY loads from the node_modules-free copy: import
+  //    lib/index.js and assert the Cordis plugin shape (name + apply + inject)
+  //    and that the library exports survive the bundle.
+  const entryUrl = pathToFileURL(join(tmp, 'lib', 'index.js')).href;
+  const entryMod = await import(entryUrl);
+  if (entryMod.name !== 'dsh-qa') fail('entry name is ' + JSON.stringify(entryMod.name) + ', expected dsh-qa');
+  if (typeof entryMod.apply !== 'function') fail('entry apply is not a function');
+  if (!Array.isArray(entryMod.inject) || !entryMod.inject.includes('tools')) fail('entry inject must include tools: ' + JSON.stringify(entryMod.inject));
+  if (typeof entryMod.QaSession !== 'function') fail('entry lost the library export QaSession');
+  if (typeof entryMod.toLosslessJson !== 'function') fail('entry lost the library export toLosslessJson');
+  if (typeof entryMod.createQaTools !== 'function') fail('entry lost the plugin export createQaTools');
+  console.log('[smoke:bundle] entry OK: name/apply/inject + library exports present from a node_modules-free copy');
+
   finished = true;
   child.kill();
   rmSync(tmp, { recursive: true, force: true });
-  console.log('\nSMOKE PASSED: the bundled MCP server starts and serves initialize + tools/list from a node_modules-free copy.');
+  console.log('\nSMOKE PASSED: the bundled MCP server serves initialize + tools/list AND the plugin entry (name/apply/inject) loads, both from a node_modules-free copy.');
 } catch (err) {
   finished = true;
   if (child) child.kill();

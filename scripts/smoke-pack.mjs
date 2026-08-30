@@ -18,7 +18,7 @@
 // script calls npm pack itself - that would recurse). Run it explicitly.
 
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -243,5 +243,27 @@ if (manifestVersion !== installedPkg.version) {
 }
 console.log('[smoke:pack] version guard OK: package.json and plugin.json both report ' + installedPkg.version);
 
+// ---------------------------------------------------------------------------
+// 6. Prove the package ENTRY resolves and loads from the installed copy: import
+//    the package name (exercising main/exports — the original
+//    ERR_UNSUPPORTED_DIR_IMPORT blocker) and assert the Cordis plugin shape
+//    plus the surviving library exports.
+console.log('\n[smoke:pack] 6/6 import the installed package entry via main/exports');
+const entryCheckPath = join(installDir, '_dshqa-entry-check.mjs');
+writeFileSync(entryCheckPath, [
+  `import * as m from '${PKG_NAME}'`,
+  `if (m.name !== 'dsh-qa') throw new Error('entry name is ' + JSON.stringify(m.name))`,
+  `if (typeof m.apply !== 'function') throw new Error('entry apply is not a function')`,
+  `if (!Array.isArray(m.inject) || !m.inject.includes('tools')) throw new Error('entry inject must include tools: ' + JSON.stringify(m.inject))`,
+  `if (typeof m.QaSession !== 'function') throw new Error('entry lost the library export QaSession')`,
+  `if (typeof m.toLosslessJson !== 'function') throw new Error('entry lost the library export toLosslessJson')`,
+  `if (typeof m.createQaTools !== 'function') throw new Error('entry lost the plugin export createQaTools')`,
+  `console.log('ENTRY_OK name=' + m.name + ' inject=' + m.inject.join(','))`,
+].join('\n') + '\n');
+const entryOut = run('node', [entryCheckPath], { cwd: installDir });
+console.log(entryOut.trim());
+if (!/ENTRY_OK/.test(entryOut)) fail('installed entry did not report ENTRY_OK');
+console.log('[smoke:pack] entry OK: installed ' + PKG_NAME + ' resolves and loads its plugin entry');
+
 cleanup();
-console.log('\nSMOKE PASSED: the packed tarball installs with plain npm (no ERESOLVE), pulls zero @deepseek-ai/* packages, and the installed lib/server.mjs serves initialize + tools/list with all ' + EXPECTED_TOOLS.length + ' tools.');
+console.log('\nSMOKE PASSED: the packed tarball installs with plain npm (no ERESOLVE), pulls zero @deepseek-ai/* packages, the installed lib/server.mjs serves initialize + tools/list with all ' + EXPECTED_TOOLS.length + ' tools, and the installed package entry (name/apply/inject) loads.');
