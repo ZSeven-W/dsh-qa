@@ -34,7 +34,7 @@ export const inject = ['tools']
 
 /** Plugin entry: mount every model-facing contribution. */
 export function apply(ctx: StructuralCordisContext): () => Promise<void> {
-  const host = new QaToolHost()
+  const host = new QaToolHost({ getService: (name) => ctx.get(name) })
   const tools = createQaTools(host)
 
   const disposers: Array<() => void | Promise<void>> = []

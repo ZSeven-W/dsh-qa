@@ -10,6 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrowserAdapter } from './adapters/browser.ts';
@@ -23,7 +24,9 @@ import {
 } from './explore/index.ts';
 import { evaluateAssertion, loadScenarioFromPath, runScenario, validateAssertion } from './replay/index.ts';
 import { writeReports } from './reporters/index.ts';
-import { QaSessionManager, toLosslessJson } from './session/index.ts';
+import { captureLatestVisual, QaSessionManager, toLosslessJson } from './session/index.ts';
+import { toVisualCaptureInfo } from './session/adapter.ts';
+import { evaluateVisualQuestion, persistCaptureFile } from './vision.ts';
 
 const SERVER_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -88,6 +91,44 @@ function ownerFrom(args) {
   const owner = raw.trim();
   if (owner === '') throw new Error('owner must not be empty');
   return owner;
+}
+
+// The MCP server has no host llm/attachments services, so visual capture runs
+// the same path (capture + on-disk artifact) but the verdict always degrades
+// to 'unclear' with reason 'vision-model-unavailable' instead of failing.
+const MCP_CAPTURES_DIR = join(tmpdir(), 'dsh-qa-mcp-visual-captures');
+
+async function captureVisualMCP(session, options) {
+  const capture = await captureLatestVisual(session, options);
+  const artifactPath = await persistCaptureFile(capture, MCP_CAPTURES_DIR);
+  return { capture, artifactPath };
+}
+
+async function assertVisualMCP(owner, session, question) {
+  const { capture, artifactPath } = await captureVisualMCP(session);
+  const finding = await evaluateVisualQuestion(question, capture, undefined);
+  recorder.visualFinding(owner, {
+    question,
+    verdict: finding.verdict,
+    confidence: finding.confidence,
+    reasoning: finding.reasoning,
+  });
+  return {
+    ok: true,
+    kind: 'visual',
+    question,
+    verdict: finding.verdict,
+    confidence: finding.confidence,
+    reasoning: finding.reasoning,
+    ...(finding.reason === undefined ? {} : { reason: finding.reason }),
+    artifact: { path: artifactPath, kind: 'screenshot' },
+  };
+}
+
+async function captureVisualEvidenceMCP(session, options) {
+  const { capture, artifactPath } = await captureVisualMCP(session, options);
+  const info = toVisualCaptureInfo(capture);
+  return { ...info, artifactPath };
 }
 
 function guard(handler) {
@@ -204,16 +245,29 @@ server.tool(
     max_console: z.number().int().optional(),
     max_network: z.number().int().optional(),
     max_receipts: z.number().int().optional(),
+    visual: z.boolean().optional(),
+    visual_fingerprint: z.string().optional(),
+    visual_full_page: z.boolean().optional(),
+    visual_max_marks: z.number().int().optional(),
+    visual_scale: z.number().int().optional(),
   },
   guard(async (args) => {
     const owner = ownerFrom(args);
     const manager = await managerForOwner(owner);
-    const evidence = await manager.session(owner).evidence({
+    const session = manager.session(owner);
+    const evidence = await session.evidence({
       ...(args.max_console === undefined ? {} : { maxConsole: args.max_console }),
       ...(args.max_network === undefined ? {} : { maxNetwork: args.max_network }),
       ...(args.max_receipts === undefined ? {} : { maxReceipts: args.max_receipts }),
     });
-    return textResult(evidence);
+    if (args.visual !== true) return textResult(evidence);
+    const visual = await captureVisualEvidenceMCP(session, {
+      ...(args.visual_fingerprint === undefined ? {} : { fingerprint: args.visual_fingerprint }),
+      ...(args.visual_full_page === undefined ? {} : { fullPage: args.visual_full_page }),
+      ...(args.visual_max_marks === undefined ? {} : { maxMarks: args.visual_max_marks }),
+      ...(args.visual_scale === undefined ? {} : { scale: args.visual_scale }),
+    });
+    return textResult({ ...evidence, visual });
   }),
 );
 
@@ -233,15 +287,23 @@ server.tool(
   'qa_assert',
   {
     owner: z.string().optional(),
-    kind: z.enum(['node-present', 'node-absent', 'page-url']),
-    expected: z.unknown(),
+    kind: z.enum(['node-present', 'node-absent', 'page-url', 'visual']),
+    expected: z.unknown().optional(),
+    question: z.string().optional(),
   },
   guard(async (args) => {
-    // Fail-closed: validate the assertion shape before touching the session.
-    const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert');
     const owner = ownerFrom(args);
     const manager = await managerForOwner(owner);
-    const observation = await manager.session(owner).observe();
+    const session = manager.session(owner);
+    if (args.kind === 'visual') {
+      if (typeof args.question !== 'string' || args.question.trim() === '') {
+        throw new Error('qa_assert visual requires a non-empty question');
+      }
+      return textResult(await assertVisualMCP(owner, session, args.question));
+    }
+    // Fail-closed: validate the assertion shape before touching the session.
+    const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert');
+    const observation = await session.observe();
     const evaluation = evaluateAssertion(assertion, observation);
     return textResult({
       ok: true,

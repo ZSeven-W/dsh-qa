@@ -8,6 +8,8 @@
 // The sibling drivers stay external and are imported only when a tool actually
 // runs, so loading the plugin and registering the tools never requires them.
 
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { BrowserAdapter } from './adapters/browser.ts'
 import { ComputerAdapter } from './adapters/computer.ts'
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts'
@@ -21,8 +23,17 @@ import {
 import type { QaRecordExportOptions, QaRecordExportResult } from './explore/index.ts'
 import { evaluateAssertion, loadScenarioFromPath, runScenario, validateAssertion } from './replay/index.ts'
 import { writeReports } from './reporters/index.ts'
-import { QaSessionManager, toLosslessJson } from './session/index.ts'
-import type { QaAction } from './session/adapter.ts'
+import { captureLatestVisual, QaSessionManager, toLosslessJson } from './session/index.ts'
+import type { QaAction, QaVisualObserveOptions } from './session/adapter.ts'
+import { toVisualCaptureInfo } from './session/adapter.ts'
+import type { QaSession } from './session/session.ts'
+import {
+  evaluateVisualQuestion,
+  persistCaptureFile,
+  type QaVisualServices,
+  type StructuralAttachmentStore,
+  type StructuralLlmService,
+} from './vision.ts'
 
 /** Structural host execution context (mirrors dsh-browser/dsh-computer). */
 export interface ToolExecutionContext {
@@ -87,11 +98,26 @@ const enumOf = (...values: string[]) => ({ type: 'string', enum: values })
 const intProp = { type: 'integer' }
 const strProp = { type: 'string' }
 
+export interface QaToolHostOptions {
+  /** Lazy structural service resolution (host ctx.get), like dsh-computer. */
+  getService?: (name: 'llm' | 'attachments') => unknown
+  /** Vision route defaults come from configuration, not inline constants. */
+  visionProvider?: string
+  visionModel?: string
+  /** Directory for writing a PNG when the driver did not persist one. */
+  capturesDir?: string
+}
+
 /** One lazy QaSessionManager per driver, mirroring src/server.mjs getManager(). */
 export class QaToolHost {
   readonly #managers = new Map<QaDriverKind, Promise<QaSessionManager>>()
   readonly #ownerDrivers = new Map<string, QaDriverKind>()
   readonly #recorder = new QaTrajectoryRecorder()
+  readonly #options: QaToolHostOptions
+
+  constructor(options: QaToolHostOptions = {}) {
+    this.#options = options
+  }
 
   managerFor(driver: QaDriverKind): Promise<QaSessionManager> {
     let manager = this.#managers.get(driver)
@@ -134,6 +160,55 @@ export class QaToolHost {
 
   exportRecord(owner: string, options: QaRecordExportOptions): Promise<QaRecordExportResult> {
     return exportRecordedScenario(this.#recorder, owner, options)
+  }
+
+  #capturesDir(): string {
+    return this.#options.capturesDir ?? join(tmpdir(), 'dsh-qa-visual-captures')
+  }
+
+  /** Lazily resolve the host vision services (llm + attachments) for one call. */
+  visualServices(): QaVisualServices {
+    const getService = this.#options.getService
+    const attachments = getService?.('attachments') as StructuralAttachmentStore | undefined
+    const llm = getService?.('llm') as StructuralLlmService | undefined
+    return {
+      ...(attachments === undefined ? {} : { attachments }),
+      ...(llm === undefined ? {} : { llm }),
+      ...(this.#options.visionProvider === undefined ? {} : { provider: this.#options.visionProvider }),
+      ...(this.#options.visionModel === undefined ? {} : { model: this.#options.visionModel }),
+      capturesDir: this.#capturesDir(),
+    }
+  }
+
+  /** Evaluate a visual assertion in Explore: capture + model verdict + recording. */
+  async assertVisual(owner: string, session: QaSession, question: string): Promise<unknown> {
+    const capture = await captureLatestVisual(session)
+    const artifactPath = await persistCaptureFile(capture, this.#capturesDir())
+    const finding = await evaluateVisualQuestion(question, capture, this.visualServices())
+    this.#recorder.visualFinding(owner, {
+      question,
+      verdict: finding.verdict,
+      confidence: finding.confidence,
+      reasoning: finding.reasoning,
+    })
+    return {
+      ok: true,
+      kind: 'visual',
+      question,
+      verdict: finding.verdict,
+      confidence: finding.confidence,
+      reasoning: finding.reasoning,
+      ...(finding.reason === undefined ? {} : { reason: finding.reason }),
+      artifact: { path: artifactPath, kind: 'screenshot' },
+    }
+  }
+
+  /** Capture a visual frame for qa_evidence and return metadata + artifact path. */
+  async captureVisualEvidence(session: QaSession, options?: QaVisualObserveOptions): Promise<unknown> {
+    const capture = await captureLatestVisual(session, options)
+    const artifactPath = await persistCaptureFile(capture, this.#capturesDir())
+    const info = toVisualCaptureInfo(capture)
+    return { ...info, artifactPath }
   }
 
   async dispose(): Promise<void> {
@@ -209,8 +284,9 @@ interface ActArgs {
 
 interface AssertArgs {
   owner?: string
-  kind: 'node-present' | 'node-absent' | 'page-url'
-  expected: unknown
+  kind: 'node-present' | 'node-absent' | 'page-url' | 'visual'
+  expected?: unknown
+  question?: string
 }
 
 interface EvidenceArgs {
@@ -218,6 +294,11 @@ interface EvidenceArgs {
   max_console?: number
   max_network?: number
   max_receipts?: number
+  visual?: boolean
+  visual_fingerprint?: string
+  visual_full_page?: boolean
+  visual_max_marks?: number
+  visual_scale?: number
 }
 
 interface RecordExportArgs {
@@ -352,20 +433,28 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAssert = tool<AssertArgs, unknown>({
     name: 'qa_assert',
-    description: 'Evaluate one assertion (node-present, node-absent, or page-url) against a fresh observation of the current session.',
+    description: 'Evaluate one assertion against a fresh observation. node-present/node-absent/page-url are deterministic; kind "visual" captures the current screen and asks the host vision model a question, returning an ADVISORY verdict (yes/no/unclear with confidence and reasoning) that never changes pass/fail. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
     parameters: closedObject({
       owner: strProp,
-      kind: enumOf('node-present', 'node-absent', 'page-url'),
+      kind: enumOf('node-present', 'node-absent', 'page-url', 'visual'),
       expected: {},
-    }, ['kind', 'expected']),
+      question: strProp,
+    }, ['kind']),
     output: outputFor(),
-    timeoutMs: 30_000,
+    timeoutMs: 60_000,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert')
       const owner = ownerFrom(args, exec)
       const manager = await host.managerForOwner(owner)
-      const observation = await manager.session(owner).observe()
+      const session = manager.session(owner)
+      if (args.kind === 'visual') {
+        if (typeof args.question !== 'string' || args.question.trim() === '') {
+          throw new Error('qa_assert visual requires a non-empty question')
+        }
+        return host.assertVisual(owner, session, args.question)
+      }
+      const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert')
+      const observation = await session.observe()
       const evaluation = evaluateAssertion(assertion, observation)
       return {
         ok: true,
@@ -380,24 +469,38 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaEvidence = tool<EvidenceArgs, unknown>({
     name: 'qa_evidence',
-    description: 'Read bounded, redacted evidence: browser console/network records, or computer helper status plus bounded action receipts.',
+    description: 'Read bounded, redacted evidence: browser console/network records, or computer helper status plus bounded action receipts. Set visual: true to also capture the current screen (Set-of-Mark) and return its metadata plus a structured artifact path.',
     parameters: closedObject({
       owner: strProp,
       max_console: intProp,
       max_network: intProp,
       max_receipts: intProp,
+      visual: { type: 'boolean' },
+      visual_fingerprint: strProp,
+      visual_full_page: { type: 'boolean' },
+      visual_max_marks: intProp,
+      visual_scale: intProp,
     }, []),
     output: outputFor(),
-    timeoutMs: 15_000,
+    timeoutMs: 30_000,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       const owner = ownerFrom(args, exec)
       const manager = await host.managerForOwner(owner)
-      return manager.session(owner).evidence({
+      const session = manager.session(owner)
+      const evidence = await session.evidence({
         ...(args.max_console === undefined ? {} : { maxConsole: args.max_console }),
         ...(args.max_network === undefined ? {} : { maxNetwork: args.max_network }),
         ...(args.max_receipts === undefined ? {} : { maxReceipts: args.max_receipts }),
       })
+      if (args.visual !== true) return evidence
+      const visual = await host.captureVisualEvidence(session, {
+        ...(args.visual_fingerprint === undefined ? {} : { fingerprint: args.visual_fingerprint }),
+        ...(args.visual_full_page === undefined ? {} : { fullPage: args.visual_full_page }),
+        ...(args.visual_max_marks === undefined ? {} : { maxMarks: args.visual_max_marks }),
+        ...(args.visual_scale === undefined ? {} : { scale: args.visual_scale }),
+      })
+      return { ...evidence, visual }
     },
     presentCall: () => ({ card: 'generic', title: 'Collect QA evidence' }),
   })
@@ -459,6 +562,7 @@ export function createQaTools(host: QaToolHost): QaTools {
           ownerId: ownerFrom(args, exec),
           ...(args.headless === undefined ? {} : { headless: args.headless }),
           launchUrl: scenario.target.launch,
+          visual: host.visualServices(),
         })
         if (args.outputDir !== undefined) {
           await writeReports(report, { directory: args.outputDir })

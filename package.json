@@ -77,7 +77,9 @@
   "dshHostRuntime": {
     "_comment": "Host-provided runtime services. Never declare them as dependencies or peerDependencies: plain `npm i @zseven-w/dsh-qa` must install with zero @deepseek-ai/* packages (enforced by scripts/smoke-pack.mjs). The DSH host supplies these itself.",
     "services": [
-      "tools"
+      "tools",
+      "attachments",
+      "llm"
     ],
     "typing": "structural"
   }
