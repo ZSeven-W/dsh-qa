@@ -6,6 +6,7 @@ import type {
   BrowserVisualObserveRequest,
   ZSevenBrowserDriver,
 } from '@zseven-w/dsh-browser';
+import { loadLoginState } from '../loginState.ts';
 import type {
   QaAction,
   QaActionReceipt,
@@ -38,9 +39,15 @@ export class BrowserAdapter implements QaDriverAdapter {
   }
 
   async start(ownerId: string, options?: QaStartOptions): Promise<QaSessionInfo> {
+    // WP11: owner-authorized login-state injection is filtered FAIL-CLOSED here,
+    // before any entry reaches the driver. The driver receives only the entries
+    // whose domain/origin exactly matched the authorized origins.
+    const storageState =
+      options?.loginState === undefined ? undefined : await loadLoginState(options.loginState);
     const driverOptions: BrowserSessionStartOptions = {
       ...(options?.url === undefined ? {} : { url: options.url }),
       ...(options?.headless === undefined ? {} : { headless: options.headless }),
+      ...(storageState === undefined ? {} : { storageState }),
     };
     const info = await this.#driver.start(ownerId, driverOptions);
     return { page: info.page, headless: info.headless };

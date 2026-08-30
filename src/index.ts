@@ -29,4 +29,5 @@ export * from './explore/index.ts';
 export * from './replay/index.ts';
 export * from './reporters/index.ts';
 export * from './redaction/index.ts';
+export * from './loginState.ts';
 export * from './vision.ts';

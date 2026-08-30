@@ -3,6 +3,8 @@
 // in src/adapters/. This interface is defined and implemented in this
 // repository only — the driver packages never import or implement it.
 
+import type { QaLoginStateConfig } from '../loginState.ts';
+
 export type QaReceiptStatus = 'confirmed' | 'unknown' | 'rejected' | 'failed';
 
 export interface QaPageRef {
@@ -117,6 +119,8 @@ export interface QaStopResult {
 export interface QaStartOptions {
   url?: string;
   headless?: boolean;
+  /** Browser-only: owner-authorized, scoped login state (see loginState.ts). */
+  loginState?: QaLoginStateConfig;
   /** Computer-only: exact bundle id the session must bind to. */
   bundleId?: string;
   /** Computer-only: exact live PID (optionally paired with bundleId). */

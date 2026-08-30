@@ -211,6 +211,7 @@ export async function runScenario(
     await session.start({
       url: launch,
       ...(options.headless === undefined ? {} : { headless: options.headless }),
+      ...(scenario.target.loginState === undefined ? {} : { loginState: scenario.target.loginState }),
     });
   } catch (error) {
     await session.stop().catch(() => {});

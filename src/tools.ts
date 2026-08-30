@@ -263,6 +263,8 @@ interface SessionStartArgs {
   pid?: number
   window_number?: number
   window_title?: string
+  /** Browser-only: owner-authorized login state { source: <state-file path>, origins: [<exact origins...>] }. */
+  login_state?: { source: string; origins: string[] }
 }
 
 interface ObserveArgs {
@@ -347,7 +349,7 @@ interface ReplayArgs {
 export function createQaTools(host: QaToolHost): QaTools {
   const qaSessionStart = tool<SessionStartArgs, unknown>({
     name: 'qa_session_start',
-    description: 'Start one QA session for this agent scope. Choose a browser or computer driver; the chosen driver is bound to the owner for the session and loaded lazily on first use.',
+    description: 'Start one QA session for this agent scope. Choose a browser or computer driver; the chosen driver is bound to the owner for the session and loaded lazily on first use. Browser sessions accept an optional login_state: OWNER-AUTHORIZED, SCOPED, READ-ONLY login-state injection from an explicit Playwright storageState JSON file. Only entries whose origin/domain exactly matches the authorized origins are injected into a FRESH ephemeral profile (destroyed on stop); entries outside the list are never loaded, and a file that parses, has no authorized entries, or holds unclassifiable entries fails the start. login_state is browser-only.',
     parameters: closedObject({
       owner: strProp,
       driver: enumOf('browser', 'computer'),
@@ -357,6 +359,10 @@ export function createQaTools(host: QaToolHost): QaTools {
       pid: intProp,
       window_number: intProp,
       window_title: strProp,
+      login_state: closedObject({
+        source: strProp,
+        origins: { type: 'array', items: strProp },
+      }, ['source', 'origins']),
     }, []),
     output: outputFor(),
     timeoutMs: 60_000,
@@ -373,6 +379,7 @@ export function createQaTools(host: QaToolHost): QaTools {
         ...(args.pid === undefined ? {} : { pid: args.pid }),
         ...(args.window_number === undefined ? {} : { windowNumber: args.window_number }),
         ...(args.window_title === undefined ? {} : { windowTitle: args.window_title }),
+        ...(args.login_state === undefined ? {} : { loginState: args.login_state }),
       })
     },
     presentCall: () => ({ card: 'generic', title: 'Start QA session' }),

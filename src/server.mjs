@@ -144,6 +144,7 @@ function guard(handler) {
 
 server.tool(
   'qa_session_start',
+  'Start one QA session for this agent scope. Choose a browser or computer driver; the chosen driver is bound to the owner for the session and loaded lazily on first use. Browser sessions accept an optional login_state: OWNER-AUTHORIZED, SCOPED, READ-ONLY login-state injection from an explicit Playwright storageState JSON file. Only entries whose origin/domain exactly matches the authorized origins are injected into a FRESH ephemeral profile (destroyed on stop); entries outside the list are never loaded, and a file that fails to parse, has no authorized entries, or holds unclassifiable entries fails the start. login_state is browser-only.',
   {
     owner: z.string().optional(),
     driver: z.enum(['browser', 'computer']).optional(),
@@ -153,6 +154,10 @@ server.tool(
     pid: z.number().int().optional(),
     window_number: z.number().int().optional(),
     window_title: z.string().optional(),
+    login_state: z.object({
+      source: z.string(),
+      origins: z.array(z.string()),
+    }).optional(),
   },
   guard(async (args) => {
     const owner = ownerFrom(args);
@@ -166,6 +171,7 @@ server.tool(
       ...(args.pid === undefined ? {} : { pid: args.pid }),
       ...(args.window_number === undefined ? {} : { windowNumber: args.window_number }),
       ...(args.window_title === undefined ? {} : { windowTitle: args.window_title }),
+      ...(args.login_state === undefined ? {} : { loginState: args.login_state }),
     });
     return textResult(info);
   }),

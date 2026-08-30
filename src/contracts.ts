@@ -5,6 +5,7 @@
 // assertions evaluated after all steps.
 
 import type { QaActionReceipt, QaEvidence } from './session/adapter.ts';
+import type { QaLoginStateConfig } from './loginState.ts';
 
 export type QaDriverKind = 'browser' | 'computer';
 
@@ -36,6 +37,8 @@ export interface QaScenarioMeta {
 export interface QaScenarioTarget {
   /** How the driver reaches the app under test (fixture URL or app bundle id). */
   launch: string;
+  /** Browser-only: owner-authorized, scoped login-state injection (see loginState.ts). */
+  loginState?: QaLoginStateConfig;
 }
 
 /** Semantic predicate a scenario action/assertion matches against observable nodes. */

@@ -17,6 +17,7 @@ import type {
   QaStep,
   QaVisualAssertion,
 } from '../contracts.ts';
+import { LoginStateError, validateLoginStateConfig, type QaLoginStateConfig } from '../loginState.ts';
 
 export class ScenarioValidationError extends Error {
   readonly position: string;
@@ -91,7 +92,7 @@ const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer'];
 const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url', 'node-in-viewport'];
 const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as const;
 const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes'] as const;
-const TARGET_FIELDS = ['launch'] as const;
+const TARGET_FIELDS = ['launch', 'loginState'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description'] as const;
 const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
@@ -139,7 +140,17 @@ function validateTarget(value: unknown, position: string, driver: QaDriverKind):
   if (driver === 'browser' && !isValidHttpUrl(launch)) {
     fail(position + '.launch', 'expected an http(s) URL');
   }
-  return { launch };
+  let loginState: QaLoginStateConfig | undefined;
+  if (obj.loginState !== undefined) {
+    if (driver !== 'browser') fail(position + '.loginState', 'browser-only field');
+    try {
+      loginState = validateLoginStateConfig(obj.loginState, position + '.loginState');
+    } catch (error) {
+      if (error instanceof LoginStateError) fail(position + '.loginState', error.message);
+      throw error;
+    }
+  }
+  return { launch, ...(loginState === undefined ? {} : { loginState }) };
 }
 
 function validatePredicate(value: unknown, position: string): QaNodePredicate {
