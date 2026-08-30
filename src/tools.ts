@@ -274,17 +274,41 @@ interface ObserveArgs {
 
 interface ActArgs {
   owner?: string
-  action: 'click' | 'fill' | 'press' | 'navigate' | 'focus' | 'type' | 'key'
+  action: 'click' | 'fill' | 'press' | 'navigate' | 'focus' | 'type' | 'key' | 'scroll' | 'select' | 'hover'
   ref?: string
   text?: string
   key?: string
   url?: string
   modifiers?: string[]
+  direction?: 'up' | 'down'
+  amount?: string | number
+  option?: string
+}
+
+/**
+ * Validates a scroll amount from the flat qa_act args: "page" (both drivers),
+ * "line" (computer only), or a finite non-negative pixel count. The session
+ * core and driver adapters reject anything the target driver cannot execute.
+ */
+function scrollAmountFor(
+  value: string | number | undefined,
+  allowLine: boolean,
+): 'page' | 'line' | number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error('qa_act scroll amount must be a finite non-negative number');
+    }
+    return value;
+  }
+  if (value === 'page') return 'page';
+  if (allowLine && value === 'line') return 'line';
+  throw new Error('qa_act scroll amount must be "page"' + (allowLine ? ', "line",' : '') + ' or a finite non-negative number');
 }
 
 interface AssertArgs {
   owner?: string
-  kind: 'node-present' | 'node-absent' | 'page-url' | 'visual'
+  kind: 'node-present' | 'node-absent' | 'page-url' | 'node-in-viewport' | 'visual'
   expected?: unknown
   question?: string
 }
@@ -380,15 +404,18 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAct = tool<ActArgs, unknown>({
     name: 'qa_act',
-    description: 'Perform exactly one action. click/fill/press/navigate are browser verbs; focus/type/key are computer verbs. click/fill/press/focus/type/key require a ref from the latest qa_observe.',
+    description: 'Perform exactly one action. Browser verbs: click/fill/press/navigate/scroll/select/hover. Computer verbs: focus/type/key/scroll. scroll (browser) takes ref (scroll-into-view) or direction+amount (viewport page scroll); scroll (computer) takes ref+direction+amount; select takes ref+option; hover takes ref. click/fill/press/focus/type/key/select/hover require a ref from the latest qa_observe.',
     parameters: closedObject({
       owner: strProp,
-      action: enumOf('click', 'fill', 'press', 'navigate', 'focus', 'type', 'key'),
+      action: enumOf('click', 'fill', 'press', 'navigate', 'focus', 'type', 'key', 'scroll', 'select', 'hover'),
       ref: strProp,
       text: strProp,
       key: strProp,
       url: strProp,
       modifiers: { type: 'array', items: strProp },
+      direction: enumOf('up', 'down'),
+      amount: { type: ['string', 'number'] },
+      option: strProp,
     }, ['action']),
     output: outputFor(),
     timeoutMs: 30_000,
@@ -423,8 +450,40 @@ export function createQaTools(host: QaToolHost): QaTools {
       } else if (args.action === 'navigate') {
         if (args.url === undefined) throw new Error('qa_act navigate requires url')
         action = { kind: 'navigate', url: args.url }
+      } else if (args.action === 'scroll') {
+        if (args.direction !== undefined && args.direction !== 'up' && args.direction !== 'down') {
+          throw new Error('qa_act scroll direction must be "up" or "down"')
+        }
+        if (args.ref !== undefined && args.direction !== undefined) {
+          const amount = scrollAmountFor(args.amount, true)
+          action = {
+            kind: 'scroll',
+            ref: args.ref,
+            direction: args.direction,
+            ...(amount === undefined ? {} : { amount }),
+          }
+        } else if (args.ref !== undefined) {
+          action = { kind: 'scroll', ref: args.ref }
+        } else if (args.direction !== undefined) {
+          const amount = scrollAmountFor(args.amount, false) as 'page' | number | undefined
+          action = {
+            kind: 'scroll',
+            direction: args.direction,
+            ...(amount === undefined ? {} : { amount }),
+          }
+        } else {
+          throw new Error('qa_act scroll requires ref and/or direction')
+        }
+      } else if (args.action === 'select') {
+        if (args.ref === undefined || args.option === undefined || args.option.trim() === '') {
+          throw new Error('qa_act select requires ref and a non-empty option')
+        }
+        action = { kind: 'select', ref: args.ref, option: args.option }
+      } else if (args.action === 'hover') {
+        if (args.ref === undefined) throw new Error('qa_act hover requires ref')
+        action = { kind: 'hover', ref: args.ref }
       } else {
-        throw new Error('qa_act action must be click, fill, press, navigate, focus, type, or key')
+        throw new Error('qa_act action must be click, fill, press, navigate, focus, type, key, scroll, select, or hover')
       }
       return manager.session(owner).act(action)
     },
@@ -433,10 +492,10 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAssert = tool<AssertArgs, unknown>({
     name: 'qa_assert',
-    description: 'Evaluate one assertion against a fresh observation. node-present/node-absent/page-url are deterministic; kind "visual" captures the current screen and asks the host vision model a question, returning an ADVISORY verdict (yes/no/unclear with confidence and reasoning) that never changes pass/fail. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
+    description: 'Evaluate one assertion against a fresh observation. node-present/node-absent/node-in-viewport/page-url are deterministic; kind "visual" captures the current screen and asks the host vision model a question, returning an ADVISORY verdict (yes/no/unclear with confidence and reasoning) that never changes pass/fail. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
     parameters: closedObject({
       owner: strProp,
-      kind: enumOf('node-present', 'node-absent', 'page-url', 'visual'),
+      kind: enumOf('node-present', 'node-absent', 'page-url', 'node-in-viewport', 'visual'),
       expected: {},
       question: strProp,
     }, ['kind']),

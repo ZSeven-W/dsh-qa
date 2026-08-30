@@ -191,16 +191,32 @@ server.tool(
   }),
 );
 
+function scrollAmountFor(value, allowLine) {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error('qa_act scroll amount must be a finite non-negative number');
+    }
+    return value;
+  }
+  if (value === 'page') return 'page';
+  if (allowLine && value === 'line') return 'line';
+  throw new Error('qa_act scroll amount must be "page"' + (allowLine ? ', "line",' : '') + ' or a finite non-negative number');
+}
+
 server.tool(
   'qa_act',
   {
     owner: z.string().optional(),
-    action: z.enum(['click', 'fill', 'press', 'navigate', 'focus', 'type', 'key']),
+    action: z.enum(['click', 'fill', 'press', 'navigate', 'focus', 'type', 'key', 'scroll', 'select', 'hover']),
     ref: z.string().optional(),
     text: z.string().optional(),
     key: z.string().optional(),
     url: z.string().optional(),
     modifiers: z.array(z.string()).optional(),
+    direction: z.enum(['up', 'down']).optional(),
+    amount: z.union([z.string(), z.number()]).optional(),
+    option: z.string().optional(),
   },
   guard(async (args) => {
     const owner = ownerFrom(args);
@@ -229,9 +245,41 @@ server.tool(
         key: args.key,
         ...(args.modifiers === undefined ? {} : { modifiers: args.modifiers }),
       };
-    } else {
+    } else if (args.action === 'navigate') {
       if (args.url === undefined) throw new Error('qa_act navigate requires url');
       action = { kind: 'navigate', url: args.url };
+    } else if (args.action === 'scroll') {
+      if (args.direction !== undefined && args.direction !== 'up' && args.direction !== 'down') {
+        throw new Error('qa_act scroll direction must be "up" or "down"');
+      }
+      if (args.ref !== undefined && args.direction !== undefined) {
+        const amount = scrollAmountFor(args.amount, true);
+        action = {
+          kind: 'scroll',
+          ref: args.ref,
+          direction: args.direction,
+          ...(amount === undefined ? {} : { amount }),
+        };
+      } else if (args.ref !== undefined) {
+        action = { kind: 'scroll', ref: args.ref };
+      } else if (args.direction !== undefined) {
+        const amount = scrollAmountFor(args.amount, false);
+        action = {
+          kind: 'scroll',
+          direction: args.direction,
+          ...(amount === undefined ? {} : { amount }),
+        };
+      } else {
+        throw new Error('qa_act scroll requires ref and/or direction');
+      }
+    } else if (args.action === 'select') {
+      if (args.ref === undefined || args.option === undefined || args.option.trim() === '') {
+        throw new Error('qa_act select requires ref and a non-empty option');
+      }
+      action = { kind: 'select', ref: args.ref, option: args.option };
+    } else {
+      if (args.ref === undefined) throw new Error('qa_act hover requires ref');
+      action = { kind: 'hover', ref: args.ref };
     }
     const result = await manager.session(owner).act(action);
     return textResult(result);
@@ -287,7 +335,7 @@ server.tool(
   'qa_assert',
   {
     owner: z.string().optional(),
-    kind: z.enum(['node-present', 'node-absent', 'page-url', 'visual']),
+    kind: z.enum(['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'visual']),
     expected: z.unknown().optional(),
     question: z.string().optional(),
   },

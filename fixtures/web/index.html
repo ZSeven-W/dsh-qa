@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>dsh-qa web fixture</title>
+  <style>
+    .spacer { height: 1000px; }
+    .footer-spacer { height: 800px; }
+    #menu-dropdown { border: 1px solid #ccc; padding: 4px; }
+  </style>
 </head>
 <body>
   <main>
@@ -16,6 +21,34 @@
     <div id="result" role="status" aria-live="polite">IDLE</div>
     <button type="button" id="publish">Publish release</button>
   </main>
+
+  <!-- Content that pushes a second form far below the fold, so reaching it
+       exercises the browser scroll verb end to end. -->
+  <div class="spacer" aria-hidden="true"></div>
+
+  <section id="second-form-section">
+    <h2>Second form</h2>
+    <form>
+      <label for="second-select">Second select</label>
+      <select id="second-select">
+        <option value="">Choose an option</option>
+        <option value="alpha">Alpha</option>
+        <option value="beta">Beta</option>
+      </select>
+    </form>
+    <div id="second-result" role="status" aria-live="polite">SECOND_IDLE</div>
+  </section>
+
+  <section id="hover-menu-section">
+    <button type="button" id="menu-trigger">Menu</button>
+    <div id="menu-dropdown" role="menu" hidden>
+      <button type="button" id="menu-item" role="menuitem">Menu item</button>
+    </div>
+    <div id="hover-result" role="status" aria-live="polite">HOVER_IDLE</div>
+  </section>
+
+  <div class="footer-spacer" aria-hidden="true"></div>
+
   <script>
     (function () {
       document.getElementById('release-name').addEventListener('input', function (event) {
@@ -23,6 +56,20 @@
       });
       document.getElementById('validate').addEventListener('click', function () {
         document.getElementById('result').textContent = 'PASS';
+      });
+      // The select changes visible state, giving the select verb a
+      // fresh-observation semantic delta the exporter can prove.
+      document.getElementById('second-select').addEventListener('change', function (event) {
+        document.getElementById('second-result').textContent =
+          event.target.value ? 'SECOND_' + event.target.value.toUpperCase() : 'SECOND_IDLE';
+      });
+      // Hover reveals the menu item; the reveal is sticky so the subsequent
+      // click can move the pointer onto the item without hiding it again.
+      document.getElementById('menu-trigger').addEventListener('mouseenter', function () {
+        document.getElementById('menu-dropdown').hidden = false;
+      });
+      document.getElementById('menu-item').addEventListener('click', function () {
+        document.getElementById('hover-result').textContent = 'MENU_CLICKED';
       });
       // Synthetic bearer credential placed where console evidence capture sees
       // it; the driver must redact it before it reaches evidence.
