@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { projectRedactedJsonValue, redactText } from '../redaction/index.ts';
+import { toVisualCaptureInfo } from '../session/adapter.ts';
 import type {
   QaAction,
   QaActionReceipt,
@@ -13,6 +14,8 @@ import type {
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
+  QaVisualCapture,
+  QaVisualObserveOptions,
 } from '../session/adapter.ts';
 import type {
   QaRecordedAction,
@@ -315,6 +318,48 @@ export class QaTrajectoryRecorder {
     }
   }
 
+  visualCapture(ownerId: string, capture: QaVisualCapture): void {
+    const trajectory = this.#trajectories.get(ownerId);
+    if (trajectory === undefined) return;
+    try {
+      const safeCapture = cloneRedacted(toVisualCaptureInfo(capture)).value;
+      this.#push(trajectory, {
+        sequence: this.#sequence(trajectory),
+        at: new Date().toISOString(),
+        kind: 'visual-capture',
+        capture: safeCapture,
+      });
+    } catch (error) {
+      const issue = 'visual capture recording failed: ' + safeReason(error);
+      trajectory.recordingIssues.push(issue);
+      this.#recordingError(trajectory, 'visual', issue, null);
+    }
+  }
+
+  visualFinding(
+    ownerId: string,
+    finding: { question: string; verdict: 'yes' | 'no' | 'unclear'; confidence: number; reasoning: string },
+  ): void {
+    const trajectory = this.#trajectories.get(ownerId);
+    if (trajectory === undefined) return;
+    try {
+      const safe = cloneRedacted(finding).value;
+      this.#push(trajectory, {
+        sequence: this.#sequence(trajectory),
+        at: new Date().toISOString(),
+        kind: 'visual-finding',
+        question: safe.question,
+        verdict: safe.verdict,
+        confidence: safe.confidence,
+        reasoning: safe.reasoning,
+      });
+    } catch (error) {
+      const issue = 'visual finding recording failed: ' + safeReason(error);
+      trajectory.recordingIssues.push(issue);
+      this.#recordingError(trajectory, 'visual', issue, null);
+    }
+  }
+
   stop(ownerId: string, result: QaStopResult): void {
     const trajectory = this.#trajectories.get(ownerId);
     if (trajectory === undefined) return;
@@ -340,6 +385,9 @@ export class QaTrajectoryRecorder {
     for (const [key, value] of trajectory.observations) observations[key] = value;
     // Capture already performed redaction field-by-field. A second whole-tree
     // projection here would destroy the validated operational Replay URLs.
+    const visualFindings = trajectory.events.filter(
+      (event): event is import('./types.ts').QaTrajectoryVisualFindingEvent => event.kind === 'visual-finding',
+    );
     return structuredClone({
       schemaVersion: 1 as const,
       driver: trajectory.driver,
@@ -349,6 +397,7 @@ export class QaTrajectoryRecorder {
       observations,
       actions: trajectory.actions,
       evidenceReferences: trajectory.evidenceReferences,
+      visualFindings,
       recordingIssues: trajectory.recordingIssues,
     });
   }
@@ -404,7 +453,7 @@ export class QaTrajectoryRecorder {
 
   #recordingError(
     trajectory: MutableTrajectory,
-    operation: 'start' | 'observation' | 'action' | 'receipt' | 'evidence' | 'stop',
+    operation: 'start' | 'observation' | 'action' | 'receipt' | 'evidence' | 'stop' | 'visual',
     reason: string,
     actionId: string | null,
   ): void {
@@ -492,6 +541,15 @@ export class RecordingQaDriverAdapter implements QaDriverAdapter {
     const evidence = await this.#delegate.evidence(ownerId, options);
     this.#safe(() => this.#recorder.evidence(ownerId, evidence));
     return evidence;
+  }
+
+  async visualObserve(ownerId: string, options?: QaVisualObserveOptions): Promise<QaVisualCapture> {
+    if (typeof this.#delegate.visualObserve !== 'function') {
+      throw new Error('the ' + this.kind + ' driver does not support visual capture');
+    }
+    const capture = await this.#delegate.visualObserve(ownerId, options);
+    this.#safe(() => this.#recorder.visualCapture(ownerId, capture));
+    return capture;
   }
 
   async stop(ownerId: string): Promise<QaStopResult> {

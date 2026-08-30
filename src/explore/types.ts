@@ -8,6 +8,7 @@ import type {
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
+  QaVisualCaptureInfo,
 } from '../session/adapter.ts';
 
 export interface QaTrajectoryStartEvent {
@@ -67,10 +68,29 @@ export interface QaTrajectoryRecordingErrorEvent {
   sequence: number;
   at: string;
   kind: 'recording-error';
-  operation: 'start' | 'observation' | 'action' | 'receipt' | 'evidence' | 'stop';
+  operation: 'start' | 'observation' | 'action' | 'receipt' | 'evidence' | 'stop' | 'visual';
   /** Redacted structural reason; raw payload bytes are never retained. */
   reason: string;
   actionId: string | null;
+}
+
+/** A visual capture recorded during Explore (metadata only, never the raw PNG). */
+export interface QaTrajectoryVisualCaptureEvent {
+  sequence: number;
+  at: string;
+  kind: 'visual-capture';
+  capture: QaVisualCaptureInfo;
+}
+
+/** An advisory visual finding recorded during Explore. */
+export interface QaTrajectoryVisualFindingEvent {
+  sequence: number;
+  at: string;
+  kind: 'visual-finding';
+  question: string;
+  verdict: 'yes' | 'no' | 'unclear';
+  confidence: number;
+  reasoning: string;
 }
 
 export type QaTrajectoryEvent =
@@ -79,6 +99,8 @@ export type QaTrajectoryEvent =
   | QaTrajectoryActionEvent
   | QaTrajectoryReceiptEvent
   | QaTrajectoryEvidenceEvent
+  | QaTrajectoryVisualCaptureEvent
+  | QaTrajectoryVisualFindingEvent
   | QaTrajectoryStopEvent
   | QaTrajectoryRecordingErrorEvent;
 
@@ -102,6 +124,7 @@ export interface QaTrajectorySnapshot {
   observations: Readonly<Record<string, QaObservation>>;
   actions: readonly QaRecordedAction[];
   evidenceReferences: readonly string[];
+  visualFindings: readonly QaTrajectoryVisualFindingEvent[];
   recordingIssues: readonly string[];
 }
 

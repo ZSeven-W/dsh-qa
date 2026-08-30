@@ -252,6 +252,10 @@ function buildScenario(
 
   if (steps.length === 0) return { scenario: null, excluded };
   const fallbackName = 'explore-' + trajectory.driver + '-' + trajectory.startedAt.slice(0, 10);
+  // Explore visual findings are informational notes, never blocking assertions:
+  // only the deterministic question text is surfaced, so the exported scenario
+  // replays byte-identically without a vision model available.
+  const visualNotes = trajectory.visualFindings.map((finding) => 'visual finding: ' + finding.question);
   const rawScenario: QaScenario = {
     meta: {
       name: redactText(options.name?.trim() || fallbackName),
@@ -261,6 +265,7 @@ function buildScenario(
       ),
       driver: trajectory.driver,
       createdAt: new Date().toISOString(),
+      ...(visualNotes.length === 0 ? {} : { notes: visualNotes }),
     },
     target: { launch: trajectory.launch },
     steps,

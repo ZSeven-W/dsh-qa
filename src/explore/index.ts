@@ -10,4 +10,6 @@ export type {
   QaRecordingAdapter,
   QaTrajectoryEvent,
   QaTrajectorySnapshot,
+  QaTrajectoryVisualCaptureEvent,
+  QaTrajectoryVisualFindingEvent,
 } from './types.ts';
