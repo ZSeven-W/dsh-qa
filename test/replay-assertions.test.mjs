@@ -51,3 +51,21 @@ test('evaluateAssertion page-url matches exact and contains', () => {
   const miss = evaluateAssertion({ kind: 'page-url', expected: { contains: 'example.com' } }, observation);
   assert.equal(miss.passed, false);
 });
+
+test('evaluateAssertion node-in-viewport requires the node to be in the viewport', () => {
+  const obs = {
+    page: observation.page,
+    nodes: [
+      { ...observation.nodes[0], inViewport: false },
+      { ...observation.nodes[1], inViewport: true },
+    ],
+    truncated: false,
+  };
+  const pass = evaluateAssertion({ kind: 'node-in-viewport', expected: { role: 'button', name: 'Run validation' } }, obs);
+  assert.equal(pass.passed, true);
+  assert.deepEqual(pass.observed, [{ role: 'button', name: 'Run validation', tag: 'button' }]);
+
+  const offViewport = evaluateAssertion({ kind: 'node-in-viewport', expected: { role: 'textbox', name: 'Release name' } }, obs);
+  assert.equal(offViewport.passed, false);
+  assert.deepEqual(offViewport.observed, []);
+});

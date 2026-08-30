@@ -80,7 +80,7 @@ test('non-sequential step index is rejected', () => {
 
 test('malformed action kind is rejected', () => {
   const bad = validScenario();
-  bad.steps[0].action = { kind: 'hover', target: { role: 'button' } };
+  bad.steps[0].action = { kind: 'teleport', target: { role: 'button' } };
   expectPosition(() => validateScenario(bad), 'steps[0].action.kind');
 });
 
@@ -129,4 +129,59 @@ test('validateAssertion accepts a well-formed node-present assertion', () => {
   );
   assert.equal(assertion.kind, 'node-present');
   assert.deepEqual(assertion.expected, { role: 'status', name: 'PASS' });
+});
+
+test('scroll/select/hover step shapes validate (closed schema)', () => {
+  const scrollByTarget = validScenario();
+  scrollByTarget.steps[0].action = { kind: 'scroll', target: { role: 'button', name: 'Menu' } };
+  assert.equal(validateScenario(scrollByTarget).steps[0].action.kind, 'scroll');
+
+  const scrollByDirection = validScenario();
+  scrollByDirection.steps[0].action = { kind: 'scroll', direction: 'down', amount: 'page' };
+  assert.deepEqual(validateScenario(scrollByDirection).steps[0].action, { kind: 'scroll', direction: 'down', amount: 'page' });
+
+  const select = validScenario();
+  select.steps[0].action = { kind: 'select', target: { role: 'combobox', name: 'Second select' }, option: 'Alpha' };
+  assert.deepEqual(validateScenario(select).steps[0].action, {
+    kind: 'select', target: { role: 'combobox', name: 'Second select' }, option: 'Alpha',
+  });
+
+  const hover = validScenario();
+  hover.steps[0].action = { kind: 'hover', target: { role: 'button', name: 'Menu' } };
+  assert.deepEqual(validateScenario(hover).steps[0].action, { kind: 'hover', target: { role: 'button', name: 'Menu' } });
+});
+
+test('select step without option is rejected', () => {
+  const bad = validScenario();
+  bad.steps[0].action = { kind: 'select', target: { role: 'combobox', name: 'Second select' } };
+  expectPosition(() => validateScenario(bad), 'steps[0].action.option');
+});
+
+test('scroll with a bogus amount is rejected', () => {
+  const bad = validScenario();
+  bad.steps[0].action = { kind: 'scroll', direction: 'down', amount: 'line' };
+  expectPosition(() => validateScenario(bad), 'steps[0].action.amount');
+
+  const negative = validScenario();
+  negative.steps[0].action = { kind: 'scroll', direction: 'down', amount: -5 };
+  expectPosition(() => validateScenario(negative), 'steps[0].action.amount');
+});
+
+test('scroll must specify exactly one of target or direction', () => {
+  const both = validScenario();
+  both.steps[0].action = { kind: 'scroll', target: { role: 'button' }, direction: 'down' };
+  expectPosition(() => validateScenario(both), 'steps[0].action');
+
+  const neither = validScenario();
+  neither.steps[0].action = { kind: 'scroll' };
+  expectPosition(() => validateScenario(neither), 'steps[0].action');
+});
+
+test('node-in-viewport assertion validates and its expected is a predicate', () => {
+  const assertion = validateAssertion(
+    { kind: 'node-in-viewport', expected: { role: 'combobox', name: 'Second select' } },
+    'qa_assert',
+  );
+  assert.equal(assertion.kind, 'node-in-viewport');
+  assert.deepEqual(assertion.expected, { role: 'combobox', name: 'Second select' });
 });

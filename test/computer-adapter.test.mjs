@@ -180,3 +180,20 @@ test('evidence projects helper status; stop disposes the scope and dispose the d
   assert.ok(calls.some((c) => c[0] === 'dispose'))
 })
 
+test('computer adapter passes scroll through and rejects select/hover with a driver-naming error', async () => {
+  const { driver, calls } = fakeDriver()
+  const adapter = new ComputerAdapter(driver)
+  await adapter.start('a', { bundleId: APP.bundleId })
+
+  const receiptResult = await adapter.act('a', { kind: 'scroll', ref: 'r1', direction: 'down', amount: 'line' })
+  assert.equal(receiptResult.status, 'confirmed')
+  const actCall = calls.find((c) => c[0] === 'act')
+  assert.deepEqual(actCall[1], { kind: 'scroll', ref: 'r1', direction: 'down', amount: 'line' })
+
+  await assert.rejects(adapter.act('a', { kind: 'select', ref: 'r1', option: 'Alpha' }), /computer driver.*select/)
+  await assert.rejects(adapter.act('a', { kind: 'hover', ref: 'r1' }), /computer driver.*hover/)
+  // Browser-only scroll shapes (ref-only or direction-only) are rejected, never silently dropped.
+  await assert.rejects(adapter.act('a', { kind: 'scroll', ref: 'r1' }), /computer driver.*ref/)
+  await assert.rejects(adapter.act('a', { kind: 'scroll', direction: 'down' }), /computer driver.*ref/)
+})
+
