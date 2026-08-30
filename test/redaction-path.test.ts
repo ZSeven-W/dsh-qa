@@ -68,6 +68,36 @@ test('projectArtifactPath canonicalizes symlinked roots and inputs', async () =>
   }
 })
 
+test('projectArtifactPath redacts a symlink under a root that points outside it', async () => {
+  // Regression (Medium, coverage-only): the happy-path symlink test above proves
+  // aliasing of a symlinked ROOT; this pins the escape case. A symlink placed
+  // UNDER the artifacts root that realpaths OUTSIDE it must project to
+  // [REDACTED] whole. projectArtifactPath realpaths the candidate before the
+  // containment check, so this is already the behavior - the test just makes
+  // sure a regression that kept the happy path green cannot drop it silently.
+  const base = await mkdtemp(join(tmpdir(), 'dsh-qa-path-escape-'))
+  try {
+    const artifacts = join(base, 'artifacts')
+    const outside = join(base, 'outside')
+    await mkdir(artifacts, { recursive: true })
+    await mkdir(outside, { recursive: true })
+    await writeFile(join(outside, 'secret.txt'), 'x')
+    const roots = { workspace: join(base, 'ws'), temp: join(base, 'tmp'), artifacts }
+
+    // A file symlink under the artifacts root pointing at an outside file.
+    const fileLink = join(artifacts, 'escape-link')
+    await symlink(join(outside, 'secret.txt'), fileLink)
+    assert.equal(projectArtifactPath(fileLink, roots), '[REDACTED]')
+
+    // A directory symlink under the artifacts root pointing at the outside dir.
+    const dirLink = join(artifacts, 'escape-dir')
+    await symlink(outside, dirLink)
+    assert.equal(projectArtifactPath(join(dirLink, 'secret.txt'), roots), '[REDACTED]')
+  } finally {
+    await rm(base, { recursive: true, force: true })
+  }
+})
+
 function makeReport(artifacts) {
   return {
     schemaVersion: 1,
