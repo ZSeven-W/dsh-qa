@@ -75,6 +75,20 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
       ' (observed: ' + TICK + md(inline(assertion.observed, roots)) + TICK + ')',
     );
   }
+  if (report.advisory !== undefined && report.advisory.length > 0) {
+    lines.push('');
+    lines.push('## Advisory');
+    for (const item of report.advisory) {
+      lines.push('- question: ' + md(item.question));
+      lines.push('  - verdict: ' + md(item.verdict) + ' (confidence ' + String(item.confidence) + ')');
+      lines.push('  - reasoning: ' + md(item.reasoning));
+      if (item.reason !== undefined) lines.push('  - reason: ' + md(item.reason));
+      if (item.artifact !== undefined) {
+        const projectedPath = projectArtifactPath(item.artifact.path, roots);
+        lines.push('  - artifact: ' + TICK + escapeLoneSurrogates(projectedPath) + TICK);
+      }
+    }
+  }
   if (report.failure !== undefined) {
     lines.push('');
     lines.push('## Failure');

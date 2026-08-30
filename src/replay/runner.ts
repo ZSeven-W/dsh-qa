@@ -1,4 +1,8 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
+  QaAdvisoryResult,
+  QaArtifact,
   QaAssertionResult,
   QaNodePredicate,
   QaReproductionStep,
@@ -8,8 +12,9 @@ import type {
   QaScenarioAction,
   QaStepResult,
 } from '../contracts.ts';
-import type { QaAction, QaActionReceipt, QaDriverAdapter, QaEvidence, QaObservation } from '../session/adapter.ts';
-import { QaSession, type QaActResult } from '../session/session.ts';
+import type { QaAction, QaActionReceipt, QaDriverAdapter, QaEvidence, QaObservation, QaVisualCapture } from '../session/adapter.ts';
+import { captureLatestVisual, QaSession, type QaActResult } from '../session/session.ts';
+import { evaluateVisualQuestion, persistCaptureFile, type QaVisualServices } from '../vision.ts';
 import { evaluateAssertion, matchesNode } from './assertions.ts';
 
 export interface ReplayRunOptions {
@@ -17,6 +22,8 @@ export interface ReplayRunOptions {
   headless?: boolean;
   /** Override target.launch (e.g. a dynamically bound fixture port). */
   launchUrl?: string;
+  /** Optional vision services for advisory visual assertions. */
+  visual?: QaVisualServices;
 }
 
 function errorMessage(error: unknown): string {
@@ -94,6 +101,72 @@ function blockedReport(scenario: QaScenario, startedAt: string, message: string)
   };
 }
 
+function advisoryUnclear(question: string, reasoning: string, reason: string, description?: string): QaAdvisoryResult {
+  return {
+    kind: 'visual',
+    question,
+    verdict: 'unclear',
+    confidence: 0,
+    reasoning,
+    reason,
+    ...(description === undefined ? {} : { description }),
+  };
+}
+
+/**
+ * Execute advisory visual assertions against the final state. This never
+ * throws and never changes the run status: capture failures and an absent
+ * vision model degrade each finding to 'unclear' with a stable reason.
+ */
+async function executeAdvisory(
+  scenario: QaScenario,
+  session: QaSession,
+  services: QaVisualServices | undefined,
+  capturesDir: string,
+): Promise<{ artifacts: QaArtifact[]; advisory: QaAdvisoryResult[] }> {
+  const advisory = scenario.advisory ?? [];
+  const artifacts: QaArtifact[] = [];
+  const results: QaAdvisoryResult[] = [];
+  if (advisory.length === 0) return { artifacts, advisory: results };
+
+  let capture: QaVisualCapture;
+  try {
+    capture = await captureLatestVisual(session);
+  } catch (error) {
+    for (const assertion of advisory) {
+      results.push(advisoryUnclear(assertion.question, errorMessage(error), 'visual-capture-failed', assertion.description));
+    }
+    return { artifacts, advisory: results };
+  }
+
+  let artifactPath: string;
+  try {
+    artifactPath = await persistCaptureFile(capture, capturesDir);
+  } catch (error) {
+    for (const assertion of advisory) {
+      results.push(advisoryUnclear(assertion.question, errorMessage(error), 'visual-capture-failed', assertion.description));
+    }
+    return { artifacts, advisory: results };
+  }
+  const artifact: QaArtifact = { path: artifactPath, kind: 'screenshot' };
+  artifacts.push(artifact);
+
+  for (const assertion of advisory) {
+    const finding = await evaluateVisualQuestion(assertion.question, capture, services);
+    results.push({
+      kind: 'visual',
+      question: assertion.question,
+      verdict: finding.verdict,
+      confidence: finding.confidence,
+      reasoning: finding.reasoning,
+      ...(finding.reason === undefined ? {} : { reason: finding.reason }),
+      ...(assertion.description === undefined ? {} : { description: assertion.description }),
+      artifact,
+    });
+  }
+  return { artifacts, advisory: results };
+}
+
 // Executes a scenario step by step through the QA session core. An "unknown"
 // receipt is NEVER a pass: only the fresh re-observation decides. On failure,
 // evidence plus reproduction steps (index, action, observed vs expected) are
@@ -115,6 +188,8 @@ export async function runScenario(
   const session = new QaSession(adapter, ownerId);
   const stepResults: QaStepResult[] = [];
   const assertionResults: QaAssertionResult[] = [];
+  const artifacts: QaArtifact[] = [];
+  const advisoryResults: QaAdvisoryResult[] = [];
   let evidence: QaEvidence | null = null;
   let failure: QaRunFailure | null = null;
 
@@ -218,6 +293,20 @@ export async function runScenario(
     } catch {
       evidence = null;
     }
+
+    // Advisory visual assertions: executed and recorded, never changing status.
+    try {
+      const outcome = await executeAdvisory(
+        scenario,
+        session,
+        options.visual,
+        options.visual?.capturesDir ?? join(tmpdir(), 'dsh-qa-visual-captures'),
+      );
+      artifacts.push(...outcome.artifacts);
+      advisoryResults.push(...outcome.advisory);
+    } catch {
+      // Advisory execution must never fail the run.
+    }
   } catch (error) {
     // An unexpected error mid-run (not a step failure) still fails the run.
     failure = {
@@ -239,6 +328,8 @@ export async function runScenario(
     steps: stepResults,
     assertions: assertionResults,
     evidence,
+    ...(artifacts.length === 0 ? {} : { artifacts }),
+    ...(advisoryResults.length === 0 ? {} : { advisory: advisoryResults }),
   };
   if (failure !== null) {
     report.failure = failure;

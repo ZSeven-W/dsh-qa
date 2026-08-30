@@ -5,5 +5,7 @@ export {
   parseScenario,
   validateAssertion,
   validateScenario,
+  validateVisualAssertion,
 } from './loader.ts';
+export { normalizeReportForDeterminism } from './determinism.ts';
 export { runScenario, type ReplayRunOptions } from './runner.ts';

@@ -15,6 +15,7 @@ import type {
   QaScenarioMeta,
   QaScenarioTarget,
   QaStep,
+  QaVisualAssertion,
 } from '../contracts.ts';
 
 export class ScenarioValidationError extends Error {
@@ -88,11 +89,12 @@ function assertLossless(value: unknown, position: string): void {
 
 const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer'];
 const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url'];
-const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions'] as const;
-const META_FIELDS = ['name', 'description', 'driver', 'createdAt'] as const;
+const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as const;
+const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes'] as const;
 const TARGET_FIELDS = ['launch'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description'] as const;
+const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
 const PREDICATE_FIELDS = ['role', 'name', 'tag'] as const;
 
 function isDriverKind(value: unknown): value is QaDriverKind {
@@ -121,7 +123,13 @@ function validateMeta(value: unknown, position: string): QaScenarioMeta {
   if (!isDriverKind(driver)) fail(position + '.driver', 'unsupported driver');
   const createdAt = expectNonEmptyString(obj.createdAt, position + '.createdAt');
   if (Number.isNaN(Date.parse(createdAt))) fail(position + '.createdAt', 'expected an ISO 8601 timestamp');
-  return { name, description, driver, createdAt };
+  let notes: string[] | undefined;
+  if (obj.notes !== undefined) {
+    notes = expectArray(obj.notes, position + '.notes').map((item, i) =>
+      expectNonEmptyString(item, position + '.notes[' + i + ']'),
+    );
+  }
+  return { name, description, driver, createdAt, ...(notes === undefined ? {} : { notes }) };
 }
 
 function validateTarget(value: unknown, position: string, driver: QaDriverKind): QaScenarioTarget {
@@ -206,6 +214,24 @@ export function validateAssertion(value: unknown, position = 'assertion'): QaAss
   return out;
 }
 
+/** Validates one advisory visual assertion (never a blocking assertion). */
+export function validateVisualAssertion(value: unknown, position = 'advisory'): QaVisualAssertion {
+  const obj = expectObject(value, position);
+  assertKnownFields(obj, VISUAL_ASSERTION_FIELDS, position);
+  if (obj.kind !== 'visual') fail(position + '.kind', 'expected kind "visual"');
+  const question = expectNonEmptyString(obj.question, position + '.question');
+  const out: QaVisualAssertion = { kind: 'visual', question };
+  if (obj.description !== undefined) {
+    out.description = expectNonEmptyString(obj.description, position + '.description');
+  }
+  return out;
+}
+
+function validateAdvisory(value: unknown, position: string): QaVisualAssertion[] {
+  const arr = expectArray(value, position);
+  return arr.map((item, i) => validateVisualAssertion(item, position + '[' + i + ']'));
+}
+
 function validateStep(value: unknown, position: string): QaStep {
   const obj = expectObject(value, position);
   assertKnownFields(obj, STEP_FIELDS, position);
@@ -243,7 +269,8 @@ export function validateScenario(value: unknown): QaScenario {
   const target = validateTarget(root.target, 'target', meta.driver);
   const steps = validateSteps(root.steps, 'steps');
   const assertions = validateAssertions(root.assertions, 'assertions');
-  return { meta, target, steps, assertions };
+  const advisory = root.advisory === undefined ? undefined : validateAdvisory(root.advisory, 'advisory');
+  return { meta, target, steps, assertions, ...(advisory === undefined ? {} : { advisory }) };
 }
 
 function jsonPosition(error: unknown): string {

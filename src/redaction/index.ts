@@ -57,17 +57,26 @@ function joinProjectionPath(parent: string, _key: string): string {
 type ProjectionSegment = string | number;
 
 // dsh-qa-specific: the ONLY structured artifact-path positions in QaRunReport
-// are report.artifacts[].path. These route through the fail-closed path
-// projection (projectArtifactPath) instead of the free-text engine. Every
-// other string leaf — including free-text occurrences of paths inside
-// messages, console output, and evidence blobs — keeps going through the
-// normal engine with R3 enabled.
+// are report.artifacts[].path and report.advisory[].artifact.path. These route
+// through the fail-closed path projection (projectArtifactPath) instead of the
+// free-text engine. Every other string leaf — including free-text occurrences
+// of paths inside messages, console output, and evidence blobs — keeps going
+// through the normal engine with R3 enabled.
 function isArtifactPathPosition(segments: readonly ProjectionSegment[]): boolean {
-  return (
+  if (
     segments.length === 3 &&
     segments[0] === 'artifacts' &&
     typeof segments[1] === 'number' &&
     segments[2] === 'path'
+  ) {
+    return true;
+  }
+  return (
+    segments.length === 4 &&
+    segments[0] === 'advisory' &&
+    typeof segments[1] === 'number' &&
+    segments[2] === 'artifact' &&
+    segments[3] === 'path'
   );
 }
 
