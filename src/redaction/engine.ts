@@ -926,6 +926,91 @@ function encodedAssignmentSeparatorLengthAt(text: string, index: number): number
   return encodedAssignmentSeparatorAt(text, index)?.length ?? 0
 }
 
+// Collects the two hex digits of one percent-escape byte starting at "start"
+// (pointing just past the '%'), skipping inserted whitespace/newlines/
+// sentinels between the digits (spec 1.2 "line breaks and inserted whitespace"
+// + R4 "mixed encodings"). Returns the decoded byte and the exclusive end
+// index, or null when two hex digits cannot be found before a non-hex,
+// non-whitespace byte.
+function collectSplitHexByte(text: string, start: number): { byte: number; end: number } | null {
+  const length = text.length
+  let p = start
+  let digits = 0
+  let value = 0
+  while (p < length && digits < 2) {
+    const code = text.charCodeAt(p)
+    if (isAuthWhitespaceCode(code)) {
+      p += 1
+      continue
+    }
+    const h = hexDigitValue(code)
+    if (h < 0) {
+      return null
+    }
+    value = value * 16 + h
+    digits += 1
+    p += 1
+  }
+  if (digits < 2) {
+    return null
+  }
+  return { byte: value, end: p }
+}
+
+// Recognizes a percent-encoded assignment separator ("=" or ":") whose escape
+// bytes have been SPLIT by inserted whitespace/newlines/controls, plus the
+// double-encoded form whose inner '%' is itself %25. The raw split bytes
+// (including the inserted whitespace) are all inside the returned length, so a
+// caller that consumes the length treats the reassembled separator as one unit
+// and never echoes the inserted separators. Returns 0 when "index" is not a '%'
+// that reassembles into an assignment separator.
+function encodedAssignmentSeparatorSplitLengthAt(text: string, index: number): number {
+  if (text.charCodeAt(index) !== 0x25) {
+    return 0
+  }
+  const first = collectSplitHexByte(text, index + 1)
+  if (first === null) {
+    return 0
+  }
+  if (first.byte === 0x3d || first.byte === 0x3a) {
+    return first.end - index
+  }
+  if (first.byte === 0x25) {
+    // Double-encoded: '%' + '25' + '3D' == '%253D' (the inner '%' is %25).
+    const second = collectSplitHexByte(text, first.end)
+    if (second === null) {
+      return 0
+    }
+    if (second.byte === 0x3d || second.byte === 0x3a) {
+      return second.end - index
+    }
+  }
+  return 0
+}
+
+// Like encodedAssignmentSeparatorSplitLengthAt, but returns the reassembled
+// separator byte (0x3d for '=', 0x3a for ':') instead of the span length. Used
+// where the caller only needs to distinguish the two (flattened-key scanning).
+function encodedAssignmentSeparatorSplitByteAt(text: string, index: number): number {
+  if (text.charCodeAt(index) !== 0x25) {
+    return -1
+  }
+  const first = collectSplitHexByte(text, index + 1)
+  if (first === null) {
+    return -1
+  }
+  if (first.byte === 0x3d || first.byte === 0x3a) {
+    return first.byte
+  }
+  if (first.byte === 0x25) {
+    const second = collectSplitHexByte(text, first.end)
+    if (second !== null && (second.byte === 0x3d || second.byte === 0x3a)) {
+      return second.byte
+    }
+  }
+  return -1
+}
+
 // Recognizes a percent-encoded whitespace byte (space 0x20 or tab 0x09) at
 // `index` and returns its decoded byte plus the raw escape length, or null.
 // Whitespace encoding is single-level only (`%20`/`%09`), matching the
@@ -1115,6 +1200,16 @@ function scanQuotedAuthTokenEnd(text: string, start: number, quote: string): Quo
   let candidateEnd = -1
   while (i < length) {
     const code = text.charCodeAt(i)
+    if (
+      candidateEnd !== -1 &&
+      isChainDelimiterCode(code) &&
+      isChainedAssignmentLookahead(text, i)
+    ) {
+      // A glued tail running into a chained next assignment ends here: consume
+      // only the directly glued tail, never a later quote from the next
+      // assignment (quoted-value-tail "true closing quote" mis-split).
+      break
+    }
     if (code === 0x5c) {
       // Backslash escape: skip the escaped character.
       if (i + 1 < length) {
@@ -2082,10 +2177,15 @@ function scanCredentialKeyRun(text: string, start: number): CredentialKeyRun {
   let runEnd = start + 1
   let lastAlnum = isAsciiAlnumCharCode(text.charCodeAt(start)) ? start : -1
   while (runEnd < length) {
-    // An encoded assignment separator (`%3D`/`%3A` or double-encoded) terminates
+    // An encoded assignment separator (%3D/%3A or double-encoded) terminates
     // the key run exactly like its literal byte: it is the separator, not key
-    // material.
+    // material. A SPLIT encoded separator (its %HH bytes separated by inserted
+    // whitespace) terminates it the same way, so the reassembled separator is
+    // never mistaken for key material (spec R4 / 1.2).
     if (encodedAssignmentSeparatorLengthAt(text, runEnd) > 0) {
+      break
+    }
+    if (encodedAssignmentSeparatorSplitLengthAt(text, runEnd) > 0) {
       break
     }
     if (!isCredentialKeyRunCharCode(text.charCodeAt(runEnd))) {
@@ -2111,7 +2211,10 @@ function scanCredentialKeyRunFlattened(text: string, start: number): CredentialK
   let lastAlnum = isAsciiAlnumCharCode(text.charCodeAt(start)) ? start : -1
   while (runEnd < length) {
     if (encodedAssignmentSeparatorByteAt(text, runEnd) === 0x3d) {
-      break // encoded `=` is never key material
+      break // encoded '=' is never key material
+    }
+    if (encodedAssignmentSeparatorSplitByteAt(text, runEnd) === 0x3d) {
+      break // a split encoded '=' is the assignment separator, never key material
     }
     if (!isFlattenedCredentialKeyRunCharCode(text.charCodeAt(runEnd))) {
       break
@@ -2186,6 +2289,9 @@ function scanCredentialKeyRunSpaced(text: string, start: number, allowNewlines =
     if (encodedAssignmentSeparatorLengthAt(text, runEnd) > 0) {
       break
     }
+    if (encodedAssignmentSeparatorSplitLengthAt(text, runEnd) > 0) {
+      break
+    }
     const code = text.charCodeAt(runEnd)
     if (isCredentialKeyRunCharCode(code)) {
       if (whitespaceStart !== -1) {
@@ -2233,15 +2339,22 @@ function scanCredentialSeparator(text: string, start: number): number {
   if (j >= length) {
     return -1
   }
-  const encoded = encodedAssignmentSeparatorLengthAt(text, j)
-  if (encoded > 0) {
-    j += encoded
+  const split = encodedAssignmentSeparatorSplitLengthAt(text, j)
+  if (split > 0) {
+    // A split encoded '='/':' reassembles across inserted whitespace: consume
+    // the whole reassembled escape (whitespace included) as one separator.
+    j += split
   } else {
-    const code = text.charCodeAt(j)
-    if (code !== 0x3a && code !== 0x3d) {
-      return -1
+    const encoded = encodedAssignmentSeparatorLengthAt(text, j)
+    if (encoded > 0) {
+      j += encoded
+    } else {
+      const code = text.charCodeAt(j)
+      if (code !== 0x3a && code !== 0x3d) {
+        return -1
+      }
+      j += 1
     }
-    j += 1
   }
   return skipAuthWhitespaceEncoded(text, j)
 }
@@ -2343,7 +2456,16 @@ function isChainedAssignmentLookahead(text: string, delimiterPos: number): boole
     return false
   }
   const code = text.charCodeAt(j)
-  return code === 0x3d || code === 0x3a
+  if (code === 0x3d || code === 0x3a) {
+    return true
+  }
+  // An encoded assignment separator (%= / %: or a split spelling) is the same
+  // separator byte, so a chained assignment behind an encoded separator is
+  // still a real chain boundary (spec 1.2 encodings + R2).
+  return (
+    encodedAssignmentSeparatorLengthAt(text, j) > 0 ||
+    encodedAssignmentSeparatorSplitLengthAt(text, j) > 0
+  )
 }
 
 // A sensitive nested assignment can hide at another assignment's value
@@ -2548,6 +2670,18 @@ function scanCredentialValue(
     let candidateEnd = -1
     while (i < length) {
       const code = text.charCodeAt(i)
+      if (
+        candidateEnd !== -1 &&
+        isChainDelimiterCode(code) &&
+        isChainedAssignmentLookahead(text, i)
+      ) {
+        // A glued tail that runs into a chained next assignment must not be
+        // searched past that boundary: stop at the chain delimiter and let the
+        // candidate-closing logic consume only the directly glued tail, so a
+        // later quote in the NEXT assignment is never mistaken for this
+        // value's "true closing quote" (quoted-value-tail mis-split).
+        break
+      }
       if (code === 0x0a) {
         if (!guardSensitiveBoundary) {
           return { end: i, value: text.slice(start, i) }
@@ -2615,6 +2749,22 @@ function scanCredentialValue(
   let i = start
   while (i < length) {
     const code = text.charCodeAt(i)
+    if (code === 0x25 && guardSensitiveBoundary) {
+      // A percent escape: complete %HH escapes are ordinary value bytes. A
+      // dangling '%' or a split escape (its hex digits separated by inserted
+      // whitespace/newlines) is a malformed/mixed encoding (spec R4): the
+      // sensitive value fails closed forward to the next trusted boundary,
+      // crossing the inserted whitespace and any reassembled continuation so
+      // no byte of the reassembled secret survives.
+      const h1 = i + 1 < length ? hexDigitValue(text.charCodeAt(i + 1)) : -1
+      const h2 = i + 2 < length ? hexDigitValue(text.charCodeAt(i + 2)) : -1
+      if (h1 < 0 || h2 < 0) {
+        const end = scanAuthorizationWholeValueEnd(text, i, stopCode)
+        return { end, value: text.slice(start, end) }
+      }
+      i += 3
+      continue
+    }
     if (
       isAuthWhitespaceCode(code) ||
       code === 0x22 ||
@@ -3035,7 +3185,7 @@ function scanAuthorizationWholeValueEnd(
       i += 1
       continue
     }
-    if (openQuote !== '' && code === text.charCodeAt(i)) {
+    if (openQuote !== '' && text[i] === openQuote) {
       openQuote = ''
       i += 1
       continue
@@ -3051,9 +3201,22 @@ function scanAuthorizationWholeValueEnd(
       // crossing the newline are all still credential material inside an
       // explicit Authorization value: fail closed across them. A newline
       // followed by a non-word byte (blank line, punctuation) ends the
-      // value.
+      // value — EXCEPT that a newline directly before a quoted parameter
+      // value (`realm=\n"secret"`) or a percent-encoded continuation
+      // (`Digest\n%20"secret"`) is inserted separator material that still
+      // belongs to the same value (spec R4 / §1.2), so those bytes are
+      // crossed too and never split the span.
       const next = i + 1 < length ? text.charCodeAt(i + 1) : -1
-      if (openQuote !== '' || next === 0x20 || next === 0x09 || isAsciiWordCharCode(next)) {
+      if (
+        openQuote !== '' ||
+        next === 0x20 ||
+        next === 0x09 ||
+        next === 0x22 || // "
+        next === 0x27 || // '
+        next === 0x60 || // `
+        next === 0x25 || // %
+        isAsciiWordCharCode(next)
+      ) {
         i += 1
         continue
       }

@@ -83,67 +83,19 @@ function percentEncode(value: string, depth: number): string {
 
 const WHITESPACE_INSERTS = ['\n', ' ', '\t', '\u200b', '\u0000', '\r\n', '  \n '] as const
 
-function isHexDigit(ch: string): boolean {
-  return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
-}
-
-// True when inserting before `at` would split a complete percent-escape in two.
-// Whitespace insertion (spec 1.2 "inserted whitespace") is a SEPARATE adversary
-// capability from percent-encoding; splitting an encoded separator/octet would
-// turn it into an ambiguous mixed encoding that is out of scope for the
-// encoded-separator generator and would silently widen the gap again. This
-// covers single escapes (%3D) and double-encoded ones (%253D, where the inner
-// '%' is itself the escape %25).
-function splitsPercentEscape(value: string, at: number): boolean {
-  // `at` is the first hex digit of a single %HH escape.
-  if (at >= 1 && value[at - 1] === '%' && at + 1 < value.length && isHexDigit(value[at]!) && isHexDigit(value[at + 1]!)) {
-    return true
-  }
-  // `at` is the second hex digit of a single %HH escape.
-  if (at >= 2 && value[at - 2] === '%' && isHexDigit(value[at - 1]!) && at < value.length && isHexDigit(value[at]!)) {
-    return true
-  }
-  // `at` is the first hex digit of a double-encoded inner pair (%25HH).
-  if (at >= 3 && value[at - 3] === '%' && value[at - 2] === '2' && value[at - 1] === '5' && at + 1 < value.length && isHexDigit(value[at]!) && isHexDigit(value[at + 1]!)) {
-    return true
-  }
-  // `at` is the second hex digit of a double-encoded inner pair (%25HH).
-  if (at >= 4 && value[at - 4] === '%' && value[at - 3] === '2' && value[at - 2] === '5' && isHexDigit(value[at - 1]!) && at < value.length && isHexDigit(value[at]!)) {
-    return true
-  }
-  return false
-}
-
-// True when inserting before `at` would corrupt a quoted structure (inserting
-// between a quote delimiter and its adjacent content). Whitespace insertion
-// belongs at token/separator boundaries, not inside an atomic quoted unit; a
-// quote is a structural delimiter like a %HH escape, so corrupting it would
-// exercise an unrelated pre-existing seam instead of the encoded-separator
-// generator this suite now proves.
-function splitsQuoteStructure(value: string, at: number): boolean {
-  if (at > 0) {
-    const before = value[at - 1]!
-    if (before === '"' || before === "'" || before === '`') {
-      return true
-    }
-  }
-  if (at < value.length) {
-    const after = value[at]!
-    if (after === '"' || after === "'" || after === '`') {
-      return true
-    }
-  }
-  return false
-}
-
+// insertWhitespace inserts an adversary-controlled separator (newline,
+// space, tab, zero-width/unsafe control, CRLF) at an arbitrary position —
+// including inside quoted structures and inside/around percent-escapes. Those
+// are real adversary capabilities named in spec §1.2 ("line breaks and inserted
+// whitespace" + "quote nesting" + "encodings"), and the whole point of the fuzz
+// is to prove the engine fails closed over every reassembled span. A shape that
+// triggers a leak must be FIXED in the engine, never made un-generatable: the
+// generator intentionally holds NO guard against splitting %HH escapes or quote
+// structure, because those guards are exactly the "bug that hides the bug".
 function insertWhitespace(value: string, count: number): string {
   let out = value
   for (let i = 0; i < count; i++) {
-    let at = randInt(0, Math.max(0, out.length - 1))
-    let guard = 0
-    while ((splitsPercentEscape(out, at) || splitsQuoteStructure(out, at)) && guard++ < 16) {
-      at = randInt(0, Math.max(0, out.length - 1))
-    }
+    const at = randInt(0, Math.max(0, out.length - 1))
     out = out.slice(0, at) + pick(WHITESPACE_INSERTS) + out.slice(at)
   }
   return out
