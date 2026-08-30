@@ -31,6 +31,11 @@ export function evaluateAssertion(assertion: QaAssertion, observation: QaObserva
     const match = observation.nodes.find((node) => matchesNode(node, predicate));
     return { passed: match === undefined, observed: match === undefined ? null : toObservedNode(match) };
   }
+  if (kind === 'node-in-viewport') {
+    const predicate = assertion.expected as QaNodePredicate;
+    const matches = observation.nodes.filter((node) => matchesNode(node, predicate) && node.inViewport === true);
+    return { passed: matches.length > 0, observed: matches.map(toObservedNode) };
+  }
   const expected = assertion.expected as { url?: string; contains?: string };
   const actual = observation.page.url;
   let passed: boolean;

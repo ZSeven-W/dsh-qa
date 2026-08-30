@@ -48,15 +48,21 @@ export interface QaNodePredicate {
 /**
  * A scenario action: the act plus a semantic target. Refs are opaque and
  * session-local, so scenarios address nodes semantically; the runner resolves
- * the target to a concrete ref from the current observation.
+ * the target to a concrete ref from the current observation. Scroll has two
+ * forms: scroll-to-target (semantic ref) and positional viewport scroll
+ * (direction + optional amount); the exporter prefers the target form.
  */
 export type QaScenarioAction =
   | { kind: 'click'; target: QaNodePredicate }
   | { kind: 'fill'; target: QaNodePredicate; text: string }
   | { kind: 'press'; target: QaNodePredicate; key: string }
-  | { kind: 'navigate'; url: string };
+  | { kind: 'navigate'; url: string }
+  | { kind: 'scroll'; target: QaNodePredicate }
+  | { kind: 'scroll'; direction: 'up' | 'down'; amount?: 'page' | number }
+  | { kind: 'select'; target: QaNodePredicate; option: string }
+  | { kind: 'hover'; target: QaNodePredicate };
 
-export type QaAssertionKind = 'node-present' | 'node-absent' | 'page-url';
+export type QaAssertionKind = 'node-present' | 'node-absent' | 'page-url' | 'node-in-viewport';
 
 export interface QaAssertion {
   kind: QaAssertionKind;

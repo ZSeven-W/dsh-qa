@@ -88,7 +88,7 @@ function assertLossless(value: unknown, position: string): void {
 }
 
 const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer'];
-const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url'];
+const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url', 'node-in-viewport'];
 const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as const;
 const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes'] as const;
 const TARGET_FIELDS = ['launch'] as const;
@@ -182,7 +182,47 @@ function validateAction(value: unknown, position: string): QaScenarioAction {
     assertKnownFields(obj, ['kind', 'url'], position);
     return { kind: 'navigate', url: expectNonEmptyString(obj.url, position + '.url') };
   }
+  if (kind === 'scroll') {
+    const hasTarget = obj.target !== undefined;
+    const hasDirection = obj.direction !== undefined;
+    if (hasTarget === hasDirection) {
+      fail(position, 'scroll must specify exactly one of target (scroll-to-target) or direction (viewport scroll)');
+    }
+    if (hasTarget) {
+      assertKnownFields(obj, ['kind', 'target'], position);
+      return { kind: 'scroll', target: validatePredicate(obj.target, position + '.target') };
+    }
+    assertKnownFields(obj, ['kind', 'direction', 'amount'], position);
+    const direction = expectNonEmptyString(obj.direction, position + '.direction');
+    if (direction !== 'up' && direction !== 'down') {
+      fail(position + '.direction', 'expected "up" or "down"');
+    }
+    const amount = validateScrollAmount(obj.amount, position + '.amount');
+    return { kind: 'scroll', direction, ...(amount === undefined ? {} : { amount }) };
+  }
+  if (kind === 'select') {
+    assertKnownFields(obj, ['kind', 'target', 'option'], position);
+    return {
+      kind: 'select',
+      target: validatePredicate(obj.target, position + '.target'),
+      option: expectNonEmptyString(obj.option, position + '.option'),
+    };
+  }
+  if (kind === 'hover') {
+    assertKnownFields(obj, ['kind', 'target'], position);
+    return { kind: 'hover', target: validatePredicate(obj.target, position + '.target') };
+  }
   fail(position + '.kind', 'unsupported action kind');
+}
+
+/** Validates a browser viewport-scroll amount: undefined, "page", or a finite non-negative pixel count. */
+function validateScrollAmount(value: unknown, position: string): 'page' | number | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'page') return 'page';
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && !Object.is(value, -0)) {
+    return value;
+  }
+  fail(position, 'expected "page" or a finite non-negative number');
 }
 
 /** Validates an assertion object (also used by the qa_assert MCP tool). */
@@ -194,7 +234,7 @@ export function validateAssertion(value: unknown, position = 'assertion'): QaAss
   const kind: QaAssertionKind = rawKind;
   if (obj.expected === undefined) fail(position + '.expected', 'required');
   assertLossless(obj.expected, position + '.expected');
-  if (kind === 'node-present' || kind === 'node-absent') {
+  if (kind === 'node-present' || kind === 'node-absent' || kind === 'node-in-viewport') {
     validatePredicate(obj.expected, position + '.expected');
   } else {
     const expected = expectObject(obj.expected, position + '.expected');

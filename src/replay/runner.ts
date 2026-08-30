@@ -44,7 +44,21 @@ function resolveAction(action: QaScenarioAction, observation: QaObservation): Qa
   if (action.kind === 'fill') {
     return { kind: 'fill', ref: resolveRef(action.target, observation), text: action.text };
   }
-  return { kind: 'press', ref: resolveRef(action.target, observation), key: action.key };
+  if (action.kind === 'press') {
+    return { kind: 'press', ref: resolveRef(action.target, observation), key: action.key };
+  }
+  if (action.kind === 'scroll') {
+    if ('target' in action) return { kind: 'scroll', ref: resolveRef(action.target, observation) };
+    return {
+      kind: 'scroll',
+      direction: action.direction,
+      ...(action.amount === undefined ? {} : { amount: action.amount }),
+    };
+  }
+  if (action.kind === 'select') {
+    return { kind: 'select', ref: resolveRef(action.target, observation), option: action.option };
+  }
+  return { kind: 'hover', ref: resolveRef(action.target, observation) };
 }
 
 interface StepBase {
