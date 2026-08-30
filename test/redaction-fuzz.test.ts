@@ -56,6 +56,23 @@ function secretToken(): string {
   return out
 }
 
+// LOW-entropy password-shaped secrets. R3 provably cannot catch these: every
+// base below has <= 7 distinct symbols (Shannon entropy <= ~2.81 bits/char,
+// far under the 4.0 floor), and the 2x repetition also falls under the
+// 20-code-point length floor. They always carry a digit so the bare-scheme
+// auth form still token-shapes, leaving R2 (or R1 for URL userinfo) as the ONLY
+// rule that can redact them. The whole point is that a regression in R2's
+// encoded-separator handling turns the suite RED even though R3 stays green.
+const LOW_ENTROPY_BASES = ['hunter2', 'passw0rd', 's3cret', 'letme1n', 'p4ssword', 'm0nkey'] as const
+
+function lowEntropySecret(): string {
+  const base = pick(LOW_ENTROPY_BASES)
+  const reps = randInt(2, 4)
+  let out = ''
+  for (let i = 0; i < reps; i++) out += base
+  return out
+}
+
 function percentEncode(value: string, depth: number): string {
   let out = value
   for (let round = 0; round < depth; round++) {
@@ -66,10 +83,67 @@ function percentEncode(value: string, depth: number): string {
 
 const WHITESPACE_INSERTS = ['\n', ' ', '\t', '\u200b', '\u0000', '\r\n', '  \n '] as const
 
+function isHexDigit(ch: string): boolean {
+  return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+}
+
+// True when inserting before `at` would split a complete percent-escape in two.
+// Whitespace insertion (spec 1.2 "inserted whitespace") is a SEPARATE adversary
+// capability from percent-encoding; splitting an encoded separator/octet would
+// turn it into an ambiguous mixed encoding that is out of scope for the
+// encoded-separator generator and would silently widen the gap again. This
+// covers single escapes (%3D) and double-encoded ones (%253D, where the inner
+// '%' is itself the escape %25).
+function splitsPercentEscape(value: string, at: number): boolean {
+  // `at` is the first hex digit of a single %HH escape.
+  if (at >= 1 && value[at - 1] === '%' && at + 1 < value.length && isHexDigit(value[at]!) && isHexDigit(value[at + 1]!)) {
+    return true
+  }
+  // `at` is the second hex digit of a single %HH escape.
+  if (at >= 2 && value[at - 2] === '%' && isHexDigit(value[at - 1]!) && at < value.length && isHexDigit(value[at]!)) {
+    return true
+  }
+  // `at` is the first hex digit of a double-encoded inner pair (%25HH).
+  if (at >= 3 && value[at - 3] === '%' && value[at - 2] === '2' && value[at - 1] === '5' && at + 1 < value.length && isHexDigit(value[at]!) && isHexDigit(value[at + 1]!)) {
+    return true
+  }
+  // `at` is the second hex digit of a double-encoded inner pair (%25HH).
+  if (at >= 4 && value[at - 4] === '%' && value[at - 3] === '2' && value[at - 2] === '5' && isHexDigit(value[at - 1]!) && at < value.length && isHexDigit(value[at]!)) {
+    return true
+  }
+  return false
+}
+
+// True when inserting before `at` would corrupt a quoted structure (inserting
+// between a quote delimiter and its adjacent content). Whitespace insertion
+// belongs at token/separator boundaries, not inside an atomic quoted unit; a
+// quote is a structural delimiter like a %HH escape, so corrupting it would
+// exercise an unrelated pre-existing seam instead of the encoded-separator
+// generator this suite now proves.
+function splitsQuoteStructure(value: string, at: number): boolean {
+  if (at > 0) {
+    const before = value[at - 1]!
+    if (before === '"' || before === "'" || before === '`') {
+      return true
+    }
+  }
+  if (at < value.length) {
+    const after = value[at]!
+    if (after === '"' || after === "'" || after === '`') {
+      return true
+    }
+  }
+  return false
+}
+
 function insertWhitespace(value: string, count: number): string {
   let out = value
   for (let i = 0; i < count; i++) {
-    const at = randInt(0, Math.max(0, out.length - 1))
+    let at = randInt(0, Math.max(0, out.length - 1))
+    let guard = 0
+    while ((splitsPercentEscape(out, at) || splitsQuoteStructure(out, at)) && guard++ < 16) {
+      at = randInt(0, Math.max(0, out.length - 1))
+    }
     out = out.slice(0, at) + pick(WHITESPACE_INSERTS) + out.slice(at)
   }
   return out
@@ -91,22 +165,42 @@ function urlishCase(secret: string): FuzzCase {
   return { input: insertWhitespace(core, randInt(0, 2)), secret }
 }
 
+// Assignment separators draw from literal AND percent-encoded forms: mixed-case
+// hex, %20/%09-padded, and a double-encoded %253D case. This is the generator
+// gap the audit found: with a literal-only separator list, an encoded separator
+// could hide the credential from R2 and the suite would stay green.
+const ASSIGNMENT_SEPARATORS = [
+  '=', ': ', '= ', ':', ' = ',       // literal
+  '%3D', '%3d', '%3A', '%3a',        // mixed-case hex
+  '%20%3D', '%3D%20', '%20%3A%20',   // %20-padded
+  '%09%3D', '%3D%09',                // tab-padded
+  '%253D',                            // double-encoded equals
+] as const
+
+const AUTH_HEADS = [
+  'Authorization: ', 'authorization=', 'Proxy-Authorization: ', '',
+  'Authorization%3A%20', 'Authorization%253A%20', 'authorization%3D',
+] as const
+
+const AUTH_SCHEME_SEPARATORS = [' ', '%20', '%09'] as const
+
 function assignmentCase(secret: string): FuzzCase {
   const key = pick(SENSITIVE_KEY_STEMS)
-  const sep = pick(['=', ': ', '= ', ':', ' = '])
+  const sep = pick(ASSIGNMENT_SEPARATORS)
   const quote = pick(['', '"', "'"])
   const tail = pick(['', '.', ',', 'xyz'])
   return { input: `${key}${sep}${quote}${secret}${quote}${tail}`, secret }
 }
 
 function authCase(secret: string): FuzzCase {
-  const head = pick(['Authorization: ', 'authorization=', 'Proxy-Authorization: ', ''])
+  const head = pick(AUTH_HEADS)
   // Outside an explicit Authorization context only the Bearer/Basic prose
   // forms are spec-promised (corpus rows 15/16); unknown schemes are
   // promised inside Authorization contexts only.
   const scheme = head === '' ? pick(['Bearer', 'Basic']) : pick(['Bearer', 'Basic', 'Digest', 'CustomScheme'])
+  const schemeSep = pick(AUTH_SCHEME_SEPARATORS)
   const quote = pick(['', '"'])
-  return { input: `${head}${scheme} ${quote}${secret}${quote}`, secret }
+  return { input: `${head}${scheme}${schemeSep}${quote}${secret}${quote}`, secret }
 }
 
 function jsonCase(secret: string): FuzzCase {
@@ -248,7 +342,10 @@ test(`redaction fuzz: ${CASES} seeded cases never leak the injected secret`, () 
   let idempotenceFailures = 0
   for (let i = 0; i < CASES; i++) {
     const generator = GENERATORS[i % GENERATORS.length]!
-    const { input, secret } = generator(secretToken())
+    // Every third case injects a LOW-entropy password-shaped secret that R3
+    // provably cannot catch (below 4.0 bits/char); R2/R1 must redact it alone.
+    const chosenSecret = i % 3 === 0 ? lowEntropySecret() : secretToken()
+    const { input, secret } = generator(chosenSecret)
 
     // Surface 1: free text
     const once = redactText(input)
