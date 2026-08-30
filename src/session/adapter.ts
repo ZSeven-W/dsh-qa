@@ -19,6 +19,13 @@ export interface QaSemanticNode {
   editable: boolean;
   disabled: boolean;
   href?: string;
+  /**
+   * Browser-only: whether the element's box intersects the viewport at
+   * collection time. Off-viewport nodes still carry a ref so a scroll can
+   * reach them, but they are omitted from a viewport visual capture. Absent
+   * for computer targets (the computer driver has no viewport notion here).
+   */
+  inViewport?: boolean;
   /** Computer-only: Accessibility secure (password) classification. */
   secure?: boolean;
   /** Computer-only: bounded, non-secure value when Accessibility exposes one. */
@@ -212,11 +219,18 @@ export interface QaApprovalGate {
   request(reason: string): Promise<QaApprovalOutcome>;
 }
 
+/** Closed scroll direction vocabulary shared by both drivers. */
+export type QaScrollDirection = 'up' | 'down';
+
 /**
- * v0.1 action union. Browser flavors (fill/press/navigate) and computer
- * flavors (focus/type/key) share the union; the session core forwards the
- * action opaquely to the driver-specific adapter, which rejects the kinds it
- * does not support.
+ * v0.1 action union. Browser flavors (fill/press/navigate/scroll/select/hover)
+ * and computer flavors (focus/type/key/scroll) share the union; the session
+ * core forwards the action opaquely to the driver-specific adapter, which
+ * rejects the kinds it does not support. Scroll has three disjoint shapes:
+ * browser scroll-into-view (ref only), browser viewport scroll (direction
+ * only), and computer container scroll (ref + direction). `select` and
+ * `hover` are browser-only and are rejected by the computer adapter with a
+ * driver-naming error rather than being silently dropped.
  */
 export type QaAction =
   | { kind: 'click'; ref: string }
@@ -225,7 +239,17 @@ export type QaAction =
   | { kind: 'navigate'; url: string }
   | { kind: 'focus'; ref: string }
   | { kind: 'type'; ref: string; text: string }
-  | { kind: 'key'; ref: string; key: string; modifiers?: readonly string[] };
+  | { kind: 'key'; ref: string; key: string; modifiers?: readonly string[] }
+  /** Browser: scroll the referenced element into view (center-ish). */
+  | { kind: 'scroll'; ref: string }
+  /** Browser: viewport scroll without a target, for exploratory paging. */
+  | { kind: 'scroll'; direction: QaScrollDirection; amount?: 'page' | number }
+  /** Computer: scroll the container of the referenced element in a direction. */
+  | { kind: 'scroll'; ref: string; direction: QaScrollDirection; amount?: 'line' | 'page' | number }
+  /** Browser: select an option in a native <select> by label or value. */
+  | { kind: 'select'; ref: string; option: string }
+  /** Browser: move the pointer over the element and keep it there. */
+  | { kind: 'hover'; ref: string };
 
 export interface QaDriverAdapter {
   readonly kind: 'browser' | 'computer';

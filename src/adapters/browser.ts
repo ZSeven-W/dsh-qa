@@ -62,13 +62,47 @@ export class BrowserAdapter implements QaDriverAdapter {
   // has no approval gate, so the parameter is accepted and deliberately ignored
   // here to keep the session core driver-agnostic.
   async act(ownerId: string, action: QaAction, _approval?: QaApprovalGate): Promise<QaActionReceipt> {
-    const receipt = await this.#driver.act(ownerId, action as BrowserAction);
+    const receipt = await this.#driver.act(ownerId, this.#mapAction(action));
     return {
       status: receipt.status,
       ...(receipt.code === undefined ? {} : { code: receipt.code }),
       ...(receipt.reason === undefined ? {} : { reason: receipt.reason }),
       dispatched: receipt.dispatched,
     };
+  }
+
+  #mapAction(action: QaAction): BrowserAction {
+    switch (action.kind) {
+      case 'click':
+        return { kind: 'click', ref: action.ref };
+      case 'fill':
+        return { kind: 'fill', ref: action.ref, text: action.text };
+      case 'press':
+        return { kind: 'press', ref: action.ref, key: action.key };
+      case 'navigate':
+        return { kind: 'navigate', url: action.url };
+      case 'scroll': {
+        if ('ref' in action && 'direction' in action) {
+          throw new Error(
+            'browser driver does not support the computer "scroll" shape (ref + direction); use scroll by ref alone or by direction alone',
+          );
+        }
+        if ('ref' in action) return { kind: 'scroll', ref: action.ref };
+        return {
+          kind: 'scroll',
+          direction: action.direction,
+          ...(action.amount === undefined ? {} : { amount: action.amount }),
+        };
+      }
+      case 'select':
+        return { kind: 'select', ref: action.ref, option: action.option };
+      case 'hover':
+        return { kind: 'hover', ref: action.ref };
+      case 'focus':
+      case 'type':
+      case 'key':
+        throw new Error('browser driver does not support the computer "' + action.kind + '" action');
+    }
   }
 
   async evidence(ownerId: string, options?: QaEvidenceOptions): Promise<QaEvidence> {

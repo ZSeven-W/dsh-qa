@@ -229,12 +229,29 @@ export class ComputerAdapter implements QaDriverAdapter {
           key: action.key,
           ...(action.modifiers === undefined ? {} : { modifiers: [...action.modifiers] as ComputerModifier[] }),
         };
+      case 'scroll': {
+        if ('ref' in action && 'direction' in action) {
+          return {
+            kind: 'scroll',
+            ref: action.ref,
+            direction: action.direction,
+            ...(action.amount === undefined ? {} : { amount: action.amount }),
+          };
+        }
+        throw new Error(
+          'computer driver scroll requires both ref and direction (the browser-only ref-only or direction-only scroll shapes are not computer actions)',
+        );
+      }
       case 'fill':
         throw new Error('computer driver does not support the browser "fill" action; use "type"');
       case 'press':
         throw new Error('computer driver does not support the browser "press" action; use "key"');
       case 'navigate':
         throw new Error('computer driver does not support the "navigate" action');
+      case 'select':
+        throw new Error('computer driver does not support the "select" action (browser-only)');
+      case 'hover':
+        throw new Error('computer driver does not support the "hover" action (browser-only)');
     }
   }
 
