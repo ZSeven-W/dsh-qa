@@ -828,6 +828,18 @@ function isSchemePrecedingBoundaryAt(text: string, index: number): boolean {
   if (index === 0) {
     return true
   }
+  // An encoded separator/whitespace escape immediately before the scheme
+  // (`Authorization%3A%20Bearer …`, or a double-encoded spelling) is a boundary
+  // exactly like its decoded byte (`:`/`=`/space/tab), so `Bearer` is not
+  // word-glued to the escape's trailing hex digit.
+  if (
+    (index >= 3 &&
+      (encodedAuthWhitespaceLengthAt(text, index - 3) === 3 ||
+        encodedAssignmentSeparatorLengthAt(text, index - 3) === 3)) ||
+    (index >= 5 && encodedAssignmentSeparatorLengthAt(text, index - 5) === 5)
+  ) {
+    return true
+  }
   const code = text.charCodeAt(index - 1)
   if (code !== 0x5f) {
     return !isAsciiWordCharCode(code)
@@ -862,6 +874,94 @@ function hexDigitValue(code: number): number {
     return code - 0x61 + 10 // a-f
   }
   return -1
+}
+
+// Decodes a single-level complete `%HH` escape at `index` to its byte value,
+// or -1 when the three code units are not a valid escape. This is the same
+// single-level decode `decodePercentForClassification` performs.
+function percentEscapeByteAt(text: string, index: number): number {
+  if (index + 2 >= text.length || text.charCodeAt(index) !== 0x25) {
+    return -1
+  }
+  const high = hexDigitValue(text.charCodeAt(index + 1))
+  const low = hexDigitValue(text.charCodeAt(index + 2))
+  if (high < 0 || low < 0) {
+    return -1
+  }
+  return high * 16 + low
+}
+
+// Recognizes a percent-encoded assignment/auth separator at `index` and returns
+// its decoded byte plus the raw escape length in code units, or null. Both a
+// single-level escape (`%3D`/`%3a` for `=`/`:`) and a double-encoded escape
+// (`%253D`/`%253a`, where the inner `%` is itself encoded as `%25`) are
+// recognized, so an encoded separator cannot hide a credential from R2 even
+// when it is encoded twice. Mixed-case hex is accepted throughout.
+function encodedAssignmentSeparatorAt(
+  text: string,
+  index: number,
+): { byte: number; length: number } | null {
+  const first = percentEscapeByteAt(text, index)
+  if (first === 0x3d || first === 0x3a) {
+    return { byte: first, length: 3 }
+  }
+  if (first === 0x25 && index + 4 < text.length) {
+    const high = hexDigitValue(text.charCodeAt(index + 3))
+    const low = hexDigitValue(text.charCodeAt(index + 4))
+    if (high >= 0 && low >= 0) {
+      const byte = high * 16 + low
+      if (byte === 0x3d || byte === 0x3a) {
+        return { byte, length: 5 }
+      }
+    }
+  }
+  return null
+}
+
+function encodedAssignmentSeparatorByteAt(text: string, index: number): number {
+  return encodedAssignmentSeparatorAt(text, index)?.byte ?? -1
+}
+
+function encodedAssignmentSeparatorLengthAt(text: string, index: number): number {
+  return encodedAssignmentSeparatorAt(text, index)?.length ?? 0
+}
+
+// Recognizes a percent-encoded whitespace byte (space 0x20 or tab 0x09) at
+// `index` and returns its decoded byte plus the raw escape length, or null.
+// Whitespace encoding is single-level only (`%20`/`%09`), matching the
+// single-level decode `decodePercentForClassification` performs for keys.
+function encodedAuthWhitespaceAt(
+  text: string,
+  index: number,
+): { byte: number; length: number } | null {
+  const first = percentEscapeByteAt(text, index)
+  if (first === 0x20 || first === 0x09) {
+    return { byte: first, length: 3 }
+  }
+  return null
+}
+
+function encodedAuthWhitespaceLengthAt(text: string, index: number): number {
+  return encodedAuthWhitespaceAt(text, index)?.length ?? 0
+}
+
+// Skips the approved whitespace class plus percent-encoded space/tab, matching
+// the separator scanners' view of "whitespace around a separator".
+function skipAuthWhitespaceEncoded(text: string, index: number): number {
+  let i = index
+  while (i < text.length) {
+    if (isAuthWhitespaceCode(text.charCodeAt(i))) {
+      i += 1
+      continue
+    }
+    const encoded = encodedAuthWhitespaceAt(text, i)
+    if (encoded !== null) {
+      i += encoded.length
+      continue
+    }
+    break
+  }
+  return i
 }
 
 // Safe structural assignment boundaries/openers that may separate an encoded
@@ -1241,6 +1341,20 @@ function buildAuthorizationContexts(text: string): AuthorizationContexts {
     let escaped = false
     for (let p = lineStart; p < lineEnd; p++) {
       const code = text.charCodeAt(p)
+      // Encoded separator/whitespace (outside any quote): a complete `%HH`
+      // escape for `=` (0x3d), `:` (0x3a), space (0x20), or tab (0x09) acts as
+      // that decoded byte for the opener state machine, so an encoded
+      // `Authorization%3A%20Bearer …` opens the same direct context as the
+      // literal `Authorization: Bearer …`. Inside a quoted span encoded bytes
+      // are literal content and are never treated as separator material.
+      const encodedWsLen = quoteCode === 0 ? encodedAuthWhitespaceLengthAt(text, p) : 0
+      const encodedSepLen = quoteCode === 0 ? encodedAssignmentSeparatorLengthAt(text, p) : 0
+      const virtualCode =
+        encodedWsLen > 0
+          ? 0x20
+          : encodedSepLen > 0
+            ? encodedAssignmentSeparatorByteAt(text, p)
+            : code
       if (quoteCode !== 0) {
         // A quoted span (double, single, or backtick) is tracked so an
         // Authorization header embedded in a quoted string stops its unquoted
@@ -1259,7 +1373,7 @@ function buildAuthorizationContexts(text: string): AuthorizationContexts {
       } else if (code === 0x22 || code === 0x27 || code === 0x60) {
         quoteCode = code
       }
-      if (!isAuthWhitespaceCode(code)) {
+      if (!isAuthWhitespaceCode(virtualCode)) {
         if (firstNonWhitespace === lineEnd) {
           firstNonWhitespace = p
         }
@@ -1272,7 +1386,12 @@ function buildAuthorizationContexts(text: string): AuthorizationContexts {
         direct[p] = 1
         lineHasAuthOpener = true
       }
-      state = nextAuthContextState(state, code)
+      state = nextAuthContextState(state, virtualCode)
+      if (encodedWsLen > 0 || encodedSepLen > 0) {
+        // Skip the rest of the escape (3 or 5 code units total); its remaining
+        // code units belong to this one virtual byte, not to the state machine.
+        p += Math.max(encodedWsLen, encodedSepLen) - 1
+      }
     }
     const opensAuth = isAuthContextDirectState(state)
 
@@ -1345,22 +1464,34 @@ function scanAuthSchemeSeparator(text: string, afterScheme: number): number {
   if (j < length && text.charCodeAt(j) === 0x3a) {
     // `:` directly after the scheme.
     j += 1
-    return skipAuthWhitespace(text, j)
+    return skipAuthWhitespaceEncoded(text, j)
   }
   if (j < length && text.charCodeAt(j) === 0x3d) {
     // `=` directly after the scheme (`Bearer=abc123`).
     j += 1
-    return skipAuthWhitespace(text, j)
+    return skipAuthWhitespaceEncoded(text, j)
   }
-  if (j < length && isAuthWhitespaceCode(text.charCodeAt(j))) {
-    j = skipAuthWhitespace(text, j)
+  if (j < length && encodedAssignmentSeparatorLengthAt(text, j) > 0) {
+    // Encoded `:`/`=` directly after the scheme (`Bearer%3Dabc123`).
+    j += encodedAssignmentSeparatorLengthAt(text, j)
+    return skipAuthWhitespaceEncoded(text, j)
+  }
+  if (
+    j < length &&
+    (isAuthWhitespaceCode(text.charCodeAt(j)) || encodedAuthWhitespaceLengthAt(text, j) > 0)
+  ) {
+    j = skipAuthWhitespaceEncoded(text, j)
     if (j < length && text.charCodeAt(j) === 0x3a) {
       j += 1
-      return skipAuthWhitespace(text, j)
+      return skipAuthWhitespaceEncoded(text, j)
     }
     if (j < length && text.charCodeAt(j) === 0x3d) {
       j += 1
-      return skipAuthWhitespace(text, j)
+      return skipAuthWhitespaceEncoded(text, j)
+    }
+    if (j < length && encodedAssignmentSeparatorLengthAt(text, j) > 0) {
+      j += encodedAssignmentSeparatorLengthAt(text, j)
+      return skipAuthWhitespaceEncoded(text, j)
     }
     return j
   }
@@ -1929,7 +2060,8 @@ function scanCredentialKeySuffixSeparator(text: string, punctuationPos: number):
     punctuationPos >= text.length ||
     punctuationPos + 1 >= text.length ||
     !isCredentialKeySuffixPunctuationCode(text.charCodeAt(punctuationPos)) ||
-    !isAuthWhitespaceCode(text.charCodeAt(punctuationPos + 1))
+    (!isAuthWhitespaceCode(text.charCodeAt(punctuationPos + 1)) &&
+      encodedAuthWhitespaceLengthAt(text, punctuationPos + 1) === 0)
   ) {
     return -1
   }
@@ -1949,7 +2081,16 @@ function scanCredentialKeyRun(text: string, start: number): CredentialKeyRun {
   const length = text.length
   let runEnd = start + 1
   let lastAlnum = isAsciiAlnumCharCode(text.charCodeAt(start)) ? start : -1
-  while (runEnd < length && isCredentialKeyRunCharCode(text.charCodeAt(runEnd))) {
+  while (runEnd < length) {
+    // An encoded assignment separator (`%3D`/`%3A` or double-encoded) terminates
+    // the key run exactly like its literal byte: it is the separator, not key
+    // material.
+    if (encodedAssignmentSeparatorLengthAt(text, runEnd) > 0) {
+      break
+    }
+    if (!isCredentialKeyRunCharCode(text.charCodeAt(runEnd))) {
+      break
+    }
     if (isAsciiAlnumCharCode(text.charCodeAt(runEnd))) {
       lastAlnum = runEnd
     }
@@ -1961,12 +2102,20 @@ function scanCredentialKeyRun(text: string, start: number): CredentialKeyRun {
 // Scans the maximal run including flattened separators (dot, slash, and
 // colon). The caller uses this as a sensitive-only candidate so a colon that
 // is really an assignment separator (`token:abc=def`) still falls through to
-// the original scanner.
+// the original scanner. An encoded `%3A` acts as a flattened colon segment
+// boundary (kept inside the run), while an encoded `%3D` is always the
+// assignment separator and terminates the run.
 function scanCredentialKeyRunFlattened(text: string, start: number): CredentialKeyRun {
   const length = text.length
   let runEnd = start + 1
   let lastAlnum = isAsciiAlnumCharCode(text.charCodeAt(start)) ? start : -1
-  while (runEnd < length && isFlattenedCredentialKeyRunCharCode(text.charCodeAt(runEnd))) {
+  while (runEnd < length) {
+    if (encodedAssignmentSeparatorByteAt(text, runEnd) === 0x3d) {
+      break // encoded `=` is never key material
+    }
+    if (!isFlattenedCredentialKeyRunCharCode(text.charCodeAt(runEnd))) {
+      break
+    }
     if (isAsciiAlnumCharCode(text.charCodeAt(runEnd))) {
       lastAlnum = runEnd
     }
@@ -2033,6 +2182,10 @@ function scanCredentialKeyRunSpaced(text: string, start: number, allowNewlines =
   let segmentCount = 1
   let whitespaceStart = -1
   while (runEnd < length) {
+    // An encoded assignment separator terminates the spaced key run too.
+    if (encodedAssignmentSeparatorLengthAt(text, runEnd) > 0) {
+      break
+    }
     const code = text.charCodeAt(runEnd)
     if (isCredentialKeyRunCharCode(code)) {
       if (whitespaceStart !== -1) {
@@ -2070,46 +2223,52 @@ function scanCredentialKeyRunSpaced(text: string, start: number, allowNewlines =
 // Scans `\s*[=:]\s*` starting at `start` (after the key or its closing quote).
 // Returns the first value character, or -1 when no `=`/`:` separator follows.
 // The whole `\s` class is honored (including newlines), mirroring the previous
-// regex, and the whitespace run is walked once.
+// regex, and the whitespace run is walked once. Separator recognition also
+// decodes percent-escapes (`%3D`/`%3d` for `=`, `%3A`/`%3a` for `:`, and
+// `%20`/`%09` as whitespace around them) the same way key classification does,
+// so an encoded separator cannot hide a credential (R2, spec §2.2).
 function scanCredentialSeparator(text: string, start: number): number {
   const length = text.length
-  let j = start
-  while (j < length && isAuthWhitespaceCode(text.charCodeAt(j))) {
-    j += 1
-  }
+  let j = skipAuthWhitespaceEncoded(text, start)
   if (j >= length) {
     return -1
   }
-  const code = text.charCodeAt(j)
-  if (code !== 0x3a && code !== 0x3d) {
-    return -1
-  }
-  j += 1
-  while (j < length && isAuthWhitespaceCode(text.charCodeAt(j))) {
+  const encoded = encodedAssignmentSeparatorLengthAt(text, j)
+  if (encoded > 0) {
+    j += encoded
+  } else {
+    const code = text.charCodeAt(j)
+    if (code !== 0x3a && code !== 0x3d) {
+      return -1
+    }
     j += 1
   }
-  return j
+  return skipAuthWhitespaceEncoded(text, j)
 }
 
 // Scans a malformed repeated credential separator run starting at `start`,
 // which must already be on a `=`/`:` byte that follows the first approved
 // separator. The run may contain any mix of `=` and `:` with arbitrary
-// approved whitespace between them, e.g. `==`, `= =`, `: :`, `:=`, or `=:`.
-// Returns the first byte after the whole run, including optional whitespace
-// after the final separator so the credential value (bare or quoted) starts
-// at the returned index.
+// approved whitespace between them, e.g. `==`, `= =`, `: :`, `:=`, or `=:`
+// (and their percent-encoded spellings). Returns the first byte after the
+// whole run, including optional whitespace after the final separator so the
+// credential value (bare or quoted) starts at the returned index.
 function scanRepeatedCredentialSeparatorEnd(text: string, start: number): number {
   const length = text.length
   let j = start
   while (j < length) {
+    const encoded = encodedAssignmentSeparatorLengthAt(text, j)
+    if (encoded > 0) {
+      j += encoded
+      j = skipAuthWhitespaceEncoded(text, j)
+      continue
+    }
     const code = text.charCodeAt(j)
     if (code !== 0x3a && code !== 0x3d) {
       break
     }
     j += 1
-    while (j < length && isAuthWhitespaceCode(text.charCodeAt(j))) {
-      j += 1
-    }
+    j = skipAuthWhitespaceEncoded(text, j)
   }
   return j
 }
@@ -2981,7 +3140,8 @@ function consumeCredentialValue(
       credentialSensitive &&
       currentValueStart < text.length &&
       (text.charCodeAt(currentValueStart) === 0x3d ||
-        text.charCodeAt(currentValueStart) === 0x3a)
+        text.charCodeAt(currentValueStart) === 0x3a ||
+        encodedAssignmentSeparatorLengthAt(text, currentValueStart) > 0)
     ) {
       malformedSensitiveValue = true
       const afterRun = scanRepeatedCredentialSeparatorEnd(text, currentValueStart)
