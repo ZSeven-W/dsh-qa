@@ -22,6 +22,8 @@ import type {
 
 interface DurableAction {
   action: QaScenarioAction;
+  /** Semantic target predicate for ref-based actions; null for navigate and direction-scroll. */
+  target: QaNodePredicate | null;
 }
 
 const OUTCOME_ROLE_PRIORITY = new Map<string, number>([
@@ -47,12 +49,45 @@ function predicateFor(node: QaSemanticNode): QaNodePredicate | null {
   return { role, name };
 }
 
-function countMatches(observation: QaObservation, predicate: QaNodePredicate): number {
-  return observation.nodes.filter((node) => (
-    (predicate.role === undefined || node.role === predicate.role)
+function matchesPredicate(node: QaSemanticNode, predicate: QaNodePredicate): boolean {
+  return (predicate.role === undefined || node.role === predicate.role)
     && (predicate.name === undefined || node.name === predicate.name)
-    && (predicate.tag === undefined || node.tag === predicate.tag)
-  )).length;
+    && (predicate.tag === undefined || node.tag === predicate.tag);
+}
+
+function countMatches(observation: QaObservation, predicate: QaNodePredicate): number {
+  return observation.nodes.filter((node) => matchesPredicate(node, predicate)).length;
+}
+
+function predicateName(predicate: QaNodePredicate): string {
+  return predicate.name ?? predicate.role ?? predicate.tag ?? 'semantic target';
+}
+
+/** True when the node went from off-viewport (or absent) in `before` to in-viewport in `after`. */
+function isRevealed(before: QaObservation, after: QaObservation, predicate: QaNodePredicate): boolean {
+  const beforeNode = before.nodes.find((node) => matchesPredicate(node, predicate));
+  const afterNode = after.nodes.find((node) => matchesPredicate(node, predicate));
+  return afterNode !== undefined && afterNode.inViewport === true
+    && (beforeNode === undefined || beforeNode.inViewport !== true);
+}
+
+/**
+ * First durable (role+name unique) predicate whose node the scroll moved into
+ * the viewport. Prefers nodes that were already present off-viewport (a
+ * scroll reveals them by moving the viewport, not by creating them).
+ */
+function firstRevealedPredicate(before: QaObservation, after: QaObservation): QaNodePredicate | null {
+  const present = after.nodes
+    .filter((node) => node.inViewport === true)
+    .map((node) => ({ node, predicate: predicateFor(node) }))
+    .filter((item): item is { node: QaSemanticNode; predicate: QaNodePredicate } => (
+      item.predicate !== null && countMatches(after, item.predicate) === 1
+    ))
+    .filter((item) => {
+      const beforeNode = before.nodes.find((node) => matchesPredicate(node, item.predicate));
+      return beforeNode !== undefined && beforeNode.inViewport !== true;
+    });
+  return present[0]?.predicate ?? null;
 }
 
 function exclusion(
@@ -74,7 +109,7 @@ function durableAction(
 ): DurableAction | QaExportExclusion {
   const action = recorded.action;
   if (action.kind === 'navigate') {
-    return { action: { kind: 'navigate', url: action.url } };
+    return { action: { kind: 'navigate', url: action.url }, target: null };
   }
   if (action.kind === 'focus' || action.kind === 'type' || action.kind === 'key') {
     return exclusion(
@@ -82,6 +117,19 @@ function durableAction(
       'UNSUPPORTED_REPLAY_ACTION',
       'Replay v0.1 has no scenario action for ' + action.kind + '; the step was not exported.',
     );
+  }
+  if (action.kind === 'scroll' && !('ref' in action)) {
+    // Viewport direction-scroll: inherently positional. buildScenario resolves
+    // it against the following proven action's target (or excludes it when no
+    // in-viewport transition is observable).
+    return {
+      action: {
+        kind: 'scroll',
+        direction: action.direction,
+        ...(action.amount === undefined ? {} : { amount: action.amount }),
+      },
+      target: null,
+    };
   }
   if (before === null) {
     return exclusion(recorded, 'TARGET_OBSERVATION_MISSING', 'No observation preceded this action.');
@@ -105,17 +153,29 @@ function durableAction(
       'Role plus accessible name did not uniquely identify the action target.',
     );
   }
-  if (action.kind === 'click') return { action: { kind: 'click', target } };
+  if (action.kind === 'click') return { action: { kind: 'click', target }, target };
   if (action.kind === 'fill') {
     if (clean(action.text) === '') {
       return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay fill text must be non-empty.');
     }
-    return { action: { kind: 'fill', target, text: action.text } };
+    return { action: { kind: 'fill', target, text: action.text }, target };
+  }
+  if (action.kind === 'select') {
+    if (clean(action.option) === '') {
+      return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay select option must be non-empty.');
+    }
+    return { action: { kind: 'select', target, option: action.option }, target };
+  }
+  if (action.kind === 'hover') {
+    return { action: { kind: 'hover', target }, target };
+  }
+  if (action.kind === 'scroll') {
+    return { action: { kind: 'scroll', target }, target };
   }
   if (clean(action.key) === '') {
     return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay press key must be non-empty.');
   }
-  return { action: { kind: 'press', target, key: action.key } };
+  return { action: { kind: 'press', target, key: action.key }, target };
 }
 
 function semanticDelta(before: QaObservation | null, after: QaObservation): QaNodePredicate | null {
@@ -157,12 +217,86 @@ function synthesizeAssertion(before: QaObservation | null, after: QaObservation)
   return null;
 }
 
+/** Assertion proving a scroll made the target reachable (in-viewport). */
+function synthesizeScrollAssertion(target: QaNodePredicate): QaAssertion {
+  return {
+    kind: 'node-in-viewport',
+    expected: target,
+    description: 'Fresh post-scroll observation placed the target in the viewport.',
+  };
+}
+
 function intentFor(action: QaScenarioAction): string {
   if (action.kind === 'navigate') return 'Navigate to the recorded URL.';
+  if (action.kind === 'scroll') {
+    if ('target' in action) return 'Scroll to "' + predicateName(action.target) + '".';
+    return 'Scroll the viewport ' + action.direction + (action.amount === undefined ? '.' : ' by ' + String(action.amount) + '.');
+  }
   const targetName = action.target.name ?? action.target.role ?? 'semantic target';
   if (action.kind === 'click') return 'Click "' + targetName + '".';
   if (action.kind === 'fill') return 'Fill "' + targetName + '".';
+  if (action.kind === 'select') return 'Select option "' + action.option + '" on "' + targetName + '".';
+  if (action.kind === 'hover') return 'Hover "' + targetName + '".';
   return 'Press ' + action.key + ' on "' + targetName + '".';
+}
+
+interface Candidate {
+  recorded: QaRecordedAction;
+  before: QaObservation | null;
+  after: QaObservation | null;
+  exclusion: QaExportExclusion | null;
+  /** Durable scenario action; null for excluded and direction-scroll candidates. */
+  action: QaScenarioAction | null;
+  /** Semantic target predicate for ref-based actions; null otherwise. */
+  target: QaNodePredicate | null;
+}
+
+interface ResolvedScrollStep {
+  intent: string;
+  action: QaScenarioAction;
+  assert: QaAssertion;
+}
+
+/**
+ * Resolve a positional scroll-by-direction step against the following proven
+ * action's target. A direction-scroll is inherently positional, so the
+ * exported scenario prefers the durable scroll-by-target form: it scrolls to
+ * the same off-viewport element the exploration actually reached next. When
+ * that is not derivable, it keeps the positional direction form but proves it
+ * with a node-in-viewport assertion against any node the scroll moved into
+ * view, and records the positional nature in the step intent. It never
+ * silently drops a scroll: a scroll with no observable in-viewport transition
+ * is excluded with an explicit reason.
+ */
+function resolveDirectionScroll(candidates: Candidate[], index: number): ResolvedScrollStep | null {
+  const candidate = candidates[index];
+  if (candidate === undefined || candidate.before === null || candidate.after === null || candidate.action === null) {
+    return null;
+  }
+  const { before, after } = candidate;
+  const positional = candidate.action as { kind: 'scroll'; direction: 'up' | 'down'; amount?: 'page' | number };
+  for (let j = index + 1; j < candidates.length; j += 1) {
+    const next = candidates[j];
+    if (next === undefined || next.exclusion !== null || next.target === null) continue;
+    if (isRevealed(before, after, next.target)) {
+      return {
+        intent: 'Scroll to "' + predicateName(next.target) + '".',
+        action: { kind: 'scroll', target: next.target },
+        assert: synthesizeScrollAssertion(next.target),
+      };
+    }
+  }
+  const anyRevealed = firstRevealedPredicate(before, after);
+  if (anyRevealed !== null) {
+    return {
+      intent: 'Scroll the viewport ' + positional.direction
+        + (positional.amount === undefined ? ' (positional).' : ' by ' + String(positional.amount) + ' (positional)')
+        + ' to reveal "' + predicateName(anyRevealed) + '".',
+      action: positional,
+      assert: synthesizeScrollAssertion(anyRevealed),
+    };
+  }
+  return null;
 }
 
 function buildScenario(
@@ -172,53 +306,125 @@ function buildScenario(
   const excluded: QaExportExclusion[] = [];
   const steps: QaStep[] = [];
 
+  // Pass 1: resolve each action into a durable candidate (or an exclusion)
+  // without ordering assumptions, so pass 2 can look ahead past a
+  // scroll-by-direction step to the following proven action's target.
+  const candidates: Candidate[] = [];
   for (const recorded of trajectory.actions) {
     const receipt = recorded.receipt;
+    let early: QaExportExclusion | null = null;
     if (recorded.recordingIssue !== null) {
-      excluded.push(exclusion(recorded, 'OBSERVATION_RECORDING_FAILED', recorded.recordingIssue));
-      continue;
-    }
-    if (receipt === null) {
-      excluded.push(exclusion(recorded, 'ACTION_RECEIPT_MISSING', 'No action receipt was recorded.'));
-      continue;
-    }
-    if (receipt.status === 'rejected') {
-      excluded.push(exclusion(
+      early = exclusion(recorded, 'OBSERVATION_RECORDING_FAILED', recorded.recordingIssue);
+    } else if (receipt === null) {
+      early = exclusion(recorded, 'ACTION_RECEIPT_MISSING', 'No action receipt was recorded.');
+    } else if (receipt.status === 'rejected') {
+      early = exclusion(
         recorded,
         'ACTION_REJECTED',
         'Rejected action was not exported' + (receipt.code === undefined ? '.' : ' (' + receipt.code + ').'),
-      ));
-      continue;
-    }
-    if (receipt.status === 'failed') {
-      excluded.push(exclusion(recorded, 'ACTION_FAILED', 'Failed action was not exported.'));
-      continue;
-    }
-    if (!receipt.dispatched) {
-      excluded.push(exclusion(recorded, 'ACTION_NOT_DISPATCHED', 'The driver did not dispatch this action.'));
-      continue;
-    }
-    if (recorded.payloadRedacted) {
-      excluded.push(exclusion(
+      );
+    } else if (receipt.status === 'failed') {
+      early = exclusion(recorded, 'ACTION_FAILED', 'Failed action was not exported.');
+    } else if (!receipt.dispatched) {
+      early = exclusion(recorded, 'ACTION_NOT_DISPATCHED', 'The driver did not dispatch this action.');
+    } else if (recorded.payloadRedacted) {
+      early = exclusion(
         recorded,
         'ACTION_PAYLOAD_REDACTED',
         'Redaction changed a replay-relevant action field, so replay would not be faithful.',
-      ));
-      continue;
-    }
-    if (recorded.afterObservationId === null) {
-      excluded.push(exclusion(
+      );
+    } else if (recorded.afterObservationId === null) {
+      early = exclusion(
         recorded,
         'FRESH_OBSERVATION_MISSING',
         'No immediate fresh post-action observation proved the outcome.',
-      ));
+      );
+    }
+    if (early !== null) {
+      candidates.push({ recorded, before: null, after: null, exclusion: early, action: null, target: null });
       continue;
     }
     const before = recorded.beforeObservationId === null
       ? null
       : trajectory.observations[recorded.beforeObservationId] ?? null;
-    const after = trajectory.observations[recorded.afterObservationId] ?? null;
+    const afterObservationId = recorded.afterObservationId;
+    if (afterObservationId === null) {
+      // Unreachable after the early FRESH_OBSERVATION_MISSING guard; refuse fail-closed.
+      candidates.push({
+        recorded,
+        before,
+        after: null,
+        exclusion: exclusion(
+          recorded,
+          'FRESH_OBSERVATION_MISSING',
+          'No immediate fresh post-action observation proved the outcome.',
+        ),
+        action: null,
+        target: null,
+      });
+      continue;
+    }
+    const after = trajectory.observations[afterObservationId] ?? null;
     if (after === null) {
+      candidates.push({
+        recorded,
+        before,
+        after: null,
+        exclusion: exclusion(
+          recorded,
+          'OBSERVATION_RECORDING_FAILED',
+          'The fresh observation reference has no recorded observation payload.',
+        ),
+        action: null,
+        target: null,
+      });
+      continue;
+    }
+    const durable = durableAction(recorded, before);
+    if ('reason' in durable) {
+      candidates.push({ recorded, before, after, exclusion: durable, action: null, target: null });
+      continue;
+    }
+    candidates.push({
+      recorded,
+      before,
+      after,
+      exclusion: null,
+      action: durable.action,
+      target: durable.target,
+    });
+  }
+
+  // Pass 2: assemble steps in order, resolving scroll-by-direction steps
+  // against the following proven action's target.
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidate = candidates[i];
+    if (candidate === undefined) continue;
+    if (candidate.exclusion !== null) {
+      excluded.push(candidate.exclusion);
+      continue;
+    }
+    const recorded = candidate.recorded;
+    const receipt = recorded.receipt;
+    const isDirectionScroll = candidate.action !== null
+      && candidate.action.kind === 'scroll'
+      && 'direction' in candidate.action;
+    if (isDirectionScroll) {
+      const resolved = resolveDirectionScroll(candidates, i);
+      if (resolved === null) {
+        excluded.push(exclusion(
+          recorded,
+          'ASSERTION_NOT_PROVABLE',
+          'Scroll-by-direction had no observable in-viewport transition in the fresh observation.',
+        ));
+        continue;
+      }
+      steps.push({ index: steps.length + 1, intent: resolved.intent, action: resolved.action, assert: resolved.assert });
+      continue;
+    }
+    const after = candidate.after;
+    if (after === null) {
+      // Unreachable for a durable candidate; refuse fail-closed rather than guessing.
       excluded.push(exclusion(
         recorded,
         'OBSERVATION_RECORDING_FAILED',
@@ -226,17 +432,20 @@ function buildScenario(
       ));
       continue;
     }
-    const durable = durableAction(recorded, before);
-    if ('reason' in durable) {
-      excluded.push(durable);
+    const stepAction = candidate.action;
+    if (stepAction === null) {
+      // Unreachable for a durable candidate; refuse fail-closed rather than guessing.
+      excluded.push(exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'The action had no durable replay form.'));
       continue;
     }
-    const assertion = synthesizeAssertion(before, after);
+    const assertion = stepAction.kind === 'scroll' && candidate.target !== null
+      ? synthesizeScrollAssertion(candidate.target)
+      : synthesizeAssertion(candidate.before, after);
     if (assertion === null || !evaluateAssertion(assertion, after).passed) {
       excluded.push(exclusion(
         recorded,
         'ASSERTION_NOT_PROVABLE',
-        receipt.status === 'unknown'
+        receipt?.status === 'unknown'
           ? 'Unknown receipt had no semantic state change in the fresh observation.'
           : 'The fresh observation had no semantic state change or URL change proving the action outcome.',
       ));
@@ -244,8 +453,8 @@ function buildScenario(
     }
     steps.push({
       index: steps.length + 1,
-      intent: intentFor(durable.action),
-      action: durable.action,
+      intent: intentFor(stepAction),
+      action: stepAction,
       assert: assertion,
     });
   }

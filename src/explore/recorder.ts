@@ -408,12 +408,30 @@ export class QaTrajectoryRecorder {
 
   #aliasAction(trajectory: MutableTrajectory, action: QaAction): QaAction {
     if (action.kind === 'navigate') return { kind: 'navigate', url: projectReplayUrl(action.url) };
+    if (action.kind === 'scroll') {
+      if ('ref' in action && 'direction' in action) {
+        return {
+          kind: 'scroll',
+          ref: this.#refAlias(trajectory, action.ref),
+          direction: action.direction,
+          ...(action.amount === undefined ? {} : { amount: action.amount }),
+        };
+      }
+      if ('ref' in action) return { kind: 'scroll', ref: this.#refAlias(trajectory, action.ref) };
+      return {
+        kind: 'scroll',
+        direction: action.direction,
+        ...(action.amount === undefined ? {} : { amount: action.amount }),
+      };
+    }
     const ref = this.#refAlias(trajectory, action.ref);
     if (action.kind === 'click') return { kind: 'click', ref };
     if (action.kind === 'fill') return { kind: 'fill', ref, text: action.text };
     if (action.kind === 'press') return { kind: 'press', ref, key: action.key };
     if (action.kind === 'focus') return { kind: 'focus', ref };
     if (action.kind === 'type') return { kind: 'type', ref, text: action.text };
+    if (action.kind === 'select') return { kind: 'select', ref, option: action.option };
+    if (action.kind === 'hover') return { kind: 'hover', ref };
     return {
       kind: 'key',
       ref,
