@@ -18,6 +18,13 @@
   "engines": {
     "node": ">=24.11.0"
   },
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "lib",
     "src",
@@ -31,8 +38,9 @@
   ],
   "scripts": {
     "mcp": "node src/server.mjs",
-    "build": "npm run build:mcp",
+    "build": "npm run build:mcp && npm run build:entry",
     "build:mcp": "node scripts/build-mcp.mjs",
+    "build:entry": "node scripts/build-entry.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test test/*.test.mjs test/*.test.ts",
     "smoke:bundle": "node scripts/smoke-bundle.mjs",
@@ -53,7 +61,12 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    }
+    },
+    "capabilities": [
+      "global-hook",
+      "mcp-server",
+      "tool-registration"
+    ]
   },
   "pnpm": {
     "onlyBuiltDependencies": [
