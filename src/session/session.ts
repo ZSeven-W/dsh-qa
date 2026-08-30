@@ -10,6 +10,8 @@ import type {
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
+  QaVisualCapture,
+  QaVisualObserveOptions,
 } from './adapter.ts';
 
 /** Outcome the session core resolves for one act step. */
@@ -63,6 +65,10 @@ export class QaSession {
     return this.#ownerId;
   }
 
+  get kind(): QaDriverAdapter['kind'] {
+    return this.#adapter.kind;
+  }
+
   get started(): boolean {
     return this.#started;
   }
@@ -101,6 +107,14 @@ export class QaSession {
   async evidence(options?: QaEvidenceOptions): Promise<QaEvidence> {
     this.#assertStarted();
     return this.#adapter.evidence(this.#ownerId, options);
+  }
+
+  async visualObserve(options?: QaVisualObserveOptions): Promise<QaVisualCapture> {
+    this.#assertStarted();
+    if (typeof this.#adapter.visualObserve !== 'function') {
+      throw new Error('the ' + this.#adapter.kind + ' driver does not support visual capture');
+    }
+    return this.#adapter.visualObserve(this.#ownerId, options);
   }
 
   stop(): Promise<QaStopResult> {
@@ -173,4 +187,25 @@ export class QaSessionManager {
     this.#sessions.clear();
     await this.#adapter.dispose?.();
   }
+}
+
+/**
+ * Capture the latest visual state through a session. The computer driver binds
+ * its capture to an exact observation id, so it re-observes first when the
+ * caller did not supply one; the browser driver captures its latest observation
+ * directly (or the exact fingerprint the caller supplied).
+ */
+export async function captureLatestVisual(
+  session: QaSession,
+  options?: QaVisualObserveOptions,
+): Promise<QaVisualCapture> {
+  if (session.kind === 'computer' && options?.observationId === undefined) {
+    const observation = await session.observe();
+    const observationId = observation.observationId;
+    if (observationId === undefined) {
+      throw new Error('computer visual capture requires an observation id from the latest observation');
+    }
+    return session.visualObserve({ ...(options ?? {}), observationId });
+  }
+  return session.visualObserve(options);
 }

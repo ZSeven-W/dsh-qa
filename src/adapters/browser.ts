@@ -3,6 +3,7 @@ import type {
   BrowserEvidenceOptions,
   BrowserObservationOptions,
   BrowserSessionStartOptions,
+  BrowserVisualObserveRequest,
   ZSevenBrowserDriver,
 } from '@zseven-w/dsh-browser';
 import type {
@@ -17,6 +18,8 @@ import type {
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
+  QaVisualCapture,
+  QaVisualObserveOptions,
 } from '../session/adapter.ts';
 
 /**
@@ -79,6 +82,30 @@ export class BrowserAdapter implements QaDriverAdapter {
       network: evidence.network,
       bounded: evidence.bounded,
       dropped: evidence.dropped,
+    };
+  }
+
+  async visualObserve(ownerId: string, options?: QaVisualObserveOptions): Promise<QaVisualCapture> {
+    const request: BrowserVisualObserveRequest = {
+      ...(options?.fingerprint === undefined ? {} : { fingerprint: options.fingerprint }),
+      ...(options?.fullPage === undefined ? {} : { fullPage: options.fullPage }),
+      ...(options?.maxMarks === undefined ? {} : { maxMarks: options.maxMarks }),
+      ...(options?.scale === undefined ? {} : { scale: options.scale }),
+    };
+    // Passthrough: freshness discipline and capture bounds errors surface verbatim.
+    const capture = await this.#driver.visualObserve(ownerId, request);
+    return {
+      driver: 'browser',
+      observationFingerprint: capture.observationFingerprint,
+      observationId: null,
+      png: capture.png,
+      width: capture.capture.pixelWidth,
+      height: capture.capture.pixelHeight,
+      sha256: capture.capture.artifact.sha256,
+      usable: capture.capture.quality.usable,
+      marks: capture.marks.length,
+      omitted: capture.omitted.length,
+      artifactPath: capture.capture.artifact.path,
     };
   }
 

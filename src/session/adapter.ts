@@ -135,6 +135,71 @@ export interface QaEvidenceOptions {
   maxReceipts?: number;
 }
 
+/** Options for one unified visual observe across both drivers. */
+export interface QaVisualObserveOptions {
+  /** Browser-only: exact observation fingerprint; omit for the latest observation. */
+  fingerprint?: string;
+  /** Browser-only: capture the full document instead of the viewport. */
+  fullPage?: boolean;
+  /** Browser-only: Set-of-Mark budget (driver clamps 1..200). */
+  maxMarks?: number;
+  /** Browser-only: output PNG scale (driver clamps 1..3). */
+  scale?: number;
+  /** Computer-only: exact opaque observation id returned by observe(). */
+  observationId?: string;
+}
+
+/**
+ * Unified visual capture projected by both driver adapters. The PNG stays in
+ * process memory for the attachment service / artifact writer; model-facing and
+ * report JSON must project metadata only (see toVisualCaptureInfo).
+ */
+export interface QaVisualCapture {
+  driver: 'browser' | 'computer';
+  /** Exact observation fingerprint the capture is bound to (null when unknown). */
+  observationFingerprint: string | null;
+  /** Computer-only observation id the capture is bound to. */
+  observationId: string | null;
+  png: Uint8Array;
+  width: number;
+  height: number;
+  sha256: string;
+  usable: boolean;
+  marks: number;
+  omitted: number;
+  /** Absolute path the driver already wrote the PNG to (browser); absent for in-memory computer captures. */
+  artifactPath?: string;
+}
+
+/** Tool/report-facing capture projection: metadata only, never the raw PNG bytes. */
+export interface QaVisualCaptureInfo {
+  driver: 'browser' | 'computer';
+  observationFingerprint: string | null;
+  observationId: string | null;
+  width: number;
+  height: number;
+  sha256: string;
+  usable: boolean;
+  marks: number;
+  omitted: number;
+  artifactPath?: string;
+}
+
+export function toVisualCaptureInfo(capture: QaVisualCapture): QaVisualCaptureInfo {
+  return {
+    driver: capture.driver,
+    observationFingerprint: capture.observationFingerprint,
+    observationId: capture.observationId,
+    width: capture.width,
+    height: capture.height,
+    sha256: capture.sha256,
+    usable: capture.usable,
+    marks: capture.marks,
+    omitted: capture.omitted,
+    ...(capture.artifactPath === undefined ? {} : { artifactPath: capture.artifactPath }),
+  };
+}
+
 /** Closed vocabulary returned by the host-owned approval service. */
 export type QaApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable';
 
@@ -168,6 +233,8 @@ export interface QaDriverAdapter {
   observe(ownerId: string, options?: QaObserveOptions): Promise<QaObservation>;
   act(ownerId: string, action: QaAction, approval?: QaApprovalGate): Promise<QaActionReceipt>;
   evidence(ownerId: string, options?: QaEvidenceOptions): Promise<QaEvidence>;
+  /** Optional unified visual capture (browser + computer). */
+  visualObserve?(ownerId: string, options?: QaVisualObserveOptions): Promise<QaVisualCapture>;
   stop(ownerId: string): Promise<QaStopResult>;
   dispose?(): Promise<void>;
 }

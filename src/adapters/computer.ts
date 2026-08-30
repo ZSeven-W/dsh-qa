@@ -24,6 +24,8 @@ import type {
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
+  QaVisualCapture,
+  QaVisualObserveOptions,
 } from '../session/adapter.ts';
 
 /**
@@ -54,19 +56,6 @@ interface Binding {
   pid?: number;
   windowNumber?: number;
   windowTitle?: string;
-}
-
-/** Computer-only window capture projection (PNG bytes + SoM summary). */
-export interface QaComputerVisualCapture {
-  observationId: string;
-  observationFingerprint: string;
-  png: Uint8Array;
-  width: number;
-  height: number;
-  sha256: string;
-  usable: boolean;
-  marks: number;
-  omitted: number;
 }
 
 const EDITABLE_ROLES = new Set(['AXTextField', 'AXTextArea', 'AXSearchField']);
@@ -165,13 +154,22 @@ export class ComputerAdapter implements QaDriverAdapter {
   /**
    * Window-only visual observation with native Set-of-Mark labels. The PNG is
    * returned as bytes so callers can persist it as a structured artifact; only
-   * the metadata (dimensions, digest, mark count) belongs in JSON.
+   * the metadata (dimensions, digest, mark count) belongs in JSON. The computer
+   * driver binds its capture to an exact observation id, so one is required.
    */
-  async visualObserve(ownerId: string, observationId: string): Promise<QaComputerVisualCapture> {
-    const capture = await this.#driver.visualObserve({ observationId }, { scopeId: ownerId });
+  async visualObserve(ownerId: string, options?: QaVisualObserveOptions): Promise<QaVisualCapture> {
+    const observationId = options?.observationId;
+    if (observationId === undefined || observationId === '') {
+      throw new Error('computer visual capture requires an exact observation id');
+    }
+    const capture = await this.#driver.visualObserve(
+      { observationId, ...(options?.maxMarks === undefined ? {} : { maxMarks: options.maxMarks }) },
+      { scopeId: ownerId },
+    );
     return {
-      observationId: capture.observationId,
+      driver: 'computer',
       observationFingerprint: capture.observationFingerprint,
+      observationId: capture.observationId,
       png: capture.png,
       width: capture.capture.pixelWidth,
       height: capture.capture.pixelHeight,

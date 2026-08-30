@@ -220,7 +220,7 @@ test('computer native acceptance flow', { timeout: 600_000 }, async () => {
 
     // ---- window-only capture with Set-of-Mark labels, recorded as an artifact ----
     const forVisual = await session.observe({ ttlMs: 30_000 })
-    const capture = await adapter.visualObserve(OWNER, forVisual.observationId)
+    const capture = await adapter.visualObserve(OWNER, { observationId: forVisual.observationId })
     assert.equal(capture.usable, true, 'window capture must be usable')
     assert.ok(capture.marks >= 1, 'capture must carry at least one Set-of-Mark label')
     assert.ok(capture.width > 0 && capture.height > 0, 'capture has pixel dimensions')

@@ -19,8 +19,13 @@ export type {
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
+  QaVisualCapture,
+  QaVisualCaptureInfo,
+  QaVisualObserveOptions,
 } from './adapter.ts';
+export { toVisualCaptureInfo } from './adapter.ts';
 export {
+  captureLatestVisual,
   QaSession,
   QaSessionManager,
   type QaActOutcome,
