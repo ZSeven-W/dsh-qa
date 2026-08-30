@@ -979,3 +979,47 @@ test('corpus r32: projectRedactedJsonValue never fires inherited prototype gette
   }
   assert.deepEqual(calls, [])
 })
+
+// ---------------------------------------------------------------------------
+// WP11 — owner-authorized login-state injection. A cookie VALUE from a
+// storageState file is a credential by definition and must never reach any of
+// the three report artifacts (json / md / jsonl), even when an error path is
+// exercised. The leak shapes below are the realistic error-path carriers: a
+// naive failure message, a logged document.cookie assignment, and a
+// query-string credential in network evidence.
+// ---------------------------------------------------------------------------
+test('corpus WP11: cookie value from a login-state file is redacted from all three report artifacts', async () => {
+  const cookieValue = 'wp11_cookie_value_9f3a7c2b'
+  const extra: Record<string, JsonValue> = {
+    failure: {
+      stepIndex: null,
+      message: 'failed to start driver: session_token=' + cookieValue + ' was not authorized',
+      reproduction: [],
+    },
+    evidence: {
+      console: [
+        {
+          sequence: 1,
+          at: '2026-08-30T00:00:00.000Z',
+          level: 'log',
+          text: 'document.cookie: session_token=' + cookieValue,
+          pageUrl: 'https://fixture.invalid/',
+        },
+      ],
+      network: [
+        {
+          sequence: 1,
+          at: '2026-08-30T00:00:00.000Z',
+          kind: 'request-failed',
+          method: 'GET',
+          url: 'https://fixture.invalid/login?session_token=' + cookieValue,
+          resourceType: 'fetch',
+        },
+      ],
+    },
+  }
+  const run = makeRun(extra)
+  assertRenderJsonAbsent(run, cookieValue, roots)
+  assertRenderMarkdownAbsent(run, cookieValue, roots)
+  await assertAppendEventAbsent(extra, cookieValue, roots)
+})
