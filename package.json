@@ -30,6 +30,7 @@
     "src",
     "scripts",
     "scenarios",
+    "skills",
     "cordis.patch.yml",
     ".mcp.json",
     ".claude-plugin",
@@ -42,7 +43,7 @@
     "build:mcp": "node scripts/build-mcp.mjs",
     "build:entry": "node scripts/build-entry.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test test/*.test.mjs test/*.test.ts",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs test/*.test.ts",
     "smoke:bundle": "node scripts/smoke-bundle.mjs",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "prepack": "npm run build && npm run typecheck && npm test"

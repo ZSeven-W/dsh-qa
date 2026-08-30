@@ -16,8 +16,8 @@ deterministic **Replay** scenario that runs on every release.
   permanently refused, approval gates passed through, `unknown` receipts require
   re-observation.
 
-Status: **private, v0.1 in development** (WP1 scaffold, WP2 QA session core +
-browser adapter + web fixture, WP4 deterministic Replay runner + reporters).
+Status: **private, v0.1 in development** (WP1 scaffold, WP2 QA session core,
+WP4 deterministic Replay, WP5 Computer driver, WP6 Explore→Replay loop).
 
 ## Session core (WP2)
 
@@ -46,8 +46,32 @@ pass — only the re-observation decides. The fail-closed loader
 (`src/replay/loader.ts`) rejects unknown fields, malformed steps, missing
 fields, and non-lossless values without echoing value bytes. Reporters emit
 redacted `report.json` / `report.md` / append-only `report.jsonl` through
-the `src/redaction` seam (a pass-through until the v2 engine lands in WP3).
+the fail-closed v2 engine in `src/redaction`.
 See `scenarios/examples/` and `qa_assert` / `qa_replay_run`.
+
+## Explore → Replay (WP6)
+
+`src/explore/` wraps the existing driver adapter as a passive recorder. It records
+ordered observations, actions, receipts, and evidence references after applying the
+fail-closed redaction projection; the session core itself is unchanged. Ephemeral
+driver refs are replaced by per-session correlation aliases and never enter the
+trajectory.
+
+`qa_record_export` accepts an `output_path` under the current workspace or temporary
+directory, synthesizes every step assertion from the immediate fresh observation
+after that action, writes a scenario, and reads the exact bytes back through the
+existing fail-closed loader. Rejected/failed actions or actions without a fresh
+observation are returned in `excludedActions`, never silently promoted to steps.
+
+Selector durability is intentionally strict: an action is exportable only when its
+target resolves uniquely in the preceding observation by non-empty **role plus
+accessible name**. Indices, coordinates, observation ids, generated ids, duplicate
+names, unnamed nodes, and ephemeral refs are refused instead of guessed. An
+`unknown` receipt additionally needs an observable semantic delta or URL change;
+the old target merely remaining present is not proof.
+
+The bundled Explore methodology lives at `skills/qa-explore/SKILL.md` and is
+registered through the existing optional skill-service path.
 
 ## dshHostRuntime
 
@@ -63,8 +87,8 @@ The DSH host provides the runtime services below itself; a plain
 }
 ```
 
-Plugin wire-ins planned for later work packages register optional cordis services
-exclusively via the `ctx.inject(['skills'], cb)` form.
+The optional skill service is registered exclusively through
+`ctx.inject(['skills'], cb)` and torn down with `fiber.dispose()`.
 
 ## Development
 

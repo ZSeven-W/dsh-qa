@@ -3,7 +3,8 @@
 // are wired to the QA session core + browser adapter. WP4: qa_assert and
 // qa_replay_run are wired to the Replay runner + assertions. WP5: qa_session_start
 // takes a driver selector and the same session tools serve the computer driver.
-// qa_record_export lands in WP6 (Explore).
+// WP6 records every Explore trajectory and exports it through the same
+// fail-closed Replay loader used by qa_replay_run.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -15,6 +16,11 @@ import { BrowserAdapter } from './adapters/browser.ts';
 import { ComputerAdapter } from './adapters/computer.ts';
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts';
 import { loadComputerDriver } from './adapters/loadComputer.ts';
+import {
+  exportRecordedScenario,
+  QaTrajectoryRecorder,
+  RecordingQaDriverAdapter,
+} from './explore/index.ts';
 import { evaluateAssertion, loadScenarioFromPath, runScenario, validateAssertion } from './replay/index.ts';
 import { writeReports } from './reporters/index.ts';
 import { QaSessionManager, toLosslessJson } from './session/index.ts';
@@ -47,16 +53,23 @@ function textResult(value) {
 // qa_session_start and remembered so observe/act/evidence/stop stay consistent.
 const managers = { browser: undefined, computer: undefined };
 const ownerDrivers = new Map();
+const recorder = new QaTrajectoryRecorder();
 
 async function getManager(kind) {
   if (!managers[kind]) {
     managers[kind] = (async () => {
       if (kind === 'browser') {
         const browserManager = await loadBrowserManager();
-        return new QaSessionManager(new BrowserAdapter(browserManager));
+        return new QaSessionManager(new RecordingQaDriverAdapter(
+          new BrowserAdapter(browserManager),
+          recorder,
+        ));
       }
       const computerDriver = await loadComputerDriver();
-      return new QaSessionManager(new ComputerAdapter(computerDriver));
+      return new QaSessionManager(new RecordingQaDriverAdapter(
+        new ComputerAdapter(computerDriver),
+        recorder,
+      ));
     })();
     managers[kind] = managers[kind].catch((error) => {
       managers[kind] = undefined;
@@ -86,10 +99,6 @@ function guard(handler) {
       return textResult({ ok: false, error: message });
     }
   };
-}
-
-function stubFor(tool, workPackage) {
-  return () => textResult({ ok: false, error: `tool ${tool} is not implemented yet (planned for ${workPackage})` });
 }
 
 server.tool(
@@ -244,7 +253,25 @@ server.tool(
   }),
 );
 
-server.tool('qa_record_export', {}, stubFor('qa_record_export', 'WP6 (Explore tooling)'));
+server.tool(
+  'qa_record_export',
+  {
+    owner: z.string().optional(),
+    output_path: z.string(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    overwrite: z.boolean().optional(),
+  },
+  guard(async (args) => {
+    const result = await exportRecordedScenario(recorder, ownerFrom(args), {
+      outputPath: args.output_path,
+      ...(args.name === undefined ? {} : { name: args.name }),
+      ...(args.description === undefined ? {} : { description: args.description }),
+      ...(args.overwrite === undefined ? {} : { overwrite: args.overwrite }),
+    });
+    return textResult(result);
+  }),
+);
 
 server.tool(
   'qa_replay_run',

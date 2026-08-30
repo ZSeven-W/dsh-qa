@@ -18,72 +18,61 @@ import type { StructuralCordisContext } from './host.ts'
 export const QA_SKILL_NAME = 'qa-orchestration'
 
 export const QA_SKILL_DESCRIPTION =
-  'Drive acceptance runs with the qa_* tools: start a browser or computer session, observe, act, '
-  + 'assert, collect evidence, and replay deterministic scenarios. Read this before the first qa_* '
-  + 'call of a QA task.'
+  'Explore an app autonomously with the qa_* tools, preserve evidence and driver safety decisions, '
+  + 'then export the proven trajectory as a deterministic Replay scenario. Read this before the '
+  + 'first qa_* call of an Explore task.'
 
 export const QA_SKILL_WHEN_TO_USE =
-  'Any task that operates an app through the qa_* tools — starting a session, observing the UI, '
-  + 'performing an action, asserting on state, collecting evidence, or replaying a recorded '
+  'Any autonomous QA exploration through the qa_* tools — observing an unfamiliar UI, following '
+  + 'semantic controls, preserving a failure, exporting a trajectory, or replaying the exported '
   + 'scenario — over a Browser (BU) or Computer (CU) driver.'
 
-export const QA_SKILL_CONTENT = `# QA with dsh-qa
+export const QA_SKILL_CONTENT = `# Explore with dsh-qa
 
-The loop is **observe once → act → observe again → assert → evidence → stop**. The tools are the
-same eight verbs whether the session is Browser (BU) or Computer (CU); only the actions and
-evidence shapes differ.
+The loop is **start → observe → choose one semantic target → act → inspect the fresh observation →
+assert → capture evidence at the moment a problem appears → export → replay → stop**. The same
+eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are never routed around.
 
-## Starting and stopping
+## Explore method
 
-- \`qa_session_start\` binds one owner scope to one driver. The driver is loaded lazily on first
-  use, so starting a session does not prove the driver is present — the first real tool call does.
-- Browser sessions take \`url\` and optional \`headless\`. Computer sessions bind by
-  \`bundle_id\` (optionally \`pid\` / \`window_number\` / \`window_title\`) and assert strong
-  identity on every observation; a missing or changed identity fails closed rather than guessing.
-- \`qa_session_stop\` releases the bound scope. Stop even on failure; the session is scoped per
-  agent and lingers until stopped.
+- \`qa_session_start\` binds one owner scope to one driver. Choose an explicit owner and keep it
+  unchanged through export. Browser takes \`url\`; Computer binds strong app/window identity.
+- Begin with \`qa_observe\`. Prefer a unique role plus accessible name, take one purposeful action,
+  then inspect the fresh observation returned by \`qa_act\`. Re-observe when diagnosing and never
+  reuse an old ref. A truncated view is incomplete, not empty.
+- Coordinates, indices, opaque refs, observation ids, and generated ids are live-session handles,
+  never Replay selectors.
+- \`qa_act\` returns a receipt plus, for dispatched actions, the session core's immediate fresh
+  observation. An \`unknown\` receipt is NEVER success: require a semantic delta or URL change in
+  that observation. A \`rejected\` / \`failed\` receipt is a hard stop. Never approve, rephrase, or
+  retarget around a driver safety rejection.
+- \`qa_assert\` checks resulting state against a fresh observation. Do not repeat the action "to see
+  if it worked".
+- The moment a problem appears, call \`qa_evidence\` before navigating away or changing state.
+  Missing permissions, truncation, and driver rejection are boundaries, never green results.
 
-## Observing
+## Export and Replay
 
-- \`qa_observe\` is the default observer. Nodes carry opaque session-local \`ref\`s; they expire, so
-  re-observe after every action and never reuse a ref across observations.
-- A \`max_nodes\` (browser) or \`max_depth\` / \`ttl_ms\` (computer) cap bounds the result; a
-  \`truncated: true\` means the view was cut, not that the target is empty.
-- For the computer driver, strong identity binding is asserted, never assumed: every observation
-  must carry the launch identity, window number, and frame bound at start.
-
-## Acting
-
-- \`qa_act\` performs exactly one action and returns a receipt with status
-  \`confirmed\` / \`unknown\` / \`rejected\` / \`failed\`.
-- An \`unknown\` receipt is NEVER success. Only a fresh \`qa_observe\` — never the receipt itself —
-  can settle what actually happened. Re-observe and assert before calling anything done.
-- A \`rejected\` / \`failed\` receipt is a hard stop: do not retry around it. The \`code\` and
-  \`reason\` are deterministic and explain why.
-- Browser verbs are \`click\` / \`fill\` / \`press\` / \`navigate\`. Computer verbs are
-  \`click\` / \`focus\` / \`type\` / \`key\`. Mixing them across drivers is rejected.
-
-## Asserting
-
-- \`qa_assert\` evaluates \`node-present\` / \`node-absent\` / \`page-url\` against a fresh
-  observation. It validates the assertion shape before touching the session, so a malformed
-  assertion fails closed with a structural error.
-- Prefer asserting on state over re-tapping "to see if it worked".
-
-## Evidence and replay
-
-- \`qa_evidence\` returns bounded, already-redacted evidence: browser console/network records, or
-  computer helper status plus bounded action receipts. A missing Accessibility or Screen Recording
-  grant shows up here — assert on it, never silently green.
-- \`qa_replay_run\` runs a deterministic scenario file end to end (browser only in v0.1) and returns
-  a \`pass\` / \`fail\` / \`blocked\` report with per-step receipts and a reproduction trail.
-- \`qa_record_export\` is not implemented yet (WP6).
+- Call \`qa_record_export\` with the same \`owner\` and an \`output_path\` ending in \`.json\`. Its
+  parent must already exist under the current workspace or temporary directory.
+- Selector durability is strict: only a target uniquely identified in the preceding observation by
+  non-empty **role + accessible name** is exported. Unnamed, duplicate, coordinate/index-based,
+  ephemeral-ref-only, redacted, or Replay-unsupported actions are excluded with a reason.
+- Every exported step receives an assertion synthesized from and evaluated against the immediate
+  fresh observation after that action. Rejected/failed actions and actions without that observation
+  never become steps. An unknown receipt needs a semantic delta or URL change; target persistence
+  alone cannot prove it.
+- Inspect \`excludedActions\`. An exclusion is not a pass. If every action is unproven,
+  \`qa_record_export\` returns \`NO_PROVEN_STEPS\` and writes no file.
+- Run \`qa_replay_run\` on the exact exported file without hand editing it. Browser Replay is the
+  supported v0.1 closed loop; only a \`pass\` report closes Explore→Replay.
+- \`qa_session_stop\` releases the owner scope. Stop on success and failure; the trajectory remains
+  exportable until another session starts for that owner or the plugin disposes.
 
 ## Missing drivers
 
-The Browser and Computer drivers are separate plugins and load lazily. When one is absent, the
-first tool call that needs it fails with a clear, actionable error naming the missing package —
-never a bare module-resolution crash. Registering the tools and loading the plugin never requires
+The Browser and Computer drivers load lazily. When one is absent, the first tool call that needs it
+fails with a clear error naming the missing package. Plugin activation and tools/list do not require
 the drivers to be installed.
 `
 

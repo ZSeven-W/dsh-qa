@@ -96,6 +96,15 @@ test('skills service present: the QA playbook is registered once via ctx.inject'
   assert.ok(skill.content.length > 0)
 })
 
+test('registered playbook carries the strict Explore export methodology', () => {
+  const { ctx, state } = makeFakeCtx({ withSkills: true })
+  apply(ctx)
+  const skill = state.registeredSkills[0]
+  assert.match(skill.content, /role \+ accessible name/)
+  assert.match(skill.content, /NO_PROVEN_STEPS/)
+  assert.match(skill.content, /exact exported file without hand editing/)
+})
+
 test('skills service absent: apply still mounts the tools without throwing', () => {
   const { ctx, state } = makeFakeCtx({ withSkills: false })
   assert.doesNotThrow(() => apply(ctx))

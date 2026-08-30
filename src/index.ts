@@ -23,6 +23,7 @@ export {
 } from './contracts.ts';
 export * from './session/index.ts';
 export * from './adapters/index.ts';
+export * from './explore/index.ts';
 export * from './replay/index.ts';
 export * from './reporters/index.ts';
 export * from './redaction/index.ts';

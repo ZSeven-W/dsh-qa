@@ -13,6 +13,12 @@ import { ComputerAdapter } from './adapters/computer.ts'
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts'
 import { loadComputerDriver } from './adapters/loadComputer.ts'
 import type { QaDriverKind } from './contracts.ts'
+import {
+  exportRecordedScenario,
+  QaTrajectoryRecorder,
+  RecordingQaDriverAdapter,
+} from './explore/index.ts'
+import type { QaRecordExportOptions, QaRecordExportResult } from './explore/index.ts'
 import { evaluateAssertion, loadScenarioFromPath, runScenario, validateAssertion } from './replay/index.ts'
 import { writeReports } from './reporters/index.ts'
 import { QaSessionManager, toLosslessJson } from './session/index.ts'
@@ -85,6 +91,7 @@ const strProp = { type: 'string' }
 export class QaToolHost {
   readonly #managers = new Map<QaDriverKind, Promise<QaSessionManager>>()
   readonly #ownerDrivers = new Map<string, QaDriverKind>()
+  readonly #recorder = new QaTrajectoryRecorder()
 
   managerFor(driver: QaDriverKind): Promise<QaSessionManager> {
     let manager = this.#managers.get(driver)
@@ -92,10 +99,12 @@ export class QaToolHost {
       manager = (async () => {
         if (driver === 'browser') {
           const browserManager = await loadBrowserManager()
-          return new QaSessionManager(new BrowserAdapter(browserManager))
+          const adapter = new BrowserAdapter(browserManager)
+          return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder))
         }
         const computerDriver = await loadComputerDriver()
-        return new QaSessionManager(new ComputerAdapter(computerDriver))
+        const adapter = new ComputerAdapter(computerDriver)
+        return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder))
       })()
       manager = manager.catch((error: unknown) => {
         this.#managers.delete(driver)
@@ -123,6 +132,10 @@ export class QaToolHost {
     return (await this.managerFor(driver)).stop(owner)
   }
 
+  exportRecord(owner: string, options: QaRecordExportOptions): Promise<QaRecordExportResult> {
+    return exportRecordedScenario(this.#recorder, owner, options)
+  }
+
   async dispose(): Promise<void> {
     const pending = [...this.#managers.values()]
     this.#managers.clear()
@@ -133,6 +146,7 @@ export class QaToolHost {
         await outcome.value.dispose()
       }
     }
+    this.#recorder.clear()
   }
 }
 
@@ -204,6 +218,14 @@ interface EvidenceArgs {
   max_console?: number
   max_network?: number
   max_receipts?: number
+}
+
+interface RecordExportArgs {
+  owner?: string
+  output_path: string
+  name?: string
+  description?: string
+  overwrite?: boolean
 }
 
 interface StopArgs {
@@ -380,15 +402,27 @@ export function createQaTools(host: QaToolHost): QaTools {
     presentCall: () => ({ card: 'generic', title: 'Collect QA evidence' }),
   })
 
-  const qaRecordExport = tool<Record<string, never>, unknown>({
+  const qaRecordExport = tool<RecordExportArgs, unknown>({
     name: 'qa_record_export',
-    description: 'Export the QA session record. Not implemented yet (planned for WP6 Explore tooling).',
-    parameters: closedObject({}, []),
+    description: 'Export this owner\'s redacted Explore trajectory as a fail-closed Replay scenario JSON file. Only actions with durable role+accessible-name targets and outcomes proven by immediate fresh observations become steps; exclusions are returned explicitly.',
+    parameters: closedObject({
+      owner: strProp,
+      output_path: strProp,
+      name: strProp,
+      description: strProp,
+      overwrite: { type: 'boolean' },
+    }, ['output_path']),
     output: outputFor(),
     timeoutMs: 15_000,
     isConcurrencySafe: () => false,
-    async execute() {
-      return { ok: false, error: 'tool qa_record_export is not implemented yet (planned for WP6 (Explore tooling))' }
+    async execute(args, exec) {
+      const owner = ownerFrom(args, exec)
+      return host.exportRecord(owner, {
+        outputPath: args.output_path,
+        ...(args.name === undefined ? {} : { name: args.name }),
+        ...(args.description === undefined ? {} : { description: args.description }),
+        ...(args.overwrite === undefined ? {} : { overwrite: args.overwrite }),
+      })
     },
     presentCall: () => ({ card: 'generic', title: 'Export QA record' }),
   })

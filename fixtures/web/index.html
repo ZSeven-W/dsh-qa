@@ -18,6 +18,9 @@
   </main>
   <script>
     (function () {
+      document.getElementById('release-name').addEventListener('input', function (event) {
+        document.getElementById('result').textContent = event.target.value ? 'READY' : 'IDLE';
+      });
       document.getElementById('validate').addEventListener('click', function () {
         document.getElementById('result').textContent = 'PASS';
       });

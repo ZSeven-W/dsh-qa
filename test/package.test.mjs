@@ -62,6 +62,14 @@ test('server registers the full v0.1 tool roster', () => {
   }
 });
 
+test('qa_record_export is wired on MCP and the Explore playbook ships', () => {
+  const src = readFileSync(join(ROOT, 'src', 'server.mjs'), 'utf8');
+  assert.ok(src.includes('exportRecordedScenario'));
+  assert.ok(!src.includes("stubFor('qa_record_export'"));
+  assert.ok(pkg.files.includes('skills'));
+  assert.ok(existsSync(join(ROOT, 'skills', 'qa-explore', 'SKILL.md')));
+});
+
 test('main and exports resolve to files that exist inside the package', () => {
   assert.ok(pkg.main, 'package.json must declare main');
   const mainPath = join(ROOT, pkg.main);
