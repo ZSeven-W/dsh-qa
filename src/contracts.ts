@@ -29,6 +29,8 @@ export interface QaScenarioMeta {
   driver: QaDriverKind;
   /** Creation timestamp of the scenario file (ISO 8601). */
   createdAt: string;
+  /** Deterministic informational notes (Explore visual findings surfaced as notes). */
+  notes?: string[];
 }
 
 export interface QaScenarioTarget {
@@ -63,6 +65,36 @@ export interface QaAssertion {
   description?: string;
 }
 
+/**
+ * A visual assertion: ADVISORY in Replay (executed, recorded, never affects
+ * pass/fail) and a first-class finding in Explore. Its model verdict is
+ * inherently non-deterministic, so it lives in a dedicated schema field that
+ * the determinism comparison excludes by schema — never by ad-hoc filtering.
+ */
+export interface QaVisualAssertion {
+  kind: 'visual';
+  question: string;
+  description?: string;
+}
+
+/**
+ * One advisory visual finding recorded in a report. `reason` carries a stable
+ * code when the verdict degraded (e.g. 'vision-model-unavailable'); the
+ * question and reasoning pass through the redaction engine like any other
+ * value.
+ */
+export interface QaAdvisoryResult {
+  kind: 'visual';
+  question: string;
+  verdict: 'yes' | 'no' | 'unclear';
+  confidence: number;
+  reasoning: string;
+  reason?: string;
+  description?: string;
+  /** Structured reference to the captured PNG (projected through the whitelist). */
+  artifact?: QaArtifact;
+}
+
 export interface QaStep {
   /** 1-based step ordinal; must equal its position in steps[]. */
   index: number;
@@ -80,6 +112,8 @@ export interface QaScenario {
   steps: QaStep[];
   /** Final assertions evaluated against the final observation (after all steps). */
   assertions: QaAssertion[];
+  /** Advisory visual assertions, evaluated and recorded but never affecting status. */
+  advisory?: QaVisualAssertion[];
 }
 
 export type QaRunStatus = 'pass' | 'fail' | 'blocked';
@@ -154,5 +188,7 @@ export interface QaRunReport {
   evidence: QaEvidence | null;
   /** Structured artifact/evidence paths (screenshot/trace/evidence). */
   artifacts?: QaArtifact[];
+  /** Advisory visual findings (non-deterministic; excluded from determinism by schema). */
+  advisory?: QaAdvisoryResult[];
   failure?: QaRunFailure;
 }
