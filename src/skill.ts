@@ -48,6 +48,11 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   retarget around a driver safety rejection.
 - \`qa_assert\` checks resulting state against a fresh observation. Do not repeat the action "to see
   if it worked".
+- A view can be TRUNCATED at the node budget, and a node outside that window still exists. So an
+  absence can never be proven from a truncated view: \`node-absent\` re-observes once at a raised
+  budget and then fails closed with \`completeness.reason: "INCONCLUSIVE_TRUNCATED"\` rather than
+  reporting a false "gone". Read \`completeness\` before believing any negative result: "we did not
+  see it" is not "it is not there". A found node is sound evidence of presence either way.
 - The moment a problem appears, call \`qa_evidence\` before navigating away or changing state.
   Missing permissions, truncation, and driver rejection are boundaries, never green results.
 

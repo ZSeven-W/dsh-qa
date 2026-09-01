@@ -97,6 +97,22 @@ or the `DSH_QA_SETTLE_BUDGET_MS` / `DSH_QA_SETTLE_QUIET_MS` / `DSH_QA_SETTLE_INT
 environment overrides. Full rationale, both reproduced real-world failure modes,
 and the regression fixtures: `docs/SETTLE.md`.
 
+## A truncated view is incomplete, not empty
+
+Observations are budget-limited and carry `truncated`. A node beyond the budget
+still exists, so **an absence can never be proven from a truncated view**:
+`node-absent` fails closed there instead of reporting a silent false green, and
+any outcome that would rest on an incomplete view re-observes ONCE at
+`QA_ESCALATED_NODE_BUDGET` before concluding. A claim that is still unprovable
+against the fuller view carries `completeness.reason: "INCONCLUSIVE_TRUNCATED"`
+— distinct from an ordinary failure — while a node that WAS returned remains
+sound evidence of presence. Whenever truncation touched a decision, the
+`completeness` block (budget, truncation state, escalation) is written into
+`report.json`, `report.jsonl` and a "view completeness" line in `report.md`.
+The replay runner resolves action targets the same way, and the exporter records
+a truncated proof observation as a `Weak proof:` note in the step intent. Full
+rationale: `docs/TRUNCATION.md`.
+
 ## Visual assertions (advisory)
 
 `qa_assert kind:"visual"` captures the current screen and asks the host vision

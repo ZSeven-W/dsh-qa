@@ -14,6 +14,7 @@ Use this loop: **start → observe → choose one semantic target → act → in
 - Perform exactly one `qa_act`, then inspect its fresh post-action observation before deciding what happened. Re-observe when diagnosing, and never reuse an old ref.
 - An `unknown` receipt is never success. It needs a semantic delta or URL change in the fresh observation. A `rejected` or `failed` receipt is a hard stop; honor every driver safety rejection and never route around it.
 - Assert resulting state with `qa_assert`; do not repeat the action to test whether it landed.
+- A view can be TRUNCATED at the node budget, and a node outside that window still exists. An absence therefore cannot be proven from a truncated view: `node-absent` re-observes once at a raised budget and then fails closed with `completeness.reason: "INCONCLUSIVE_TRUNCATED"` instead of reporting a false "gone". Read `completeness` before believing any negative result — "we did not see it" is not "it is not there". A node that WAS returned is sound evidence of presence either way.
 - Call `qa_evidence` at the moment a problem appears, before navigating away or changing the state. Missing permissions, truncation, and driver rejection are boundaries, not passes.
 
 ## Visual assertions: trust the verdict, never the narration
