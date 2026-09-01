@@ -10,9 +10,18 @@ import type {
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
+  QaSettleReport,
   QaVisualCapture,
   QaVisualObserveOptions,
 } from './adapter.ts';
+import {
+  observeUntilStable,
+  projectSemanticView,
+  resolveSettlePolicy,
+  type QaSettleCallOptions,
+  type QaSettlePolicy,
+  type QaSettleResult,
+} from './settle.ts';
 
 /** Outcome the session core resolves for one act step. */
 export type QaActOutcome = 'ok' | 'unknown' | 'failed';
@@ -20,14 +29,25 @@ export type QaActOutcome = 'ok' | 'unknown' | 'failed';
 export interface QaActResult {
   receipt: QaActionReceipt;
   /**
-   * Fresh observation taken after a confirmed or unknown receipt. Null for
-   * rejected/failed receipts, where no action was dispatched and no state
-   * change can be attributed to it.
+   * Fresh SETTLED observation taken after a confirmed or unknown receipt (see
+   * session/settle.ts). Null for rejected/failed receipts, where no action was
+   * dispatched and no state change can be attributed to it.
    */
   observation: QaObservation | null;
   outcome: QaActOutcome;
   /** Receipts attached as evidence for this step. */
   evidence: QaActionReceipt[];
+  /**
+   * Settle window that produced `observation`. Null for rejected/failed
+   * receipts. `settle.stable === false` means the view never stabilized and
+   * the observation proves nothing — callers must fail closed on it.
+   */
+  settle: QaSettleReport | null;
+}
+
+export interface QaSessionOptions {
+  /** Override the bounded settle policy (defaults come from resolveSettlePolicy). */
+  settle?: Partial<QaSettlePolicy>;
 }
 
 function normalizeOwner(ownerId: string): string {
@@ -48,17 +68,29 @@ function normalizeOwner(ownerId: string): string {
  *    attached as evidence.
  *  - stop() is idempotent, and run() awaits cleanup in its finally so the
  *    driver is always stopped even when a step throws.
+ *  - the proof observation after an act is SETTLED (observe until two
+ *    consecutive observations agree, bounded by a budget) and an unsettled
+ *    view is never silently accepted as proof.
  */
 export class QaSession {
   readonly #adapter: QaDriverAdapter;
   readonly #ownerId: string;
+  readonly #settle: QaSettlePolicy;
+  /** Semantic projection of the last observed view (the settle baseline). */
+  #lastView: string | null = null;
   #started = false;
   #stopped = false;
   #stopPromise: Promise<QaStopResult> | null = null;
 
-  constructor(adapter: QaDriverAdapter, ownerId: string) {
+  constructor(adapter: QaDriverAdapter, ownerId: string, options: QaSessionOptions = {}) {
     this.#adapter = adapter;
     this.#ownerId = normalizeOwner(ownerId);
+    this.#settle = resolveSettlePolicy(options.settle);
+  }
+
+  /** The resolved settle policy this session applies to every proof observation. */
+  get settlePolicy(): QaSettlePolicy {
+    return { ...this.#settle };
   }
 
   get ownerId(): string {
@@ -85,23 +117,69 @@ export class QaSession {
     return info;
   }
 
+  /** One raw observation. Callers proving an outcome must use observeSettled(). */
   async observe(options?: QaObserveOptions): Promise<QaObservation> {
     this.#assertStarted();
-    return this.#adapter.observe(this.#ownerId, options);
+    const observation = await this.#adapter.observe(this.#ownerId, options);
+    this.#lastView = projectSemanticView(observation);
+    return observation;
+  }
+
+  /**
+   * Observe until the semantic view is stable or the bounded budget is spent.
+   * This is the ONE proof/verification observation used by both Explore export
+   * and Replay, so the two sides never judge different views of the same page.
+   */
+  async observeSettled(options?: QaObserveOptions, settle?: QaSettleCallOptions): Promise<QaSettleResult> {
+    this.#assertStarted();
+    const result = await observeUntilStable(
+      () => this.#adapter.observe(this.#ownerId, options),
+      this.#settle,
+      settle ?? {},
+    );
+    this.#lastView = projectSemanticView(result.observation);
+    // Passive notification only (the Explore recorder binds the settled
+    // observation here); a recorder failure can never alter session behavior.
+    try {
+      this.#adapter.noteSettle?.(this.#ownerId, {
+        stable: result.stable,
+        passes: result.passes,
+        elapsedMs: result.elapsedMs,
+        budgetMs: result.budgetMs,
+      });
+    } catch { /* observational only */ }
+    return result;
   }
 
   async act(action: QaAction, approval?: QaApprovalGate): Promise<QaActResult> {
     this.#assertStarted();
     const receipt = await this.#adapter.act(this.#ownerId, action, approval);
     if (receipt.status === 'rejected' || receipt.status === 'failed') {
-      return { receipt, observation: null, outcome: 'failed', evidence: [receipt] };
+      return { receipt, observation: null, outcome: 'failed', evidence: [receipt], settle: null };
     }
     // confirmed and unknown both demand a fresh re-observation. The outcome
     // of an unknown receipt is deliberately left "unknown" — only a fresh
-    // observation (never the receipt) can decide it.
-    const observation = await this.#adapter.observe(this.#ownerId);
+    // observation (never the receipt) can decide it. That observation is
+    // SETTLED, and as a PROOF observation it waits out an outcome that may
+    // still be in flight: a single-shot read races every asynchronous UI.
+    const baselineView = this.#lastView;
+    const settled = await this.observeSettled(undefined, {
+      awaitChange: true,
+      ...(baselineView === null ? {} : { baselineView }),
+    });
     const outcome: QaActOutcome = receipt.status === 'confirmed' ? 'ok' : 'unknown';
-    return { receipt, observation, outcome, evidence: [receipt] };
+    return {
+      receipt,
+      observation: settled.observation,
+      outcome,
+      evidence: [receipt],
+      settle: {
+        stable: settled.stable,
+        passes: settled.passes,
+        elapsedMs: settled.elapsedMs,
+        budgetMs: settled.budgetMs,
+      },
+    };
   }
 
   async evidence(options?: QaEvidenceOptions): Promise<QaEvidence> {
@@ -152,10 +230,12 @@ export class QaSession {
 export class QaSessionManager {
   readonly #adapter: QaDriverAdapter;
   readonly #sessions = new Map<string, QaSession>();
+  readonly #options: QaSessionOptions;
   #disposed = false;
 
-  constructor(adapter: QaDriverAdapter) {
+  constructor(adapter: QaDriverAdapter, options: QaSessionOptions = {}) {
     this.#adapter = adapter;
+    this.#options = options;
   }
 
   session(ownerId: string): QaSession {
@@ -163,7 +243,7 @@ export class QaSessionManager {
     const owner = normalizeOwner(ownerId);
     let session = this.#sessions.get(owner);
     if (!session) {
-      session = new QaSession(this.#adapter, owner);
+      session = new QaSession(this.#adapter, owner, this.#options);
       this.#sessions.set(owner, session);
     }
     return session;
@@ -200,7 +280,7 @@ export async function captureLatestVisual(
   options?: QaVisualObserveOptions,
 ): Promise<QaVisualCapture> {
   if (session.kind === 'computer' && options?.observationId === undefined) {
-    const observation = await session.observe();
+    const observation = (await session.observeSettled()).observation;
     const observationId = observation.observationId;
     if (observationId === undefined) {
       throw new Error('computer visual capture requires an observation id from the latest observation');

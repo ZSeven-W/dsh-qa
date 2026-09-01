@@ -12,6 +12,7 @@ import type {
   QaObservation,
   QaObserveOptions,
   QaSessionInfo,
+  QaSettleReport,
   QaStartOptions,
   QaStopResult,
   QaVisualCapture,
@@ -44,6 +45,13 @@ interface MutableTrajectory {
   recordingIssues: string[];
   lastObservationId: string | null;
   pendingActionId: string | null;
+  /**
+   * The action whose bounded settle window is still open. The FIRST
+   * post-receipt observation opens it; every later observation of that window
+   * re-binds the action's proof, so the SETTLED (last) observation is what the
+   * exporter judges — never the first, racing one.
+   */
+  settlingActionId: string | null;
 }
 
 interface Sanitized<T> {
@@ -140,6 +148,7 @@ export class QaTrajectoryRecorder {
         recordingIssues: [],
         lastObservationId: null,
         pendingActionId: null,
+        settlingActionId: null,
       };
       this.#trajectories.set(ownerId, trajectory);
       this.#push(trajectory, {
@@ -166,12 +175,14 @@ export class QaTrajectoryRecorder {
       const safe = action.kind === 'navigate'
         ? { value: aliased, changed: false }
         : cloneRedacted(aliased);
+      trajectory.settlingActionId = null;
       const recorded: MutableAction = {
         actionId,
         action: safe.value,
         beforeObservationId: trajectory.lastObservationId,
         receipt: null,
         afterObservationId: null,
+        afterObservationStable: null,
         payloadRedacted: safe.changed,
         recordingIssue: null,
       };
@@ -190,12 +201,14 @@ export class QaTrajectoryRecorder {
     } catch (error) {
       const issue = 'action recording failed: ' + safeReason(error);
       trajectory.recordingIssues.push(issue);
+      trajectory.settlingActionId = null;
       const recorded: MutableAction = {
         actionId,
         action: { kind: 'navigate', url: 'about:recording-error' },
         beforeObservationId: trajectory.lastObservationId,
         receipt: null,
         afterObservationId: null,
+        afterObservationStable: null,
         payloadRedacted: true,
         recordingIssue: issue,
       };
@@ -250,6 +263,12 @@ export class QaTrajectoryRecorder {
       if (afterActionId !== null) {
         const action = trajectory.actionById.get(afterActionId);
         if (action !== undefined) action.afterObservationId = observationId;
+        // The settle window for this action is now open: later observations in
+        // the same window re-bind the proof (see settle()).
+        trajectory.settlingActionId = afterActionId;
+      } else if (trajectory.settlingActionId !== null) {
+        const action = trajectory.actionById.get(trajectory.settlingActionId);
+        if (action !== undefined) action.afterObservationId = observationId;
       }
       this.#push(trajectory, {
         sequence: this.#sequence(trajectory),
@@ -271,13 +290,58 @@ export class QaTrajectoryRecorder {
     }
   }
 
+  /**
+   * Close the bounded settle window the session core just ran. The action's
+   * proof is re-bound to the SETTLED observation and the window's stability is
+   * recorded, so the exporter can refuse (fail closed) a view that never
+   * stabilized instead of exporting an assertion on churn.
+   */
+  settle(ownerId: string, report: QaSettleReport): void {
+    const trajectory = this.#trajectories.get(ownerId);
+    if (trajectory === undefined) return;
+    const actionId = trajectory.settlingActionId;
+    trajectory.settlingActionId = null;
+    try {
+      const safeReport = cloneRedacted(report).value;
+      if (actionId !== null) {
+        const action = trajectory.actionById.get(actionId);
+        if (action !== undefined) {
+          if (trajectory.lastObservationId !== null) {
+            action.afterObservationId = trajectory.lastObservationId;
+          }
+          action.afterObservationStable = safeReport.stable;
+        }
+      }
+      this.#push(trajectory, {
+        sequence: this.#sequence(trajectory),
+        at: new Date().toISOString(),
+        kind: 'settle',
+        actionId,
+        observationId: trajectory.lastObservationId,
+        stable: safeReport.stable,
+        passes: safeReport.passes,
+        budgetMs: safeReport.budgetMs,
+      });
+    } catch (error) {
+      const issue = 'settle recording failed: ' + safeReason(error);
+      trajectory.recordingIssues.push(issue);
+      if (actionId !== null) {
+        const action = trajectory.actionById.get(actionId);
+        if (action !== undefined) action.recordingIssue = issue;
+      }
+      this.#recordingError(trajectory, 'settle', issue, actionId);
+    }
+  }
+
   observationFailed(ownerId: string, error: unknown): void {
     const trajectory = this.#trajectories.get(ownerId);
     if (trajectory === undefined) return;
-    const actionId = trajectory.pendingActionId;
+    // A failure anywhere inside a settle window invalidates that window's proof.
+    const actionId = trajectory.pendingActionId ?? trajectory.settlingActionId;
     const issue = 'fresh observation failed: ' + safeReason(error);
     trajectory.recordingIssues.push(issue);
     trajectory.pendingActionId = null;
+    trajectory.settlingActionId = null;
     if (actionId !== null) {
       const action = trajectory.actionById.get(actionId);
       if (action !== undefined) action.recordingIssue = issue;
@@ -471,7 +535,7 @@ export class QaTrajectoryRecorder {
 
   #recordingError(
     trajectory: MutableTrajectory,
-    operation: 'start' | 'observation' | 'action' | 'receipt' | 'evidence' | 'stop' | 'visual',
+    operation: 'start' | 'observation' | 'action' | 'receipt' | 'evidence' | 'stop' | 'visual' | 'settle',
     reason: string,
     actionId: string | null,
   ): void {
@@ -505,6 +569,7 @@ export class QaTrajectoryRecorder {
       recordingIssues: [issue],
       lastObservationId: null,
       pendingActionId: null,
+      settlingActionId: null,
     };
     this.#recordingError(trajectory, 'start', issue, null);
     return trajectory;
@@ -559,6 +624,11 @@ export class RecordingQaDriverAdapter implements QaDriverAdapter {
     const evidence = await this.#delegate.evidence(ownerId, options);
     this.#safe(() => this.#recorder.evidence(ownerId, evidence));
     return evidence;
+  }
+
+  /** Passive: binds the SETTLED observation as the pending action's proof. */
+  noteSettle(ownerId: string, report: QaSettleReport): void {
+    this.#safe(() => this.#recorder.settle(ownerId, report));
   }
 
   async visualObserve(ownerId: string, options?: QaVisualObserveOptions): Promise<QaVisualCapture> {

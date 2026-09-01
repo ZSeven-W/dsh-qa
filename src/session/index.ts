@@ -17,6 +17,7 @@ export type {
   QaReceiptStatus,
   QaSemanticNode,
   QaSessionInfo,
+  QaSettleReport,
   QaStartOptions,
   QaStopResult,
   QaVisualCapture,
@@ -30,4 +31,16 @@ export {
   QaSessionManager,
   type QaActOutcome,
   type QaActResult,
+  type QaSessionOptions,
 } from './session.ts';
+export {
+  observeUntilStable,
+  projectSemanticView,
+  resolveSettlePolicy,
+  QA_SETTLE_BUDGET_MS,
+  QA_SETTLE_INTERVAL_MS,
+  QA_SETTLE_QUIET_MS,
+  type QaSettleCallOptions,
+  type QaSettlePolicy,
+  type QaSettleResult,
+} from './settle.ts';

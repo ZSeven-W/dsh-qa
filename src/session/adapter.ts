@@ -211,6 +211,21 @@ export function toVisualCaptureInfo(capture: QaVisualCapture): QaVisualCaptureIn
   };
 }
 
+/**
+ * Outcome of one bounded settle window (see session/settle.ts). `stable` is
+ * true only when two CONSECUTIVE observations had an identical semantic
+ * projection; false means the view kept changing until the budget ran out and
+ * every caller must fail closed on it.
+ */
+export interface QaSettleReport {
+  stable: boolean;
+  /** Observations taken inside the window (always at least 1). */
+  passes: number;
+  elapsedMs: number;
+  /** The budget the window ran under, for honest reporting. */
+  budgetMs: number;
+}
+
 /** Closed vocabulary returned by the host-owned approval service. */
 export type QaApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable';
 
@@ -263,6 +278,14 @@ export interface QaDriverAdapter {
   evidence(ownerId: string, options?: QaEvidenceOptions): Promise<QaEvidence>;
   /** Optional unified visual capture (browser + computer). */
   visualObserve?(ownerId: string, options?: QaVisualObserveOptions): Promise<QaVisualCapture>;
+  /**
+   * Optional PASSIVE notification that the session core just closed a bounded
+   * settle window over observe(). It exists so the Explore recorder can bind
+   * the SETTLED observation (not the first, racing one) as an action's proof
+   * and record whether it settled at all. Real drivers never implement it, it
+   * must never throw, and it can never change driver behavior.
+   */
+  noteSettle?(ownerId: string, report: QaSettleReport): void;
   stop(ownerId: string): Promise<QaStopResult>;
   dispose?(): Promise<void>;
 }

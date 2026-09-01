@@ -188,12 +188,17 @@ server.tool(
   guard(async (args) => {
     const owner = ownerFrom(args);
     const manager = await managerForOwner(owner);
-    const observation = await manager.session(owner).observe({
+    // Settled (observe until two consecutive semantic views agree), exactly
+    // like the export/replay proof observations.
+    const settled = await manager.session(owner).observeSettled({
       ...(args.max_nodes === undefined ? {} : { maxNodes: args.max_nodes }),
       ...(args.max_depth === undefined ? {} : { maxDepth: args.max_depth }),
       ...(args.ttl_ms === undefined ? {} : { ttlMs: args.ttl_ms }),
     });
-    return textResult(observation);
+    return textResult({
+      ...settled.observation,
+      settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs },
+    });
   }),
 );
 
@@ -357,14 +362,15 @@ server.tool(
     }
     // Fail-closed: validate the assertion shape before touching the session.
     const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert');
-    const observation = await session.observe();
-    const evaluation = evaluateAssertion(assertion, observation);
+    const settled = await session.observeSettled();
+    const evaluation = evaluateAssertion(assertion, settled.observation);
     return textResult({
       ok: true,
       passed: evaluation.passed,
       kind: assertion.kind,
       observed: evaluation.observed,
       expected: assertion.expected,
+      settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs },
     });
   }),
 );

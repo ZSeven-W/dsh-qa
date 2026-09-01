@@ -25,6 +25,7 @@ import { evaluateAssertion, loadScenarioFromPath, runScenario, validateAssertion
 import { writeReports } from './reporters/index.ts'
 import { captureLatestVisual, QaSessionManager, toLosslessJson } from './session/index.ts'
 import type { QaAction, QaVisualObserveOptions } from './session/adapter.ts'
+import type { QaSettlePolicy } from './session/settle.ts'
 import { toVisualCaptureInfo } from './session/adapter.ts'
 import type { QaSession } from './session/session.ts'
 import {
@@ -106,6 +107,12 @@ export interface QaToolHostOptions {
   visionModel?: string
   /** Directory for writing a PNG when the driver did not persist one. */
   capturesDir?: string
+  /**
+   * Bounded settle policy for proof/verification observations. The SAME policy
+   * is applied to Explore sessions and to qa_replay_run, so export and replay
+   * never judge different views of the same page.
+   */
+  settle?: Partial<QaSettlePolicy>
 }
 
 /** One lazy QaSessionManager per driver, mirroring src/server.mjs getManager(). */
@@ -123,14 +130,15 @@ export class QaToolHost {
     let manager = this.#managers.get(driver)
     if (manager === undefined) {
       manager = (async () => {
+        const sessionOptions = this.#sessionOptions()
         if (driver === 'browser') {
           const browserManager = await loadBrowserManager()
           const adapter = new BrowserAdapter(browserManager)
-          return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder))
+          return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder), sessionOptions)
         }
         const computerDriver = await loadComputerDriver()
         const adapter = new ComputerAdapter(computerDriver)
-        return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder))
+        return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder), sessionOptions)
       })()
       manager = manager.catch((error: unknown) => {
         this.#managers.delete(driver)
@@ -164,6 +172,16 @@ export class QaToolHost {
 
   #capturesDir(): string {
     return this.#options.capturesDir ?? join(tmpdir(), 'dsh-qa-visual-captures')
+  }
+
+  /** Session options (settle policy) shared by every driver manager. */
+  #sessionOptions(): { settle?: Partial<QaSettlePolicy> } {
+    return this.#options.settle === undefined ? {} : { settle: this.#options.settle }
+  }
+
+  /** The settle policy qa_replay_run must reuse, so replay matches export. */
+  settleOptions(): { settle?: Partial<QaSettlePolicy> } {
+    return this.#sessionOptions()
   }
 
   /** Lazily resolve the host vision services (llm + attachments) for one call. */
@@ -387,7 +405,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaObserve = tool<ObserveArgs, unknown>({
     name: 'qa_observe',
-    description: 'Return a bounded semantic view of the current app/page. Interactive nodes carry opaque session-local refs; observe again after every action.',
+    description: 'Return a bounded semantic view of the current app/page, taken after a bounded settle (observe until two consecutive semantic views agree). Interactive nodes carry opaque session-local refs; observe again after every action. The result carries settle.stable: when it is false the page never stopped changing inside the budget and nothing in that view proves anything.',
     parameters: closedObject({
       owner: strProp,
       max_nodes: intProp,
@@ -400,11 +418,15 @@ export function createQaTools(host: QaToolHost): QaTools {
     async execute(args, exec) {
       const owner = ownerFrom(args, exec)
       const manager = await host.managerForOwner(owner)
-      return manager.session(owner).observe({
+      const settled = await manager.session(owner).observeSettled({
         ...(args.max_nodes === undefined ? {} : { maxNodes: args.max_nodes }),
         ...(args.max_depth === undefined ? {} : { maxDepth: args.max_depth }),
         ...(args.ttl_ms === undefined ? {} : { ttlMs: args.ttl_ms }),
       })
+      return {
+        ...settled.observation,
+        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs },
+      }
     },
     presentCall: () => ({ card: 'generic', title: 'Observe QA target' }),
   })
@@ -499,7 +521,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAssert = tool<AssertArgs, unknown>({
     name: 'qa_assert',
-    description: 'Evaluate one assertion against a fresh observation. node-present/node-absent/node-in-viewport/page-url are deterministic; kind "visual" captures the current screen and asks the host vision model a question, returning an ADVISORY verdict (yes/no/unclear with confidence and reasoning) that never changes pass/fail. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
+    description: 'Evaluate one assertion against a fresh SETTLED observation (observe until two consecutive semantic views agree, bounded by a budget; the result carries settle.stable). node-present/node-absent/node-in-viewport/page-url are deterministic; kind "visual" captures the current screen and asks the host vision model a question, returning an ADVISORY verdict (yes/no/unclear with confidence and reasoning) that never changes pass/fail. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
     parameters: closedObject({
       owner: strProp,
       kind: enumOf('node-present', 'node-absent', 'page-url', 'node-in-viewport', 'visual'),
@@ -520,14 +542,15 @@ export function createQaTools(host: QaToolHost): QaTools {
         return host.assertVisual(owner, session, args.question)
       }
       const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert')
-      const observation = await session.observe()
-      const evaluation = evaluateAssertion(assertion, observation)
+      const settled = await session.observeSettled()
+      const evaluation = evaluateAssertion(assertion, settled.observation)
       return {
         ok: true,
         passed: evaluation.passed,
         kind: assertion.kind,
         observed: evaluation.observed,
         expected: assertion.expected,
+        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs },
       }
     },
     presentCall: () => ({ card: 'generic', title: 'Assert QA state' }),
@@ -629,6 +652,7 @@ export function createQaTools(host: QaToolHost): QaTools {
           ...(args.headless === undefined ? {} : { headless: args.headless }),
           launchUrl: scenario.target.launch,
           visual: host.visualServices(),
+          ...host.settleOptions(),
         })
         if (args.outputDir !== undefined) {
           await writeReports(report, { directory: args.outputDir })

@@ -178,42 +178,115 @@ function durableAction(
   return { action: { kind: 'press', target, key: action.key }, target };
 }
 
-function semanticDelta(before: QaObservation | null, after: QaObservation): QaNodePredicate | null {
+/**
+ * How far (in document-ordered semantic nodes) a delta may sit from the action
+ * target and still count as target-proximate evidence. A delta on the target
+ * itself, in its subtree, or among the handful of nodes rendered next to it is
+ * strong evidence that the action caused it; a delta on the far side of the
+ * page is weak (late hydration renaming an unrelated element looks exactly
+ * like that). Weak evidence is ranked BELOW strong evidence but never dropped
+ * — dropping it would silently lose provable steps.
+ */
+const PROXIMATE_NODE_DISTANCE = 6;
+
+/** Proximity of a candidate delta to the action target. */
+type DeltaProximity = 'target-proximate' | 'distant' | 'not-applicable';
+
+interface SemanticDelta {
+  predicate: QaNodePredicate;
+  proximity: DeltaProximity;
+  /** Human-facing name of the delta, used when recording weak proof. */
+  name: string;
+}
+
+/** Document-order index of the action target, preferring the post-action view. */
+function targetAnchor(
+  before: QaObservation | null,
+  after: QaObservation,
+  target: QaNodePredicate | null,
+): number | null {
+  if (target === null) return null;
+  const afterIndex = after.nodes.findIndex((node) => matchesPredicate(node, target));
+  if (afterIndex >= 0) return afterIndex;
   if (before === null) return null;
+  const beforeIndex = before.nodes.findIndex((node) => matchesPredicate(node, target));
+  return beforeIndex >= 0 ? beforeIndex : null;
+}
+
+function semanticDelta(
+  before: QaObservation | null,
+  after: QaObservation,
+  target: QaNodePredicate | null,
+): SemanticDelta | null {
+  if (before === null) return null;
+  const anchor = targetAnchor(before, after, target);
   const candidates = after.nodes
     .map((node, order) => ({ node, order, predicate: predicateFor(node) }))
     .filter((item): item is { node: QaSemanticNode; order: number; predicate: QaNodePredicate } => (
       item.predicate !== null
       && countMatches(after, item.predicate) === 1
       && countMatches(before, item.predicate) === 0
-    ));
+    ))
+    .map((item) => ({
+      ...item,
+      proximity: (anchor === null
+        ? 'not-applicable'
+        : Math.abs(item.order - anchor) <= PROXIMATE_NODE_DISTANCE ? 'target-proximate' : 'distant') as DeltaProximity,
+    }));
   candidates.sort((left, right) => {
+    // 1. evidence on/near the action target beats evidence anywhere else;
+    // 2. then the outcome-announcing roles; 3. then document order.
+    const leftProximity = left.proximity === 'distant' ? 1 : 0;
+    const rightProximity = right.proximity === 'distant' ? 1 : 0;
     const leftPriority = OUTCOME_ROLE_PRIORITY.get(left.node.role) ?? 10;
     const rightPriority = OUTCOME_ROLE_PRIORITY.get(right.node.role) ?? 10;
-    return leftPriority - rightPriority || left.order - right.order;
+    return leftProximity - rightProximity || leftPriority - rightPriority || left.order - right.order;
   });
-  return candidates[0]?.predicate ?? null;
+  const best = candidates[0];
+  if (best === undefined) return null;
+  return { predicate: best.predicate, proximity: best.proximity, name: predicateName(best.predicate) };
 }
 
-function synthesizeAssertion(before: QaObservation | null, after: QaObservation): QaAssertion | null {
+interface SynthesizedAssertion {
+  assertion: QaAssertion;
+  /** Non-null when the proof is weak, for the human-readable step intent. */
+  weakness: string | null;
+}
+
+function synthesizeAssertion(
+  before: QaObservation | null,
+  after: QaObservation,
+  target: QaNodePredicate | null,
+): SynthesizedAssertion | null {
   if (before !== null && before.page.url !== after.page.url && clean(after.page.url) !== '') {
     return {
-      kind: 'page-url',
-      expected: { url: after.page.url },
-      description: 'Fresh post-action observation reached the recorded URL.',
+      assertion: {
+        kind: 'page-url',
+        expected: { url: after.page.url },
+        description: 'Settled post-action observation reached the recorded URL.',
+      },
+      weakness: null,
     };
   }
-  const delta = semanticDelta(before, after);
+  const delta = semanticDelta(before, after, target);
   if (delta !== null) {
+    const distant = delta.proximity === 'distant';
     return {
-      kind: 'node-present',
-      expected: delta,
-      description: 'Fresh post-action observation exposed a new semantic state.',
+      assertion: {
+        kind: 'node-present',
+        expected: delta.predicate,
+        description: distant
+          ? 'Settled post-action observation exposed a new semantic state, but only away from the action target.'
+          : 'Settled post-action observation exposed a new semantic state.',
+      },
+      weakness: distant
+        ? 'the only observable change was away from the action target ("' + delta.name + '")'
+        : null,
     };
   }
   // Target persistence is not proof that any action landed, even for a
   // confirmed dispatch receipt. Every exported action needs a semantic delta
-  // or URL change from the fresh observation above.
+  // or URL change from the SETTLED observation above.
   return null;
 }
 
@@ -222,7 +295,7 @@ function synthesizeScrollAssertion(target: QaNodePredicate): QaAssertion {
   return {
     kind: 'node-in-viewport',
     expected: target,
-    description: 'Fresh post-scroll observation placed the target in the viewport.',
+    description: 'Settled post-scroll observation placed the target in the viewport.',
   };
 }
 
@@ -339,6 +412,17 @@ function buildScenario(
         'FRESH_OBSERVATION_MISSING',
         'No immediate fresh post-action observation proved the outcome.',
       );
+    } else if (recorded.afterObservationStable !== true) {
+      // Fail closed: the bounded settle window never reached two consecutive
+      // identical semantic views, so nothing in the post-action observation can
+      // be attributed to the action. An unstable page is honestly unprovable.
+      early = exclusion(
+        recorded,
+        'ASSERTION_NOT_PROVABLE',
+        recorded.afterObservationStable === null
+          ? 'No settle window was recorded for the post-action observation, so its view is unproven.'
+          : 'The post-action view never stabilized within the settle budget, so no observation proves the outcome.',
+      );
     }
     if (early !== null) {
       candidates.push({ recorded, before: null, after: null, exclusion: early, action: null, target: null });
@@ -438,24 +522,30 @@ function buildScenario(
       excluded.push(exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'The action had no durable replay form.'));
       continue;
     }
-    const assertion = stepAction.kind === 'scroll' && candidate.target !== null
-      ? synthesizeScrollAssertion(candidate.target)
-      : synthesizeAssertion(candidate.before, after);
-    if (assertion === null || !evaluateAssertion(assertion, after).passed) {
+    const synthesized = stepAction.kind === 'scroll' && candidate.target !== null
+      ? { assertion: synthesizeScrollAssertion(candidate.target), weakness: null }
+      : synthesizeAssertion(candidate.before, after, candidate.target);
+    if (synthesized === null || !evaluateAssertion(synthesized.assertion, after).passed) {
       excluded.push(exclusion(
         recorded,
         'ASSERTION_NOT_PROVABLE',
         receipt?.status === 'unknown'
-          ? 'Unknown receipt had no semantic state change in the fresh observation.'
-          : 'The fresh observation had no semantic state change or URL change proving the action outcome.',
+          ? 'Unknown receipt had no semantic state change in the settled observation.'
+          : 'The settled observation had no semantic state change or URL change proving the action outcome.',
       ));
       continue;
     }
+    // A distant delta is still exported (dropping it would silently lose the
+    // step), but the weakness is recorded in the intent so a human can see why
+    // the assertion looks unrelated to the action.
+    const intent = synthesized.weakness === null
+      ? intentFor(stepAction)
+      : intentFor(stepAction) + ' Weak proof: ' + synthesized.weakness + ' — verify manually.';
     steps.push({
       index: steps.length + 1,
-      intent: intentFor(stepAction),
+      intent,
       action: stepAction,
-      assert: assertion,
+      assert: synthesized.assertion,
     });
   }
 

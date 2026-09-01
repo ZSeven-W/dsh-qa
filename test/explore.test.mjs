@@ -12,6 +12,11 @@ import {
 import { loadScenarioFromPath } from '../src/replay/index.ts'
 import { QaSession } from '../src/session/index.ts'
 
+// These unit tests drive synthetic adapters, so they run the real settle loop
+// under a deliberately small policy: the behaviour under test is the settle
+// CONTRACT, not the production budget (exercised by the browser fixtures).
+const FAST_SETTLE = { settle: { budgetMs: 400, quietMs: 30, intervalMs: 5 } }
+
 function node(ref, role, name, tag, extra = {}) {
   return {
     ref,
@@ -100,7 +105,7 @@ function assertLosslessJson(value, path = '$') {
 test('trajectory recording is passive, ordered, redacted, and exports fresh-observation assertions', async () => {
   const recorder = new QaTrajectoryRecorder()
   const adapter = new RecordingQaDriverAdapter(fixtureAdapter(), recorder)
-  const session = new QaSession(adapter, 'explore-unit')
+  const session = new QaSession(adapter, 'explore-unit', FAST_SETTLE)
   const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-explore-unit-'))
   const path = join(dir, 'scenario.json')
   try {
@@ -120,12 +125,27 @@ test('trajectory recording is passive, ordered, redacted, and exports fresh-obse
     assert.ok(snapshot)
     assert.deepEqual(snapshot.events.map((event) => event.sequence), snapshot.events.map((_, index) => index + 1))
     const eventKinds = snapshot.events.map((event) => event.kind)
-    assert.equal(eventKinds.filter((kind) => kind === 'observation').length, 3)
+    // One settle window per act (this test's first observe is the raw
+    // single-shot primitive). Each window polls until the view holds still, so
+    // the observation count is a duration, not an outcome: assert the window
+    // structure instead of a fixed count.
+    assert.equal(eventKinds.filter((kind) => kind === 'settle').length, 2)
+    assert.ok(eventKinds.filter((kind) => kind === 'observation').length >= 5)
     assert.equal(eventKinds.filter((kind) => kind === 'action').length, 2)
     assert.equal(eventKinds.filter((kind) => kind === 'receipt').length, 2)
     assert.equal(eventKinds.filter((kind) => kind === 'evidence').length, 1)
     assert.equal(snapshot.actions.length, 2)
     assert.ok(snapshot.actions.every((action) => action.afterObservationId !== null))
+    assert.ok(
+      snapshot.actions.every((action) => action.afterObservationStable === true),
+      'every exported action must be proven on a settled observation',
+    )
+    // Each action's proof is the LAST observation of its settle window.
+    for (const settle of snapshot.events.filter((event) => event.kind === 'settle')) {
+      if (settle.actionId === null) continue
+      const action = snapshot.actions.find((item) => item.actionId === settle.actionId)
+      assert.equal(action.afterObservationId, settle.observationId)
+    }
     assert.deepEqual(snapshot.evidenceReferences, ['evidence-1'])
     const encodedSnapshot = JSON.stringify(snapshot)
     assert.doesNotMatch(encodedSnapshot, /explore_SECRET_20260830/)
@@ -161,6 +181,7 @@ test('rejected-only trajectory returns NO_PROVEN_STEPS and writes no scenario', 
   const session = new QaSession(
     new RecordingQaDriverAdapter(fixtureAdapter({ reject: true }), recorder),
     'rejected-only',
+    FAST_SETTLE,
   )
   const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-explore-rejected-'))
   const path = join(dir, 'must-not-exist.json')
@@ -194,6 +215,7 @@ test('unknown receipt needs a fresh semantic delta; duplicate semantic targets a
     const provenSession = new QaSession(
       new RecordingQaDriverAdapter(fixtureAdapter({ receiptStatus: 'unknown' }), provenRecorder),
       'unknown-proven',
+      FAST_SETTLE,
     )
     await provenSession.start({ url: 'http://127.0.0.1:7399/' })
     const provenObserved = await provenSession.observe()
@@ -215,6 +237,7 @@ test('unknown receipt needs a fresh semantic delta; duplicate semantic targets a
         unknownRecorder,
       ),
       'unknown-no-delta',
+      FAST_SETTLE,
     )
     await unknownSession.start({ url: 'http://127.0.0.1:7399/' })
     const unknownObserved = await unknownSession.observe()
@@ -233,6 +256,7 @@ test('unknown receipt needs a fresh semantic delta; duplicate semantic targets a
     const duplicateSession = new QaSession(
       new RecordingQaDriverAdapter(fixtureAdapter({ duplicateTarget: true }), duplicateRecorder),
       'duplicate-target',
+      FAST_SETTLE,
     )
     await duplicateSession.start({ url: 'http://127.0.0.1:7399/' })
     const duplicateObserved = await duplicateSession.observe()
@@ -252,7 +276,11 @@ test('unknown receipt needs a fresh semantic delta; duplicate semantic targets a
 
 test('redaction-changing action payload is retained safely but never exported as a replay step', async () => {
   const recorder = new QaTrajectoryRecorder()
-  const session = new QaSession(new RecordingQaDriverAdapter(fixtureAdapter(), recorder), 'redacted-action')
+  const session = new QaSession(
+    new RecordingQaDriverAdapter(fixtureAdapter(), recorder),
+    'redacted-action',
+    FAST_SETTLE,
+  )
   const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-explore-redacted-'))
   const secret = 'ACTION_SECRET_7f92a11'
   try {

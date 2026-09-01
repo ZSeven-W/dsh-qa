@@ -9,6 +9,7 @@ export type {
   QaRecordExportSuccess,
   QaRecordingAdapter,
   QaTrajectoryEvent,
+  QaTrajectorySettleEvent,
   QaTrajectorySnapshot,
   QaTrajectoryVisualCaptureEvent,
   QaTrajectoryVisualFindingEvent,

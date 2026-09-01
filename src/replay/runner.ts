@@ -14,6 +14,7 @@ import type {
 } from '../contracts.ts';
 import type { QaAction, QaActionReceipt, QaDriverAdapter, QaEvidence, QaObservation, QaVisualCapture } from '../session/adapter.ts';
 import { captureLatestVisual, QaSession, type QaActResult } from '../session/session.ts';
+import type { QaSettlePolicy } from '../session/settle.ts';
 import { evaluateVisualQuestion, persistCaptureFile, type QaVisualServices } from '../vision.ts';
 import { evaluateAssertion, matchesNode } from './assertions.ts';
 
@@ -24,6 +25,18 @@ export interface ReplayRunOptions {
   launchUrl?: string;
   /** Optional vision services for advisory visual assertions. */
   visual?: QaVisualServices;
+  /**
+   * Bounded settle policy for every verification observation. It MUST match the
+   * policy Explore used at export time (both default to resolveSettlePolicy):
+   * if one side settles and the other does not, they judge different views of
+   * the same page and disagree by construction.
+   */
+  settle?: Partial<QaSettlePolicy>;
+}
+
+/** Deterministic, honest failure message for a view that never stabilized. */
+function unsettledMessage(what: string, budgetMs: number): string {
+  return 'the ' + what + ' observation never settled within the ' + String(budgetMs) + 'ms settle budget';
 }
 
 function errorMessage(error: unknown): string {
@@ -182,7 +195,8 @@ async function executeAdvisory(
 }
 
 // Executes a scenario step by step through the QA session core. An "unknown"
-// receipt is NEVER a pass: only the fresh re-observation decides. On failure,
+// receipt is NEVER a pass: only the fresh SETTLED re-observation decides (the
+// same bounded settle policy Explore proved the scenario with). On failure,
 // evidence plus reproduction steps (index, action, observed vs expected) are
 // captured. The driver is always stopped, even when a step fails.
 export async function runScenario(
@@ -199,7 +213,9 @@ export async function runScenario(
   const launch = options.launchUrl ?? scenario.target.launch;
   const startedAt = new Date().toISOString();
 
-  const session = new QaSession(adapter, ownerId);
+  const session = new QaSession(adapter, ownerId, {
+    ...(options.settle === undefined ? {} : { settle: options.settle }),
+  });
   const stepResults: QaStepResult[] = [];
   const assertionResults: QaAssertionResult[] = [];
   const artifacts: QaArtifact[] = [];
@@ -219,9 +235,17 @@ export async function runScenario(
   }
 
   try {
-    let current = await session.observe();
+    // Symmetry with export: every verification observation is SETTLED, and an
+    // unstable view is a failure, never a silent pass.
+    const initial = await session.observeSettled();
+    let current = initial.observation;
+    if (!initial.stable) {
+      failure = { stepIndex: null, message: unsettledMessage('initial', initial.budgetMs), reproduction: [] };
+    }
 
     for (const step of scenario.steps) {
+      // Fail closed: an unsettled view before the first step proves nothing.
+      if (failure !== null) break;
       const base: StepBase = { index: step.index, intent: step.intent, action: step.action };
 
       let resolved: QaAction;
@@ -263,7 +287,19 @@ export async function runScenario(
         break;
       }
 
-      // confirmed OR unknown receipt: only the fresh re-observation decides.
+      if (result.settle !== null && !result.settle.stable) {
+        // The post-action view kept changing: nothing observed in it can be
+        // attributed to this action, so the step fails honestly.
+        stepResults.push(buildStepResult(base, step.assert, result.receipt, result.outcome, false, null));
+        failure = {
+          stepIndex: step.index,
+          message: unsettledMessage('post-action', result.settle.budgetMs),
+          reproduction: toReproduction(stepResults),
+        };
+        break;
+      }
+
+      // confirmed OR unknown receipt: only the fresh SETTLED re-observation decides.
       const evaluation = evaluateAssertion(step.assert, result.observation);
       stepResults.push(
         buildStepResult(base, step.assert, result.receipt, result.outcome, evaluation.passed, evaluation.observed),
@@ -280,8 +316,16 @@ export async function runScenario(
     }
 
     if (failure === null) {
-      const finalObservation = await session.observe();
-      for (let i = 0; i < scenario.assertions.length; i += 1) {
+      const finalSettle = await session.observeSettled();
+      const finalObservation = finalSettle.observation;
+      if (!finalSettle.stable) {
+        failure = {
+          stepIndex: null,
+          message: unsettledMessage('final', finalSettle.budgetMs),
+          reproduction: toReproduction(stepResults),
+        };
+      }
+      for (let i = 0; failure === null && i < scenario.assertions.length; i += 1) {
         const assertion = scenario.assertions[i];
         if (assertion === undefined) continue;
         const evaluation = evaluateAssertion(assertion, finalObservation);

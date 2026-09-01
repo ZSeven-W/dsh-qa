@@ -25,7 +25,11 @@ export interface QaTrajectoryObservationEvent {
   at: string;
   kind: 'observation';
   observationId: string;
-  /** Present only for the session core's immediate fresh observation after act(). */
+  /**
+   * Present only for the FIRST observation of the session core's bounded
+   * post-action settle window. The action's proof is re-bound to the settled
+   * (last) observation of that window; see QaTrajectorySettleEvent.
+   */
   afterActionId: string | null;
   observation: QaObservation;
 }
@@ -64,11 +68,28 @@ export interface QaTrajectoryStopEvent {
   result: QaStopResult;
 }
 
+/**
+ * One bounded settle window closed by the session core. `observationId` is the
+ * SETTLED observation (the action's proof when `actionId` is set); `stable`
+ * false means the view never stopped changing inside `budgetMs`.
+ */
+export interface QaTrajectorySettleEvent {
+  sequence: number;
+  at: string;
+  kind: 'settle';
+  /** The action this window proved, or null for a standalone observation. */
+  actionId: string | null;
+  observationId: string | null;
+  stable: boolean;
+  passes: number;
+  budgetMs: number;
+}
+
 export interface QaTrajectoryRecordingErrorEvent {
   sequence: number;
   at: string;
   kind: 'recording-error';
-  operation: 'start' | 'observation' | 'action' | 'receipt' | 'evidence' | 'stop' | 'visual';
+  operation: 'start' | 'observation' | 'action' | 'receipt' | 'evidence' | 'stop' | 'visual' | 'settle';
   /** Redacted structural reason; raw payload bytes are never retained. */
   reason: string;
   actionId: string | null;
@@ -98,6 +119,7 @@ export type QaTrajectoryEvent =
   | QaTrajectoryObservationEvent
   | QaTrajectoryActionEvent
   | QaTrajectoryReceiptEvent
+  | QaTrajectorySettleEvent
   | QaTrajectoryEvidenceEvent
   | QaTrajectoryVisualCaptureEvent
   | QaTrajectoryVisualFindingEvent
@@ -109,7 +131,14 @@ export interface QaRecordedAction {
   action: QaAction;
   beforeObservationId: string | null;
   receipt: QaActionReceipt | null;
+  /** The SETTLED post-action observation (last one of the settle window). */
   afterObservationId: string | null;
+  /**
+   * Whether that settle window reached a stable semantic view. null means no
+   * settle window was reported at all. Anything other than true is refused by
+   * the exporter: an unstable view proves nothing.
+   */
+  afterObservationStable: boolean | null;
   payloadRedacted: boolean;
   recordingIssue: string | null;
 }
