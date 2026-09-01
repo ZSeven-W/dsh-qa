@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { QA_ADVISORY_REASONING_TRUST } from '../contracts.ts';
+import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_TRUNCATED } from '../contracts.ts';
 import type {
   QaAdvisoryResult,
   QaArtifact,
@@ -12,12 +12,20 @@ import type {
   QaScenario,
   QaScenarioAction,
   QaStepResult,
+  QaViewCompleteness,
 } from '../contracts.ts';
 import type { QaAction, QaActionReceipt, QaDriverAdapter, QaEvidence, QaObservation, QaVisualCapture } from '../session/adapter.ts';
 import { captureLatestVisual, QaSession, type QaActResult } from '../session/session.ts';
 import type { QaSettlePolicy } from '../session/settle.ts';
 import { evaluateVisualQuestion, persistCaptureFile, type QaVisualServices } from '../vision.ts';
-import { evaluateAssertion, matchesNode } from './assertions.ts';
+import {
+  decideAssertion,
+  matchesNode,
+  sessionReobserve,
+  QA_ESCALATED_NODE_BUDGET,
+  type QaAssertionDecision,
+  type QaReobserve,
+} from './assertions.ts';
 
 export interface ReplayRunOptions {
   ownerId?: string;
@@ -50,6 +58,56 @@ function resolveRef(target: QaNodePredicate, observation: QaObservation): string
     throw new Error('no observable node matches the action target');
   }
   return node.ref;
+}
+
+/** The semantic target an action resolves to a ref, or null when it needs none. */
+function targetOf(action: QaScenarioAction): QaNodePredicate | null {
+  if (action.kind === 'navigate') return null;
+  if (action.kind === 'scroll' && !('target' in action)) return null;
+  return action.target;
+}
+
+/**
+ * Resolve an action's target, escalating the node budget ONCE when the target
+ * is missing from a TRUNCATED view.
+ *
+ * Same blind spot as an assertion, opposite direction: "the target is not in
+ * the returned nodes" does not mean the target is not on the page — it can
+ * simply have fallen outside the budget (live evidence: after a scroll, the
+ * scroll target was absent from the 60-node view and present at 100). Without
+ * this, a scenario fails with a misleading "no observable node matches" and a
+ * human has to raise max_nodes by hand.
+ */
+async function resolveActionWithBudget(
+  action: QaScenarioAction,
+  observation: QaObservation,
+  reobserve: QaReobserve,
+): Promise<{ resolved: QaAction; observation: QaObservation }> {
+  const target = targetOf(action);
+  let view = observation;
+  let escalated = false;
+  const missing = (candidate: QaObservation): boolean =>
+    target !== null && !candidate.nodes.some((node) => matchesNode(node, target));
+  if (missing(view) && view.truncated) {
+    try {
+      view = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
+      escalated = true;
+    } catch {
+      // No fuller view: fall through and report honestly against the truncated one.
+    }
+  }
+  if (missing(view)) {
+    if (view.truncated) {
+      throw new Error(
+        'no observable node matches the action target, and the view was still truncated at the '
+        + (escalated ? String(QA_ESCALATED_NODE_BUDGET) + '-node escalated' : 'driver-default')
+        + ' budget (' + QA_INCONCLUSIVE_TRUNCATED
+        + '): the target may exist outside the returned window rather than be missing from the page',
+      );
+    }
+    throw new Error('no observable node matches the action target');
+  }
+  return { resolved: resolveAction(action, view), observation: view };
 }
 
 function resolveAction(action: QaScenarioAction, observation: QaObservation): QaAction {
@@ -88,6 +146,7 @@ function buildStepResult(
   outcome: 'ok' | 'unknown' | 'failed',
   assertionPassed: boolean,
   observed: unknown,
+  completeness: QaViewCompleteness | null = null,
 ): QaStepResult {
   return {
     index: base.index,
@@ -100,7 +159,22 @@ function buildStepResult(
     assertionPassed,
     observed,
     expected: assertion.expected,
+    ...(completeness === null ? {} : { completeness }),
   };
+}
+
+/**
+ * Failure message for a decided assertion. An outcome that could not be proven
+ * from an incomplete view is NEVER reported as an ordinary "failed": it names
+ * QA_INCONCLUSIVE_TRUNCATED and the budget, so a human triaging the report can
+ * tell "not present" from "we could not see the whole page".
+ */
+function assertionFailureMessage(what: string, decision: QaAssertionDecision): string {
+  const completeness = decision.completeness;
+  if (completeness?.reason === QA_INCONCLUSIVE_TRUNCATED) {
+    return what + ' is ' + QA_INCONCLUSIVE_TRUNCATED + ': ' + completeness.detail;
+  }
+  return what + ' failed';
 }
 
 function toReproduction(steps: QaStepResult[]): QaReproductionStep[] {
@@ -237,6 +311,11 @@ export async function runScenario(
     return blockedReport(scenario, startedAt, 'failed to start driver: ' + errorMessage(error));
   }
 
+  // One bounded budget escalation per decision, taken the same SETTLED way as
+  // every other verification observation (an unsettled escalated view is
+  // refused, so the decision falls back and fails closed).
+  const reobserve = sessionReobserve(session);
+
   try {
     // Symmetry with export: every verification observation is SETTLED, and an
     // unstable view is a failure, never a silent pass.
@@ -253,7 +332,9 @@ export async function runScenario(
 
       let resolved: QaAction;
       try {
-        resolved = resolveAction(step.action, current);
+        const resolution = await resolveActionWithBudget(step.action, current, reobserve);
+        resolved = resolution.resolved;
+        current = resolution.observation;
       } catch (error) {
         stepResults.push(buildStepResult(base, step.assert, null, 'failed', false, null));
         failure = {
@@ -302,16 +383,26 @@ export async function runScenario(
         break;
       }
 
-      // confirmed OR unknown receipt: only the fresh SETTLED re-observation decides.
-      const evaluation = evaluateAssertion(step.assert, result.observation);
+      // confirmed OR unknown receipt: only the fresh SETTLED re-observation
+      // decides — and never a TRUNCATED one when the outcome depends on having
+      // seen the whole view (see decideAssertion).
+      const decision = await decideAssertion(step.assert, result.observation, reobserve);
       stepResults.push(
-        buildStepResult(base, step.assert, result.receipt, result.outcome, evaluation.passed, evaluation.observed),
+        buildStepResult(
+          base,
+          step.assert,
+          result.receipt,
+          result.outcome,
+          decision.passed,
+          decision.observed,
+          decision.completeness,
+        ),
       );
-      current = result.observation;
-      if (!evaluation.passed) {
+      current = decision.observation;
+      if (!decision.passed) {
         failure = {
           stepIndex: step.index,
-          message: 'assertion ' + step.assert.kind + ' failed',
+          message: assertionFailureMessage('assertion ' + step.assert.kind, decision),
           reproduction: toReproduction(stepResults),
         };
         break;
@@ -320,7 +411,10 @@ export async function runScenario(
 
     if (failure === null) {
       const finalSettle = await session.observeSettled();
-      const finalObservation = finalSettle.observation;
+      // Reassigned when a decision escalated the node budget: the remaining
+      // final assertions are then judged against that fuller view instead of
+      // paying for the same escalation again.
+      let finalObservation = finalSettle.observation;
       if (!finalSettle.stable) {
         failure = {
           stepIndex: null,
@@ -331,18 +425,20 @@ export async function runScenario(
       for (let i = 0; failure === null && i < scenario.assertions.length; i += 1) {
         const assertion = scenario.assertions[i];
         if (assertion === undefined) continue;
-        const evaluation = evaluateAssertion(assertion, finalObservation);
+        const decision = await decideAssertion(assertion, finalObservation, reobserve);
         assertionResults.push({
           kind: assertion.kind,
           ...(assertion.description === undefined ? {} : { description: assertion.description }),
-          passed: evaluation.passed,
+          passed: decision.passed,
           expected: assertion.expected,
-          observed: evaluation.observed,
+          observed: decision.observed,
+          ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
         });
-        if (!evaluation.passed) {
+        finalObservation = decision.observation;
+        if (!decision.passed) {
           failure = {
             stepIndex: null,
-            message: 'final assertion ' + (i + 1) + ' (' + assertion.kind + ') failed',
+            message: assertionFailureMessage('final assertion ' + (i + 1) + ' (' + assertion.kind + ')', decision),
             reproduction: toReproduction(stepResults),
           };
           break;

@@ -136,7 +136,15 @@ function durableAction(
   }
   const node = before.nodes.find((candidate) => candidate.ref === action.ref);
   if (node === undefined) {
-    return exclusion(recorded, 'TARGET_REF_NOT_FOUND', 'The action ref was not present in its preceding observation.');
+    // Naming truncation matters for triage: a ref missing from a BUDGET-LIMITED
+    // view may have fallen outside the window rather than never existed.
+    return exclusion(
+      recorded,
+      'TARGET_REF_NOT_FOUND',
+      before.truncated
+        ? 'The action ref was not present in its preceding observation, which was truncated at the driver node budget, so the target may have fallen outside the returned window.'
+        : 'The action ref was not present in its preceding observation.',
+    );
   }
   const target = predicateFor(node);
   if (target === null) {
@@ -288,6 +296,33 @@ function synthesizeAssertion(
   // confirmed dispatch receipt. Every exported action needs a semantic delta
   // or URL change from the SETTLED observation above.
   return null;
+}
+
+/**
+ * Weakness recorded when the observation a proof rests on was TRUNCATED at its
+ * node budget.
+ *
+ * Export reasons over node membership in two ways that a truncated view cannot
+ * support: a "new" node (present in `after`, absent from `before`) may simply
+ * have fallen outside `before`'s budget, and a target that looks unique may
+ * have a twin outside the window. The step is still exported — dropping it
+ * would silently lose provable work — but the weakness is recorded in the
+ * intent exactly like the distant-delta weakness, so a truncated proof
+ * observation never silently produces a confident-looking assertion.
+ */
+const TRUNCATED_PROOF_WEAKNESS =
+  'the proof observation was truncated at the driver node budget, so nodes outside the returned window were never seen '
+  + '(an apparently new node may have been there all along, and the semantic target may not be unique)';
+
+/** True when either view this step's proof rests on was budget-truncated. */
+function proofWasTruncated(before: QaObservation | null, after: QaObservation): boolean {
+  return before?.truncated === true || after.truncated === true;
+}
+
+/** Step intent plus every recorded proof weakness, in one "Weak proof:" note. */
+function intentWithWeaknesses(base: string, weaknesses: readonly string[]): string {
+  if (weaknesses.length === 0) return base;
+  return base + ' Weak proof: ' + weaknesses.join('; ') + ' — verify manually.';
 }
 
 /** Assertion proving a scroll made the target reachable (in-viewport). */
@@ -503,7 +538,17 @@ function buildScenario(
         ));
         continue;
       }
-      steps.push({ index: steps.length + 1, intent: resolved.intent, action: resolved.action, assert: resolved.assert });
+      steps.push({
+        index: steps.length + 1,
+        intent: intentWithWeaknesses(
+          resolved.intent,
+          candidate.after !== null && proofWasTruncated(candidate.before, candidate.after)
+            ? [TRUNCATED_PROOF_WEAKNESS]
+            : [],
+        ),
+        action: resolved.action,
+        assert: resolved.assert,
+      });
       continue;
     }
     const after = candidate.after;
@@ -537,10 +582,12 @@ function buildScenario(
     }
     // A distant delta is still exported (dropping it would silently lose the
     // step), but the weakness is recorded in the intent so a human can see why
-    // the assertion looks unrelated to the action.
-    const intent = synthesized.weakness === null
-      ? intentFor(stepAction)
-      : intentFor(stepAction) + ' Weak proof: ' + synthesized.weakness + ' — verify manually.';
+    // the assertion looks unrelated to the action. A proof observation that was
+    // truncated at the node budget is recorded the same honest way.
+    const intent = intentWithWeaknesses(intentFor(stepAction), [
+      ...(synthesized.weakness === null ? [] : [synthesized.weakness]),
+      ...(proofWasTruncated(candidate.before, after) ? [TRUNCATED_PROOF_WEAKNESS] : []),
+    ]);
     steps.push({
       index: steps.length + 1,
       intent,

@@ -4,8 +4,11 @@
 export {
   QA_ADVISORY_REASONING_TRUST,
   QA_DRIVERS,
+  QA_INCONCLUSIVE_TRUNCATED,
   QA_TOOL_NAMES,
   type QaAdvisoryReasoningTrust,
+  type QaInconclusiveReason,
+  type QaViewCompleteness,
   type QaDriverKind,
   type QaScenario,
   type QaScenarioMeta,

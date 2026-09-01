@@ -1,5 +1,5 @@
 import { projectRedactedJsonValue, projectArtifactPath, redactText, type RedactionRoots } from '../redaction/index.ts';
-import type { QaRunReport } from '../contracts.ts';
+import type { QaRunReport, QaViewCompleteness } from '../contracts.ts';
 
 // Backtick character for inline code spans (built from a code point so the
 // source stays free of markdown-confusable delimiters).
@@ -44,6 +44,20 @@ function escapeLoneSurrogates(text: string): string {
   return result;
 }
 
+/**
+ * One line of view-completeness context. It is rendered only for assertions
+ * truncation actually touched, and it is what lets a human tell "not present"
+ * from "we could not see the whole page".
+ */
+function completenessLine(completeness: QaViewCompleteness): string {
+  return (completeness.reason === undefined ? '' : completeness.reason + ' — ')
+    + 'view truncated: ' + String(completeness.truncated)
+    + ', node budget: ' + (completeness.nodeBudget === null ? 'driver default' : String(completeness.nodeBudget))
+    + ', budget escalated: ' + String(completeness.escalated)
+    + ', outcome depends on a complete view: ' + String(completeness.outcomeDependsOnCompleteView)
+    + '. ' + completeness.detail;
+}
+
 /** Deterministic, redacted report.md content (human-readable). */
 export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots): string {
   const md = (text: string) => escapeLoneSurrogates(redactText(text, roots));
@@ -65,6 +79,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     lines.push('  - receipt: ' + md(step.receipt === null ? 'none' : step.receipt.status));
     lines.push('  - assertion: ' + md(step.assertion.kind) + ' -> ' + (step.assertionPassed ? 'PASS' : 'FAIL'));
     lines.push('  - observed: ' + TICK + md(inline(step.observed, roots)) + TICK);
+    if (step.completeness !== undefined) {
+      lines.push('  - view completeness: ' + md(completenessLine(step.completeness)));
+    }
   }
   lines.push('');
   lines.push('## Final assertions');
@@ -74,6 +91,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
       '- ' + md(assertion.kind) + ' -> ' + (assertion.passed ? 'PASS' : 'FAIL') +
       ' (observed: ' + TICK + md(inline(assertion.observed, roots)) + TICK + ')',
     );
+    if (assertion.completeness !== undefined) {
+      lines.push('  - view completeness: ' + md(completenessLine(assertion.completeness)));
+    }
   }
   if (report.advisory !== undefined && report.advisory.length > 0) {
     lines.push('');

@@ -1,4 +1,15 @@
-export { evaluateAssertion, matchesNode, toObservedNode, type AssertionEval } from './assertions.ts';
+export {
+  decideAssertion,
+  evaluateAssertion,
+  matchesNode,
+  sessionReobserve,
+  toObservedNode,
+  QA_ESCALATED_NODE_BUDGET,
+  type AssertionEval,
+  type QaAssertionDecision,
+  type QaReobserve,
+  type QaSettledObserver,
+} from './assertions.ts';
 export {
   ScenarioValidationError,
   loadScenarioFromPath,

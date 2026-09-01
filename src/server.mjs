@@ -23,7 +23,7 @@ import {
   QaTrajectoryRecorder,
   RecordingQaDriverAdapter,
 } from './explore/index.ts';
-import { evaluateAssertion, loadScenarioFromPath, runScenario, validateAssertion } from './replay/index.ts';
+import { decideAssertion, loadScenarioFromPath, runScenario, sessionReobserve, validateAssertion } from './replay/index.ts';
 import { writeReports } from './reporters/index.ts';
 import { captureLatestVisual, QaSessionManager, toLosslessJson } from './session/index.ts';
 import { toVisualCaptureInfo } from './session/adapter.ts';
@@ -367,14 +367,18 @@ server.tool(
     // Fail-closed: validate the assertion shape before touching the session.
     const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert');
     const settled = await session.observeSettled();
-    const evaluation = evaluateAssertion(assertion, settled.observation);
+    // A truncated view can never prove an absence (and never disprove a
+    // presence): the decision escalates the node budget once and fails closed
+    // with INCONCLUSIVE_TRUNCATED rather than reporting a false green.
+    const decision = await decideAssertion(assertion, settled.observation, sessionReobserve(session));
     return textResult({
       ok: true,
-      passed: evaluation.passed,
+      passed: decision.passed,
       kind: assertion.kind,
-      observed: evaluation.observed,
+      observed: decision.observed,
       expected: assertion.expected,
       settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs },
+      ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
     });
   }),
 );

@@ -158,6 +158,52 @@ export interface QaObservedNode {
   tag: string;
 }
 
+/**
+ * Stable reason code recorded when an assertion's outcome could NOT be proven
+ * because the observation it was decided against was truncated at its node
+ * budget.
+ *
+ * Observations are budget-limited (QaObservation.truncated): a node that
+ * genuinely exists can fall outside the returned window. "Not in the returned
+ * nodes" therefore does not mean "not on the page", so a claim that depends on
+ * having seen the WHOLE view — every node-absent claim, and any node-present /
+ * node-in-viewport claim that found nothing — is unprovable against a truncated
+ * view. Such a claim fails CLOSED and carries this code, which is deliberately
+ * distinct from an ordinary failure: "we did not see it" is not "it is not
+ * there", and reporting the first as the second is a silent false green.
+ */
+export const QA_INCONCLUSIVE_TRUNCATED = 'INCONCLUSIVE_TRUNCATED';
+
+export type QaInconclusiveReason = typeof QA_INCONCLUSIVE_TRUNCATED;
+
+/**
+ * Completeness context of the view an assertion was decided against.
+ *
+ * This is an ADDITIVE field (schemaVersion stays 1) and is present ONLY when
+ * truncation actually touched the decision, so a result taken from a complete
+ * view is unchanged byte for byte. When it IS present, a human triaging
+ * report.json / report.md / report.jsonl can tell "not present" apart from "we
+ * could not see the whole page".
+ */
+export interface QaViewCompleteness {
+  /** Whether the FINAL deciding view was still truncated at its node budget. */
+  truncated: boolean;
+  /**
+   * Node budget requested for the deciding observation; null means the driver
+   * default applied. Each driver clamps the request to its own maximum, so the
+   * observation's own `truncated` flag — not this number — is the ground truth.
+   */
+  nodeBudget: number | null;
+  /** Whether one bounded budget escalation was performed before deciding. */
+  escalated: boolean;
+  /** Whether this outcome depends on the view being complete (unproven if it is not). */
+  outcomeDependsOnCompleteView: boolean;
+  /** Present exactly when the outcome could not be proven from an incomplete view. */
+  reason?: QaInconclusiveReason;
+  /** Deterministic, human-readable explanation naming the budget. */
+  detail: string;
+}
+
 export interface QaStepResult {
   index: number;
   intent: string;
@@ -171,6 +217,8 @@ export interface QaStepResult {
   /** Observed fragment the assertion was evaluated against (lossless JSON). */
   observed: unknown;
   expected: unknown;
+  /** Completeness of the deciding view; present only when truncation touched the decision. */
+  completeness?: QaViewCompleteness;
 }
 
 export interface QaAssertionResult {
@@ -179,6 +227,8 @@ export interface QaAssertionResult {
   passed: boolean;
   expected: unknown;
   observed: unknown;
+  /** Completeness of the deciding view; present only when truncation touched the decision. */
+  completeness?: QaViewCompleteness;
 }
 
 export interface QaReproductionStep {
