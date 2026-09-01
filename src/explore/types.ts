@@ -103,7 +103,12 @@ export interface QaTrajectoryVisualCaptureEvent {
   capture: QaVisualCaptureInfo;
 }
 
-/** An advisory visual finding recorded during Explore. */
+/**
+ * An advisory visual finding recorded during Explore. `verdict`/`confidence`
+ * are the model's answer; `reasoning` is unverified model narration that may
+ * contain fabricated detail (see QA_ADVISORY_REASONING_TRUST in contracts.ts).
+ * Export never carries it into a scenario: only the question becomes a note.
+ */
 export interface QaTrajectoryVisualFindingEvent {
   sequence: number;
   at: string;

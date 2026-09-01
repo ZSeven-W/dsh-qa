@@ -1,5 +1,6 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { QA_ADVISORY_REASONING_TRUST } from '../contracts.ts';
 import type {
   QaAdvisoryResult,
   QaArtifact,
@@ -135,6 +136,7 @@ function advisoryUnclear(question: string, reasoning: string, reason: string, de
     verdict: 'unclear',
     confidence: 0,
     reasoning,
+    reasoningTrust: QA_ADVISORY_REASONING_TRUST,
     reason,
     ...(description === undefined ? {} : { description }),
   };
@@ -186,6 +188,7 @@ async function executeAdvisory(
       verdict: finding.verdict,
       confidence: finding.confidence,
       reasoning: finding.reasoning,
+      reasoningTrust: QA_ADVISORY_REASONING_TRUST,
       ...(finding.reason === undefined ? {} : { reason: finding.reason }),
       ...(assertion.description === undefined ? {} : { description: assertion.description }),
       artifact,

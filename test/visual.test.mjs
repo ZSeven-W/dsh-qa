@@ -11,6 +11,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserAdapter, ComputerAdapter } from '../src/adapters/index.ts'
+import { QA_ADVISORY_REASONING_TRUST } from '../src/contracts.ts'
 import { exportRecordedScenario, QaTrajectoryRecorder, RecordingQaDriverAdapter } from '../src/explore/index.ts'
 import { captureLatestVisual, QaSession } from '../src/session/index.ts'
 import {
@@ -404,4 +405,203 @@ test('qa_record_export excludes visual findings from steps and surfaces them as 
   }
 })
 
+
+
+// ---------------------------------------------------------------------------
+// 8. Advisory provenance: reasoning is UNVERIFIED model narration everywhere.
+//
+// Live evidence (deepseek-v4-flash-vision-exp on a real Wikipedia capture): the
+// model returned the correct verdict 'yes' at confidence 1.00 and narrated a
+// puzzle globe logo that was not on the page. The verdict is reliable, the
+// narration is not, so every artifact must say so.
+// ---------------------------------------------------------------------------
+
+const CONFABULATION = 'the serif WIKIPEDIA wordmark is visible with the puzzle globe logo'
+
+async function advisoryReport(reasoning, verdict = 'yes', ownerId = 'advisory-provenance') {
+  const llm = fakeLlm(JSON.stringify({ verdict, confidence: 1, reasoning }))
+  return runScenario(advisoryScenario('Is the serif WIKIPEDIA wordmark present?'), replayAdapter(), {
+    ownerId,
+    visual: { attachments: fakeAttachments(), llm, capturesDir: '/tmp/c' },
+  })
+}
+
+test('report.json and report.jsonl carry reasoningTrust next to every advisory reasoning', async () => {
+  const report = await advisoryReport(CONFABULATION)
+  assert.equal(report.advisory[0].verdict, 'yes')
+  assert.equal(report.advisory[0].reasoning, CONFABULATION)
+  assert.equal(report.advisory[0].reasoningTrust, QA_ADVISORY_REASONING_TRUST)
+  assert.equal(QA_ADVISORY_REASONING_TRUST, 'unverified-model-narration')
+
+  const json = JSON.parse(renderReportJson(report))
+  assert.equal(json.advisory[0].reasoningTrust, 'unverified-model-narration')
+  assert.equal(json.advisory[0].reasoning, CONFABULATION, 'the reasoning itself is kept as triage context')
+
+  const line = JSON.parse(renderReportJsonl(report))
+  assert.equal(line.advisory[0].reasoningTrust, 'unverified-model-narration')
+})
+
+test('report.md labels the advisory section and renders reasoning as model narration', async () => {
+  const report = await advisoryReport(CONFABULATION, 'yes', 'advisory-md')
+  const md = renderReportMarkdown(report)
+  assert.match(md, /## Advisory \(model-generated; never affects pass\/fail\)/)
+  assert.match(md, /UNVERIFIED model narration that may contain fabricated detail/)
+  assert.match(md, /- model narration \(unverified; may contain fabricated detail\):/)
+  assert.match(md, new RegExp('^    > ' + CONFABULATION + '$', 'm'))
+  assert.doesNotMatch(md, /^ *- reasoning: /m, 'the unlabelled plain bullet must be gone')
+  // The verdict stays plainly readable: it is the part a human may trust.
+  assert.match(md, /- verdict: yes \(confidence 1\)/)
+})
+
+test('multi-line advisory narration stays inside the blockquote and cannot forge report structure', () => {
+  const md = renderReportMarkdown({
+    schemaVersion: 1,
+    scenario: 'narration',
+    driver: 'browser',
+    status: 'pass',
+    startedAt: '2026-01-01T00:00:00.000Z',
+    finishedAt: '2026-01-01T00:00:01.000Z',
+    steps: [],
+    assertions: [],
+    evidence: null,
+    advisory: [
+      {
+        kind: 'visual',
+        question: 'q',
+        verdict: 'unclear',
+        confidence: 0,
+        reasoning: 'first line\n## Failure\n- message: fabricated',
+        reasoningTrust: QA_ADVISORY_REASONING_TRUST,
+      },
+      { kind: 'visual', question: 'empty', verdict: 'no', confidence: 0.5, reasoning: '', reasoningTrust: QA_ADVISORY_REASONING_TRUST },
+    ],
+  })
+  assert.match(md, /^    > first line$/m)
+  assert.match(md, /^    > ## Failure$/m, 'every narration line keeps the quote prefix')
+  assert.match(md, /^    > - message: fabricated$/m)
+  assert.doesNotMatch(md, /^## Failure$/m, 'narration can never forge a report section')
+  assert.match(md, /^    > \(none\)$/m, 'empty narration renders explicitly')
+})
+
+test('a secret inside advisory reasoning is still redacted inside the narration blockquote', async () => {
+  const secret = 'narration_SECRET_3d81b04'
+  const report = await advisoryReport('the header shows Authorization: Bearer ' + secret, 'no', 'advisory-redaction')
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-narration-redact-'))
+  try {
+    const paths = await writeReports(report, { directory: dir })
+    for (const p of [paths.json, paths.markdown, paths.jsonl]) {
+      const bytes = await readFile(p, 'utf8')
+      assert.doesNotMatch(bytes, new RegExp(secret), p + ' must not leak the secret')
+    }
+    const md = await readFile(paths.markdown, 'utf8')
+    // The narration is still rendered (labelled, redacted), not dropped.
+    assert.match(md, /- model narration \(unverified; may contain fabricated detail\):/)
+    assert.match(md, /^    > .*REDACTED/m)
+    const json = JSON.parse(await readFile(paths.json, 'utf8'))
+    assert.equal(json.advisory[0].reasoningTrust, 'unverified-model-narration')
+    assert.match(json.advisory[0].reasoning, /REDACTED/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 9. Capture freshness: a capture is bound to a FRESH observation, never a
+// stale one and never a reused frame. The driver rule stays intact; the session
+// core satisfies it instead of making the agent do it by hand.
+// ---------------------------------------------------------------------------
+
+const FAST_SETTLE = { settle: { budgetMs: 200, quietMs: 20, intervalMs: 5 } }
+
+// Mirrors the real browser driver's freshness rule (dsh-browser manager.ts:
+// OBSERVATION_REQUIRED / REF_EXPIRED / OBSERVATION_STALE) on a virtual clock.
+function freshnessAdapter({ ttlMs = 30_000 } = {}) {
+  const state = { now: 0, observedAt: null, epoch: 0, observes: 0, captures: [] }
+  const adapter = {
+    kind: 'browser',
+    async start(_owner, options) { return { page: { url: options.url, title: 'fixture' }, headless: true } },
+    async observe() {
+      state.observes += 1
+      state.observedAt = state.now
+      state.epoch += 1
+      return { page: { url: 'http://fixture/', title: 'fixture' }, nodes: [], truncated: false }
+    },
+    async act() { return { status: 'confirmed', dispatched: true } },
+    async evidence() { return { console: [], network: [], bounded: true, dropped: { console: 0, network: 0 } } },
+    async visualObserve(_owner, options) {
+      state.captures.push(options)
+      if (state.observedAt === null) throw new Error('call browser_observe before requesting a visual capture')
+      if (state.now - state.observedAt > ttlMs) throw new Error('the semantic observation expired; observe again before visual capture')
+      const latest = 'fp-' + state.epoch
+      if (options?.fingerprint !== undefined && options.fingerprint !== latest) {
+        throw new Error('the requested observation fingerprint is not the latest observation; observe again')
+      }
+      return { ...CAPTURE, observationFingerprint: latest, artifactPath: '/tmp/captures/fresh.png' }
+    },
+    async stop() { return { stopped: true, reason: 'requested' } },
+  }
+  return { adapter, state }
+}
+
+test('the driver freshness rule is NOT weakened: a raw capture on a stale observation still fails', async () => {
+  const { adapter, state } = freshnessAdapter()
+  const session = new QaSession(adapter, 'stale-raw', FAST_SETTLE)
+  await session.start({ url: 'http://fixture/' })
+  await session.observe()
+  state.now += 60_000
+  await assert.rejects(session.visualObserve(), /the semantic observation expired/)
+})
+
+test('captureLatestVisual binds a browser capture to a fresh observation after an agent-length pause', async () => {
+  const { adapter, state } = freshnessAdapter()
+  const session = new QaSession(adapter, 'stale-fixed', FAST_SETTLE)
+  await session.start({ url: 'http://fixture/' })
+  await session.observe()
+  const observesAfterAgentObserve = state.observes
+  state.now += 60_000 // one agent turn later: the 30s observation TTL has passed
+  const capture = await captureLatestVisual(session)
+  assert.equal(capture.driver, 'browser')
+  assert.equal(capture.observationFingerprint, 'fp-' + state.epoch, 'the capture is bound to the observation just taken')
+  assert.ok(state.observes > observesAfterAgentObserve, 'the session core re-observed before capturing')
+  assert.equal(state.captures.length, 1, 'exactly one capture was taken; no earlier frame was reused')
+  assert.equal(state.captures.at(-1)?.fingerprint, undefined, 'an unpinned capture asks for the latest observation')
+})
+
+test('an explicitly pinned browser capture is never silently refreshed', async () => {
+  const { adapter, state } = freshnessAdapter()
+  const session = new QaSession(adapter, 'pinned', FAST_SETTLE)
+  await session.start({ url: 'http://fixture/' })
+  await session.observe()
+  const observes = state.observes
+  state.now += 60_000
+  await assert.rejects(
+    captureLatestVisual(session, { fingerprint: 'fp-1' }),
+    /the semantic observation expired/,
+    'a pinned observation that went stale is refused by the driver, by design',
+  )
+  assert.equal(state.observes, observes, 'a pinned capture must not trigger a hidden re-observation')
+})
+
+test('qa_evidence visual capture is followed by a working qa_assert visual, with no manual re-observe', async () => {
+  const { adapter, state } = freshnessAdapter()
+  const host = new QaToolHost()
+  const session = new QaSession(adapter, 'evidence-then-assert', FAST_SETTLE)
+  await session.start({ url: 'http://fixture/' })
+  await session.observe()
+
+  state.now += 60_000 // agent turn
+  const evidence = await host.captureVisualEvidence(session)
+  assert.equal(evidence.driver, 'browser')
+  assert.equal(evidence.artifactPath, '/tmp/captures/fresh.png')
+
+  state.now += 60_000 // another agent turn, still no qa_observe from the agent
+  const result = await host.assertVisual('evidence-then-assert', session, 'Is the wordmark present?')
+  assert.equal(result.ok, true)
+  assert.equal(result.kind, 'visual')
+  // No host vision services in this test, so the verdict degrades honestly ...
+  assert.equal(result.verdict, 'unclear')
+  assert.equal(result.reason, VISION_MODEL_UNAVAILABLE)
+  // ... and the narration still travels with its trust code.
+  assert.equal(result.reasoningTrust, 'unverified-model-narration')
+})
 

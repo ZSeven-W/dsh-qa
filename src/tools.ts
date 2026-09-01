@@ -14,6 +14,7 @@ import { BrowserAdapter } from './adapters/browser.ts'
 import { ComputerAdapter } from './adapters/computer.ts'
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts'
 import { loadComputerDriver } from './adapters/loadComputer.ts'
+import { QA_ADVISORY_REASONING_TRUST } from './contracts.ts'
 import type { QaDriverKind } from './contracts.ts'
 import {
   exportRecordedScenario,
@@ -215,7 +216,11 @@ export class QaToolHost {
       question,
       verdict: finding.verdict,
       confidence: finding.confidence,
+      // verdict + confidence are the model's answer; the narration beside them
+      // is unverified and may contain fabricated detail, so it travels with an
+      // explicit trust code (contracts.ts, QA_ADVISORY_REASONING_TRUST).
       reasoning: finding.reasoning,
+      reasoningTrust: QA_ADVISORY_REASONING_TRUST,
       ...(finding.reason === undefined ? {} : { reason: finding.reason }),
       artifact: { path: artifactPath, kind: 'screenshot' },
     }
@@ -521,7 +526,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAssert = tool<AssertArgs, unknown>({
     name: 'qa_assert',
-    description: 'Evaluate one assertion against a fresh SETTLED observation (observe until two consecutive semantic views agree, bounded by a budget; the result carries settle.stable). node-present/node-absent/node-in-viewport/page-url are deterministic; kind "visual" captures the current screen and asks the host vision model a question, returning an ADVISORY verdict (yes/no/unclear with confidence and reasoning) that never changes pass/fail. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
+    description: 'Evaluate one assertion against a fresh SETTLED observation (observe until two consecutive semantic views agree, bounded by a budget; the result carries settle.stable). node-present/node-absent/node-in-viewport/page-url are deterministic. kind "visual" takes its own fresh settled observation, captures the current screen from it, and asks the host vision model a question, so it works directly after qa_act or qa_evidence and needs no separate qa_observe call first. Its ADVISORY verdict (yes/no/unclear with confidence) never changes pass/fail: trust verdict and confidence, and treat the accompanying reasoning as unverified model narration (reasoningTrust "unverified-model-narration") that may contain fabricated detail and must never be quoted as observed fact. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
     parameters: closedObject({
       owner: strProp,
       kind: enumOf('node-present', 'node-absent', 'page-url', 'node-in-viewport', 'visual'),
@@ -558,7 +563,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaEvidence = tool<EvidenceArgs, unknown>({
     name: 'qa_evidence',
-    description: 'Read bounded, redacted evidence: browser console/network records, or computer helper status plus bounded action receipts. Set visual: true to also capture the current screen (Set-of-Mark) and return its metadata plus a structured artifact path.',
+    description: 'Read bounded, redacted evidence: browser console/network records, or computer helper status plus bounded action receipts. Set visual: true to also capture the current screen (Set-of-Mark) and return its metadata plus a structured artifact path; that capture is taken from its own fresh settled observation, so it never requires a preceding qa_observe. visual_fingerprint instead pins the capture to one exact browser observation and is deliberately NOT auto-refreshed, so a pinned observation that has gone stale fails by design.',
     parameters: closedObject({
       owner: strProp,
       max_console: intProp,

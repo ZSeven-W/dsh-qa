@@ -2,8 +2,10 @@
 // WP4 adds the Replay runner, fail-closed scenario loader, and reporters.
 // Contracts remain the shared type vocabulary every package compiles against.
 export {
+  QA_ADVISORY_REASONING_TRUST,
   QA_DRIVERS,
   QA_TOOL_NAMES,
+  type QaAdvisoryReasoningTrust,
   type QaDriverKind,
   type QaScenario,
   type QaScenarioMeta,

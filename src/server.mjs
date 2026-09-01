@@ -17,6 +17,7 @@ import { BrowserAdapter } from './adapters/browser.ts';
 import { ComputerAdapter } from './adapters/computer.ts';
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts';
 import { loadComputerDriver } from './adapters/loadComputer.ts';
+import { QA_ADVISORY_REASONING_TRUST } from './contracts.ts';
 import {
   exportRecordedScenario,
   QaTrajectoryRecorder,
@@ -119,7 +120,10 @@ async function assertVisualMCP(owner, session, question) {
     question,
     verdict: finding.verdict,
     confidence: finding.confidence,
+    // Same trust contract as the cordis tool layer: verdict + confidence are
+    // the answer, reasoning is unverified model narration.
     reasoning: finding.reasoning,
+    reasoningTrust: QA_ADVISORY_REASONING_TRUST,
     ...(finding.reason === undefined ? {} : { reason: finding.reason }),
     artifact: { path: artifactPath, kind: 'screenshot' },
   };

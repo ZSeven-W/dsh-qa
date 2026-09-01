@@ -87,6 +87,23 @@ export interface QaVisualAssertion {
 }
 
 /**
+ * Trust label carried by every advisory `reasoning` string.
+ *
+ * Live evidence (deepseek-v4-flash-vision-exp, real capture of the current
+ * Wikipedia header): asked whether a serif "WIKIPEDIA" wordmark was present the
+ * model returned the CORRECT verdict 'yes' at confidence 1.00 — and then
+ * narrated "...with the puzzle globe logo", a logo that is NOT on that page
+ * (a separate assertion in the same session correctly answered 'no' to "is the
+ * puzzle globe present" at 0.97). The verdict was right; the narration was
+ * invented. Therefore `verdict` + `confidence` are the model's answer and the
+ * only part a consumer may act on, while `reasoning` is unverified narration
+ * that may contain fabricated detail and must never be quoted as observed fact.
+ */
+export const QA_ADVISORY_REASONING_TRUST = 'unverified-model-narration';
+
+export type QaAdvisoryReasoningTrust = typeof QA_ADVISORY_REASONING_TRUST;
+
+/**
  * One advisory visual finding recorded in a report. `reason` carries a stable
  * code when the verdict degraded (e.g. 'vision-model-unavailable'); the
  * question and reasoning pass through the redaction engine like any other
@@ -98,6 +115,14 @@ export interface QaAdvisoryResult {
   verdict: 'yes' | 'no' | 'unclear';
   confidence: number;
   reasoning: string;
+  /**
+   * Always QA_ADVISORY_REASONING_TRUST. This is an ADDITIVE field (schemaVersion
+   * stays 1): `reasoning` keeps its name and meaning, and this adjacent flag
+   * carries the warning semantics so a machine consumer of report.json /
+   * report.jsonl cannot read narration as observed fact. See
+   * docs/REDACTION_SPEC.md section 7.3.
+   */
+  reasoningTrust: QaAdvisoryReasoningTrust;
   reason?: string;
   description?: string;
   /** Structured reference to the captured PNG (projected through the whitelist). */

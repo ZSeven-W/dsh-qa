@@ -77,11 +77,30 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
   }
   if (report.advisory !== undefined && report.advisory.length > 0) {
     lines.push('');
-    lines.push('## Advisory');
+    // The whole section is MODEL-GENERATED output, and its narration is not
+    // observed fact: a live vision run returned the correct verdict and then
+    // described a logo that was not on the page. The heading says the section
+    // is model-generated and advisory; each reasoning string is rendered as a
+    // labelled blockquote so a human triaging the report cannot mistake
+    // narration for something the run observed.
+    lines.push('## Advisory (model-generated; never affects pass/fail)');
+    lines.push('');
+    lines.push(
+      'Model-generated output from the host vision model. Trust **verdict** and **confidence**; ' +
+      'every "model narration" block below is UNVERIFIED model narration that may contain ' +
+      'fabricated detail and must never be quoted as observed fact.',
+    );
+    lines.push('');
     for (const item of report.advisory) {
       lines.push('- question: ' + md(item.question));
       lines.push('  - verdict: ' + md(item.verdict) + ' (confidence ' + String(item.confidence) + ')');
-      lines.push('  - reasoning: ' + md(item.reasoning));
+      lines.push('  - model narration (unverified; may contain fabricated detail):');
+      const narration = md(item.reasoning);
+      // Redaction runs first (md), then the blockquote prefix is applied per
+      // line so a multi-line narration cannot break out of the quote.
+      for (const line of narration === '' ? ['(none)'] : narration.split('\n')) {
+        lines.push('    > ' + line);
+      }
       if (item.reason !== undefined) lines.push('  - reason: ' + md(item.reason));
       if (item.artifact !== undefined) {
         const projectedPath = projectArtifactPath(item.artifact.path, roots);
