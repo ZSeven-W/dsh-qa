@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa node budget fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 2px 0; }
+    #gap { height: 2200px; }
+  </style>
+</head>
+<body>
+  <!--
+    Reproduces the observation-budget failure mode. The page carries far more
+    semantic nodes (73) than the default observation node budget (60), so a
+    default observation comes back with truncated: true and WITHOUT the
+    "Deep control" button, which sits late in document order and below the
+    fold. The button genuinely exists: "not in the returned nodes" is not
+    "not on the page", and an assertion that concludes otherwise is a false
+    green. Raising the budget (the driver clamps to 100) returns the whole
+    page, exactly as observed live on Wikipedia at 60 vs 100 nodes.
+  -->
+  <main>
+    <h1>Node budget fixture</h1>
+    <ul id="filters">
+      <li><a href="#filter-01">Filter 01</a></li>
+      <li><a href="#filter-02">Filter 02</a></li>
+      <li><a href="#filter-03">Filter 03</a></li>
+      <li><a href="#filter-04">Filter 04</a></li>
+      <li><a href="#filter-05">Filter 05</a></li>
+      <li><a href="#filter-06">Filter 06</a></li>
+      <li><a href="#filter-07">Filter 07</a></li>
+      <li><a href="#filter-08">Filter 08</a></li>
+      <li><a href="#filter-09">Filter 09</a></li>
+      <li><a href="#filter-10">Filter 10</a></li>
+      <li><a href="#filter-11">Filter 11</a></li>
+      <li><a href="#filter-12">Filter 12</a></li>
+      <li><a href="#filter-13">Filter 13</a></li>
+      <li><a href="#filter-14">Filter 14</a></li>
+      <li><a href="#filter-15">Filter 15</a></li>
+      <li><a href="#filter-16">Filter 16</a></li>
+      <li><a href="#filter-17">Filter 17</a></li>
+      <li><a href="#filter-18">Filter 18</a></li>
+      <li><a href="#filter-19">Filter 19</a></li>
+      <li><a href="#filter-20">Filter 20</a></li>
+      <li><a href="#filter-21">Filter 21</a></li>
+      <li><a href="#filter-22">Filter 22</a></li>
+      <li><a href="#filter-23">Filter 23</a></li>
+      <li><a href="#filter-24">Filter 24</a></li>
+      <li><a href="#filter-25">Filter 25</a></li>
+      <li><a href="#filter-26">Filter 26</a></li>
+      <li><a href="#filter-27">Filter 27</a></li>
+      <li><a href="#filter-28">Filter 28</a></li>
+      <li><a href="#filter-29">Filter 29</a></li>
+      <li><a href="#filter-30">Filter 30</a></li>
+      <li><a href="#filter-31">Filter 31</a></li>
+      <li><a href="#filter-32">Filter 32</a></li>
+      <li><a href="#filter-33">Filter 33</a></li>
+      <li><a href="#filter-34">Filter 34</a></li>
+      <li><a href="#filter-35">Filter 35</a></li>
+      <li><a href="#filter-36">Filter 36</a></li>
+      <li><a href="#filter-37">Filter 37</a></li>
+      <li><a href="#filter-38">Filter 38</a></li>
+      <li><a href="#filter-39">Filter 39</a></li>
+      <li><a href="#filter-40">Filter 40</a></li>
+      <li><a href="#filter-41">Filter 41</a></li>
+      <li><a href="#filter-42">Filter 42</a></li>
+      <li><a href="#filter-43">Filter 43</a></li>
+      <li><a href="#filter-44">Filter 44</a></li>
+      <li><a href="#filter-45">Filter 45</a></li>
+      <li><a href="#filter-46">Filter 46</a></li>
+      <li><a href="#filter-47">Filter 47</a></li>
+      <li><a href="#filter-48">Filter 48</a></li>
+      <li><a href="#filter-49">Filter 49</a></li>
+      <li><a href="#filter-50">Filter 50</a></li>
+      <li><a href="#filter-51">Filter 51</a></li>
+      <li><a href="#filter-52">Filter 52</a></li>
+      <li><a href="#filter-53">Filter 53</a></li>
+      <li><a href="#filter-54">Filter 54</a></li>
+      <li><a href="#filter-55">Filter 55</a></li>
+      <li><a href="#filter-56">Filter 56</a></li>
+      <li><a href="#filter-57">Filter 57</a></li>
+      <li><a href="#filter-58">Filter 58</a></li>
+      <li><a href="#filter-59">Filter 59</a></li>
+      <li><a href="#filter-60">Filter 60</a></li>
+      <li><a href="#filter-61">Filter 61</a></li>
+      <li><a href="#filter-62">Filter 62</a></li>
+      <li><a href="#filter-63">Filter 63</a></li>
+      <li><a href="#filter-64">Filter 64</a></li>
+      <li><a href="#filter-65">Filter 65</a></li>
+      <li><a href="#filter-66">Filter 66</a></li>
+      <li><a href="#filter-67">Filter 67</a></li>
+      <li><a href="#filter-68">Filter 68</a></li>
+      <li><a href="#filter-69">Filter 69</a></li>
+      <li><a href="#filter-70">Filter 70</a></li>
+    </ul>
+    <div id="gap"></div>
+    <button id="deep" type="button">Deep control</button>
+    <div id="result" role="status" aria-live="polite">IDLE</div>
+  </main>
+  <script>
+    (function () {
+      var deep = document.getElementById('deep');
+      var result = document.getElementById('result');
+      deep.addEventListener('click', function () { result.textContent = 'DEEP OPENED'; });
+    })();
+  </script>
+</body>
+</html>
