@@ -58,10 +58,11 @@ driver refs are replaced by per-session correlation aliases and never enter the
 trajectory.
 
 `qa_record_export` accepts an `output_path` under the current workspace or temporary
-directory, synthesizes every step assertion from the immediate fresh observation
+directory, synthesizes every step assertion from the SETTLED fresh observation
 after that action, writes a scenario, and reads the exact bytes back through the
-existing fail-closed loader. Rejected/failed actions or actions without a fresh
-observation are returned in `excludedActions`, never silently promoted to steps.
+existing fail-closed loader. Rejected/failed actions, actions without a fresh
+observation, and actions whose view never settled are returned in
+`excludedActions`, never silently promoted to steps.
 
 Selector durability is intentionally strict: an action is exportable only when its
 target resolves uniquely in the preceding observation by non-empty **role plus
@@ -72,6 +73,29 @@ the old target merely remaining present is not proof.
 
 The bundled Explore methodology lives at `skills/qa-explore/SKILL.md` and is
 registered through the existing optional skill-service path.
+
+## Bounded settle (asynchronous UIs)
+
+Real UIs are asynchronous, so a single proof observation taken immediately after
+an action is a race: it can miss the outcome that has not rendered yet, or catch
+unrelated late hydration churn and mistake it for the outcome. `src/session/settle.ts`
+replaces that single-shot read with a bounded settle: observe until the semantic
+projection (refs and other session-local identity excluded) has held still for
+`QA_SETTLE_QUIET_MS`, bounded by `QA_SETTLE_BUDGET_MS`, and — right after an
+action — never conclude from silence alone.
+
+The SAME policy is applied by the session core to Explore's proof observations
+and Replay's verification observations, so the two sides can never judge
+different views of the same page. A view that never settles is honestly
+unprovable: export excludes the step (`ASSERTION_NOT_PROVABLE`) and replay fails
+the step. Nothing is widened to make an unstable page pass. Assertion synthesis
+prefers evidence on or near the action target and records the weakness in the
+step intent when only a distant delta exists.
+
+Configure it with `new QaToolHost({ settle: ... })`, `runScenario(..., { settle: ... })`,
+or the `DSH_QA_SETTLE_BUDGET_MS` / `DSH_QA_SETTLE_QUIET_MS` / `DSH_QA_SETTLE_INTERVAL_MS`
+environment overrides. Full rationale, both reproduced real-world failure modes,
+and the regression fixtures: `docs/SETTLE.md`.
 
 ## dshHostRuntime
 
