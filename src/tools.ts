@@ -411,7 +411,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAct = tool<ActArgs, unknown>({
     name: 'qa_act',
-    description: 'Perform exactly one action. Browser verbs: click/fill/press/navigate/scroll/select/hover. Computer verbs: focus/type/key/scroll. scroll (browser) takes ref (scroll-into-view) or direction+amount (viewport page scroll); scroll (computer) takes ref+direction+amount; select takes ref+option; hover takes ref. click/fill/press/focus/type/key/select/hover require a ref from the latest qa_observe.',
+    description: 'Perform exactly one action. Browser verbs: click/fill/press/navigate/scroll/select/hover. Computer verbs: click/focus/type/key/scroll. scroll (browser) takes ref (scroll-into-view) or direction+amount (viewport page scroll); scroll (computer) takes ref+direction+amount; select takes ref+option; hover takes ref. click/fill/press/focus/type/key/select/hover require a ref from the latest qa_observe.',
     parameters: closedObject({
       owner: strProp,
       action: enumOf('click', 'fill', 'press', 'navigate', 'focus', 'type', 'key', 'scroll', 'select', 'hover'),
