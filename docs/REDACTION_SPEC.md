@@ -564,3 +564,48 @@ alias.
 projection above; `kind` is a free-text label (`screenshot` / `trace` /
 `evidence`) that still passes through the normal engine.
 
+### 7.3 Advisory narration provenance (`QaAdvisoryResult.reasoning`)
+
+An advisory visual finding carries the vision model's `verdict`, its
+`confidence`, and a free-text `reasoning` string. The two are **not** equally
+trustworthy, and that is a measured fact, not a precaution.
+
+**Live evidence.** Against a real capture of the current Wikipedia header,
+`deepseek-v4-flash-vision-exp` was asked whether a serif "WIKIPEDIA" wordmark
+was present. It answered the CORRECT verdict `yes` at confidence 1.00, and then
+narrated "...with the puzzle globe logo" — a logo that is **not** on that page
+(the header currently shows the wordmark plus a numeric 25th-anniversary puzzle
+piece). A separate assertion in the same session asked whether the puzzle globe
+was present and correctly answered `no` at 0.97. The verdict was reliable; the
+narration around it was fabricated.
+
+**Decision.** The reasoning is KEPT — it is useful triage context — but every
+artifact must mark it as model narration rather than observation:
+
+1. **Schema (`report.json` / `report.jsonl`).** The field `reasoning` keeps its
+   name and meaning (no silent rename, no broken consumer), and every
+   `QaAdvisoryResult` carries the ADJACENT flag
+   `reasoningTrust: "unverified-model-narration"`
+   (`QA_ADVISORY_REASONING_TRUST` in `src/contracts.ts`). The flag is additive:
+   `schemaVersion` stays `1`, because an added field cannot break a reader of
+   the previous shape, while a rename would. A machine consumer that reads
+   `reasoning` sees the trust code sitting beside it in the same record — in
+   `report.json`, in each `report.jsonl` line, and in the `qa_assert` visual tool
+   result.
+2. **`report.md`.** The section heading is
+   `## Advisory (model-generated; never affects pass/fail)`, followed by a
+   notice that `verdict` and `confidence` are the model's answer while every
+   narration block is unverified. Each finding renders its reasoning under
+   `model narration (unverified; may contain fabricated detail):` as a
+   blockquote, one `> ` prefix per line, so it is visually distinct from the
+   observed, deterministic facts above it.
+3. **Redaction is unchanged.** `question`, `reasoning`, and `reason` remain
+   ordinary free-text leaves: they pass through the normal engine (R1–R4, R3
+   enabled) in every artifact, exactly like before. The blockquote prefix is
+   applied to the ALREADY-REDACTED text, per line, so labelling can never
+   reorder or bypass redaction, and a secret placed in the model's reasoning
+   still cannot reach `report.md`, `report.json`, or `report.jsonl`.
+4. **Determinism is unchanged.** `advisory` stays excluded from
+   `normalizeReportForDeterminism` by schema (`src/replay/determinism.ts`), so
+   the new field cannot affect a determinism comparison.
+

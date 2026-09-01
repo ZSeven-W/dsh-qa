@@ -51,6 +51,29 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 - The moment a problem appears, call \`qa_evidence\` before navigating away or changing state.
   Missing permissions, truncation, and driver rejection are boundaries, never green results.
 
+## Visual assertions: trust the verdict, never the narration
+
+\`qa_assert kind:"visual"\` returns \`verdict\` (yes/no/unclear), \`confidence\`, and \`reasoning\`.
+
+- **Trust \`verdict\` and \`confidence\`.** They are the model's answer to your question and the only
+  part you may act on or report.
+- **Never quote details from \`reasoning\` as observed fact.** It is model narration; it is not
+  checked against the screenshot, and it invents detail. Measured in a live run: asked whether a
+  serif "WIKIPEDIA" wordmark was present, the model answered \`yes\` at confidence 1.00 — correctly —
+  and then narrated "with the puzzle globe logo", which was NOT on that page; asked separately
+  whether the puzzle globe was present, the same model correctly answered \`no\` at 0.97. The verdict
+  was right and the story around it was invented. Every advisory record therefore carries
+  \`reasoningTrust: "unverified-model-narration"\`, and report.md prints the text as a labelled
+  "model narration" blockquote.
+- If a detail in the narration matters, ask a separate visual question about exactly that detail, or
+  prove it deterministically with \`node-present\` / \`node-absent\` / \`page-url\`. A visual verdict is
+  ADVISORY: it never changes a run's pass/fail.
+- A visual assertion takes its own fresh settled observation before capturing, so it works directly
+  after \`qa_act\` or \`qa_evidence\` — no separate \`qa_observe\` is required first. The one exception
+  is a capture you pinned yourself with \`visual_fingerprint\` on \`qa_evidence\`: a pinned observation
+  is never silently refreshed, so once it goes stale the driver refuses it by design and you must
+  observe and pin again.
+
 ## Export and Replay
 
 - Call \`qa_record_export\` with the same \`owner\` and an \`output_path\` ending in \`.json\`. Its

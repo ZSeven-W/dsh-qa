@@ -97,6 +97,37 @@ or the `DSH_QA_SETTLE_BUDGET_MS` / `DSH_QA_SETTLE_QUIET_MS` / `DSH_QA_SETTLE_INT
 environment overrides. Full rationale, both reproduced real-world failure modes,
 and the regression fixtures: `docs/SETTLE.md`.
 
+## Visual assertions (advisory)
+
+`qa_assert kind:"visual"` captures the current screen and asks the host vision
+model one question. The verdict is **advisory**: it is recorded in the report and
+excluded from the determinism comparison by schema, and it never changes a run's
+pass/fail.
+
+Two rules come from live use against `deepseek-v4-flash-vision-exp`:
+
+- **Trust `verdict` and `confidence`; never quote `reasoning` as observed fact.**
+  In a real run the model correctly answered `yes` (confidence 1.00) to "is the
+  serif WIKIPEDIA wordmark present" and then narrated "with the puzzle globe
+  logo" — a logo that was not on the page. The reasoning is kept as triage
+  context, but every advisory record carries
+  `reasoningTrust: "unverified-model-narration"` in `report.json` /
+  `report.jsonl` and the `qa_assert` result, and `report.md` renders it under a
+  `## Advisory (model-generated; never affects pass/fail)` heading as a labelled
+  "model narration" blockquote. Rationale and the full decision:
+  `docs/REDACTION_SPEC.md` section 7.3.
+- **A capture is always bound to a fresh observation.** Both drivers refuse a
+  capture bound to a stale observation (the browser driver: "the semantic
+  observation expired; observe again before visual capture"), because the
+  Set-of-Mark annotations and the pixels must describe the same view. Rather than
+  weakening that rule or reusing an older frame, `captureLatestVisual` takes a
+  fresh settled observation immediately before every capture, for both drivers —
+  so `qa_assert` visual and `qa_evidence visual:true` work directly after
+  `qa_act` or each other, with no manual `qa_observe` in between. A capture the
+  caller pinned explicitly (browser `visual_fingerprint`, computer
+  `observationId`) is never silently refreshed: the pin is honored and a stale
+  pin is refused by the driver, by design.
+
 ## dshHostRuntime
 
 This package declares **zero host packages** in `dependencies`/`peerDependencies`.
