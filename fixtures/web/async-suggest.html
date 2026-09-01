@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa async suggestion fixture</title>
+  <style>
+    #suggestions { list-style: none; margin: 4px 0; padding: 4px; border: 1px solid #ccc; }
+    #suggestions li { padding: 2px 4px; }
+  </style>
+</head>
+<body>
+  <!--
+    Reproduces real-world failure mode A (an async outcome that arrives AFTER a
+    single-shot proof observation): typing renders a suggestion listbox only
+    after __SUGGEST_DELAY_MS__ ms, exactly like a live search box. The delay is
+    injected by the test server, so the same file covers a short delay and a
+    delay close to the settle budget.
+  -->
+  <main>
+    <h1>Async search</h1>
+    <form>
+      <label for="query">Search articles</label>
+      <input id="query" name="query" autocomplete="off" />
+    </form>
+    <ul id="suggestions" role="listbox" aria-label="Search suggestions" hidden></ul>
+    <div id="result" role="status" aria-live="polite">IDLE</div>
+  </main>
+
+  <script>
+    (function () {
+      var DELAY_MS = __SUGGEST_DELAY_MS__;
+      var input = document.getElementById('query');
+      var list = document.getElementById('suggestions');
+      var result = document.getElementById('result');
+      var timer = null;
+      var OPTIONS = ['Async rendering', 'Asynchronous IO'];
+
+      input.addEventListener('input', function () {
+        if (timer !== null) clearTimeout(timer);
+        list.hidden = true;
+        while (list.firstChild) list.removeChild(list.firstChild);
+        if (input.value === '') return;
+        // The ONLY semantic outcome of the fill lands here, later than the
+        // action receipt: a single-shot proof observation loses this race.
+        timer = setTimeout(function () {
+          timer = null;
+          for (var i = 0; i < OPTIONS.length; i += 1) {
+            var item = document.createElement('li');
+            item.setAttribute('role', 'option');
+            item.setAttribute('tabindex', '0');
+            item.textContent = OPTIONS[i];
+            item.addEventListener('click', function (event) {
+              result.textContent = 'OPENED ' + event.currentTarget.textContent;
+            });
+            list.appendChild(item);
+          }
+          list.hidden = false;
+        }, DELAY_MS);
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa never-settles fixture</title>
+</head>
+<body>
+  <!--
+    A page that NEVER stabilizes: the clock rewrites its own accessible name
+    every __TICK_MS__ ms forever. Nothing observed here can be attributed to an
+    action, so the exporter must refuse it (ASSERTION_NOT_PROVABLE) and replay
+    must fail honestly instead of passing by luck.
+  -->
+  <main>
+    <h1>Live console</h1>
+    <div id="clock" role="status" aria-live="polite">TICK 0</div>
+    <form>
+      <label for="release-name">Release name</label>
+      <input id="release-name" name="name" autocomplete="off" />
+      <button type="button" id="validate">Run validation</button>
+    </form>
+    <div id="result" role="status" aria-live="polite">IDLE</div>
+  </main>
+
+  <script>
+    (function () {
+      var TICK_MS = __TICK_MS__;
+      var clock = document.getElementById('clock');
+      var ticks = 0;
+      setInterval(function () {
+        ticks += 1;
+        clock.textContent = 'TICK ' + ticks;
+      }, TICK_MS);
+      document.getElementById('release-name').addEventListener('input', function (event) {
+        document.getElementById('result').textContent = event.target.value ? 'READY' : 'IDLE';
+      });
+      document.getElementById('validate').addEventListener('click', function () {
+        document.getElementById('result').textContent = 'PASS';
+      });
+    })();
+  </script>
+</body>
+</html>

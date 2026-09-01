@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa hydration churn fixture</title>
+  <style>
+    #suggestions { list-style: none; margin: 4px 0; padding: 4px; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <!--
+    Reproduces real-world failure mode B (unrelated late churn arriving inside
+    the action's observation window). The shortcut link far above the search box
+    rewrites its OWN accessible name shortly after the first keystroke, exactly
+    like MediaWiki rewriting "[o]" into "[ctrl-option-o]" after hydration. That
+    rename is a semantic delta, but it is NOT evidence for the fill: the
+    proximate suggestion list is. The nav links in between put the churning node
+    well outside the target-proximate window.
+  -->
+  <main>
+    <h1>Hydrating docs</h1>
+    <p>
+      <a id="shortcut" href="/help">Editing help: press [o] to open the toolbar. It's not mandatory. [o]</a>
+    </p>
+    <nav>
+      <a href="/one">Section one</a>
+      <a href="/two">Section two</a>
+      <a href="/three">Section three</a>
+      <a href="/four">Section four</a>
+      <a href="/five">Section five</a>
+      <a href="/six">Section six</a>
+      <a href="/seven">Section seven</a>
+      <a href="/eight">Section eight</a>
+    </nav>
+    <form>
+      <label for="query">Search articles</label>
+      <input id="query" name="query" autocomplete="off" />
+    </form>
+    <ul id="suggestions" role="listbox" aria-label="Search suggestions" hidden></ul>
+    <div id="result" role="status" aria-live="polite">IDLE</div>
+  </main>
+
+  <script>
+    (function () {
+      var CHURN_MS = __CHURN_DELAY_MS__;
+      var SUGGEST_MS = __SUGGEST_DELAY_MS__;
+      var input = document.getElementById('query');
+      var list = document.getElementById('suggestions');
+      var result = document.getElementById('result');
+      var shortcut = document.getElementById('shortcut');
+      var churned = false;
+
+      input.addEventListener('input', function () {
+        if (input.value === '') return;
+        if (!churned) {
+          churned = true;
+          // Unrelated late hydration: it lands EARLY (before a single-shot
+          // proof observation could even return) and has nothing to do with
+          // the fill.
+          setTimeout(function () {
+            shortcut.textContent = "Editing help: press [ctrl-option-o] to open the toolbar. It's not mandatory. [ctrl-option-o]";
+          }, CHURN_MS);
+        }
+        // The real outcome of the fill, arriving later, next to the target.
+        setTimeout(function () {
+          while (list.firstChild) list.removeChild(list.firstChild);
+          var item = document.createElement('li');
+          item.setAttribute('role', 'option');
+          item.setAttribute('tabindex', '0');
+          item.textContent = 'Hydration and rendering';
+          item.addEventListener('click', function () {
+            result.textContent = 'OPENED Hydration and rendering';
+          });
+          list.appendChild(item);
+          list.hidden = false;
+        }, SUGGEST_MS);
+      });
+    })();
+  </script>
+</body>
+</html>
