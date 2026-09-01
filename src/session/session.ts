@@ -270,17 +270,40 @@ export class QaSessionManager {
 }
 
 /**
- * Capture the latest visual state through a session. The computer driver binds
- * its capture to an exact observation id, so it re-observes first when the
- * caller did not supply one; the browser driver captures its latest observation
- * directly (or the exact fingerprint the caller supplied).
+ * Capture the latest visual state through a session.
+ *
+ * Both drivers bind a capture to a semantic observation and REFUSE a capture
+ * bound to a stale one: the computer driver demands an exact observation id,
+ * and the browser driver rejects a capture whose stored observation is older
+ * than its TTL or was taken at another URL ("the semantic observation expired;
+ * observe again before visual capture"). That freshness rule is what keeps the
+ * Set-of-Mark annotations and the pixels describing the SAME view, so it is
+ * never relaxed here and a previous capture is NEVER reused: between two tool
+ * calls the screen can change, and judging a cached frame would be a silent
+ * correctness bug.
+ *
+ * What this function does instead is SATISFY the rule rather than lean on
+ * whatever observation happens to be left over: unless the caller pinned an
+ * exact observation, it takes a fresh SETTLED observation immediately before
+ * the capture, for both drivers. That is exactly what the driver error asks
+ * for, and it makes a capture right after qa_evidence / qa_act as valid as one
+ * right after qa_observe.
+ *
+ * A caller that DID pin an observation (browser `fingerprint`, computer
+ * `observationId`) means "capture exactly this observation": re-observing would
+ * silently break that pin, so the pinned request goes straight to the driver
+ * and its staleness error surfaces verbatim.
  */
 export async function captureLatestVisual(
   session: QaSession,
   options?: QaVisualObserveOptions,
 ): Promise<QaVisualCapture> {
-  if (session.kind === 'computer' && options?.observationId === undefined) {
-    const observation = (await session.observeSettled()).observation;
+  const pinned = session.kind === 'computer'
+    ? options?.observationId !== undefined
+    : options?.fingerprint !== undefined;
+  if (pinned) return session.visualObserve(options);
+  const observation = (await session.observeSettled()).observation;
+  if (session.kind === 'computer') {
     const observationId = observation.observationId;
     if (observationId === undefined) {
       throw new Error('computer visual capture requires an observation id from the latest observation');
