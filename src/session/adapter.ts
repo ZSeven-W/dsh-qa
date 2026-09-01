@@ -30,8 +30,17 @@ export interface QaSemanticNode {
   inViewport?: boolean;
   /** Computer-only: Accessibility secure (password) classification. */
   secure?: boolean;
-  /** Computer-only: bounded, non-secure value when Accessibility exposes one. */
+  /**
+   * Bounded observable value of a value-bearing control (browser, contract v5;
+   * and computer when Accessibility exposes one). An empty string is a real
+   * observation; the ABSENCE of the field means the element has no observable
+   * value, or that it was withheld (see valueWithheld).
+   */
   value?: string | null;
+  /** Browser-only: the value exists but was deliberately never read (secret). */
+  valueWithheld?: true;
+  /** Browser-only: the value exceeded the driver bound and `value` is a prefix. */
+  valueTruncated?: true;
 }
 
 /** Computer-only application identity, asserted (never assumed) on observation. */

@@ -36,7 +36,8 @@
 // that lands up to roughly (budgetMs - quietMs) after the action. A slower page
 // needs a bigger configured budget — it is never silently accepted.
 
-import type { QaObservation, QaSettleReport } from './adapter.ts';
+import type { QaObservation, QaSemanticNode, QaSettleReport } from './adapter.ts';
+import type { QaNodePredicate } from '../contracts.ts';
 
 /**
  * Default wall-clock budget for one settle window, in milliseconds.
@@ -96,9 +97,23 @@ export interface QaSettleCallOptions {
   /**
    * Semantic projection of the view BEFORE the action, so an outcome that
    * already landed synchronously counts as the awaited change instead of
-   * costing the whole budget.
+   * costing the whole budget. When `echo` is set this MUST be the ECHO-MASKED
+   * projection (see `projectSemanticView(observation, echo)`), so the action's
+   * own echo is not mistaken for the awaited change.
    */
   baselineView?: string;
+  /**
+   * The action's own direct echo on its target, expressed as the target's
+   * SEMANTIC predicate (role/name/tag, NOT the session-local ref: the browser
+   * driver re-mints a ref every observation, so a ref can never be matched
+   * across two observations). Any node matching this predicate has its `value`
+   * masked from the `awaitChange` decision — the value the action itself just
+   * wrote is expected and must not by itself end the wait — while value changes
+   * on every OTHER node remain legitimate evidence. The quiet window still uses
+   * the full projection, so the view is only settled once the echo AND any
+   * downstream consequences have all held still.
+   */
+  echo?: QaNodePredicate;
 }
 
 /** One settle window outcome, including the observation the caller must use. */
@@ -157,7 +172,14 @@ export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettle
  * (URL, title, and each node's role/name/tag/state/href/viewport membership,
  * in document order) is INCLUDED, so a real semantic change is never hidden.
  */
-export function projectSemanticView(observation: QaObservation): string {
+function matchesEcho(node: QaSemanticNode, echo: QaNodePredicate): boolean {
+  if (echo.role !== undefined && node.role !== echo.role) return false;
+  if (echo.name !== undefined && node.name !== echo.name) return false;
+  if (echo.tag !== undefined && node.tag !== echo.tag) return false;
+  return true;
+}
+
+export function projectSemanticView(observation: QaObservation, echo?: QaNodePredicate): string {
   return JSON.stringify({
     url: observation.page.url,
     title: observation.page.title,
@@ -183,7 +205,7 @@ export function projectSemanticView(observation: QaObservation): string {
       node.href ?? null,
       node.inViewport ?? null,
       node.secure ?? null,
-      node.value ?? null,
+      echo !== undefined && matchesEcho(node, echo) ? null : node.value ?? null,
     ]),
   });
 }
@@ -210,14 +232,21 @@ export async function observeUntilStable(
   options: QaSettleCallOptions = {},
 ): Promise<QaSettleResult> {
   const awaitChange = options.awaitChange === true;
+  const echo = options.echo;
   const startedAt = Date.now();
   let latest = await observe();
+  // FULL projection drives the quiet window (the echo must hold still too).
   let projection = projectSemanticView(latest);
+  // ECHO-MASKED projection drives awaitChange: the action's own echo is
+  // expected and never satisfies "the view changed", so only a change on some
+  // OTHER node (a downstream consequence) counts. When there is no echo the
+  // two projections are identical and the behaviour is unchanged.
+  let changedProjection = projectSemanticView(latest, echo);
   /** When the CURRENT projection was first seen; the quiet window starts here. */
   let unchangedSince = Date.now();
   // An outcome that landed before this window even opened (a synchronous UI)
   // is already the awaited change: compare against the pre-action baseline.
-  let changed = options.baselineView !== undefined && options.baselineView !== projection;
+  let changed = options.baselineView !== undefined && options.baselineView !== changedProjection;
   let passes = 1;
   for (;;) {
     const now = Date.now();
@@ -249,11 +278,17 @@ export async function observeUntilStable(
     const next = await observe();
     passes += 1;
     const nextProjection = projectSemanticView(next);
+    const nextChangedProjection = projectSemanticView(next, echo);
+    if (nextChangedProjection !== changedProjection) {
+      // A non-echo change (or the echo re-appearing) counts as the awaited
+      // change and keeps the proof window able to conclude once quiet.
+      changedProjection = nextChangedProjection;
+      changed = true;
+    }
     if (nextProjection !== projection) {
-      // The view moved: the quiet window restarts from this change.
+      // The view moved (echo included): the quiet window restarts.
       projection = nextProjection;
       unchangedSince = Date.now();
-      changed = true;
     }
     latest = next;
   }

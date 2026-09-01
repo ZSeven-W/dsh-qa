@@ -185,3 +185,38 @@ test('node-in-viewport assertion validates and its expected is a predicate', () 
   assert.equal(assertion.kind, 'node-in-viewport');
   assert.deepEqual(assertion.expected, { role: 'combobox', name: 'Second select' });
 });
+
+test('node-value assertion validates a predicate plus an exact value', () => {
+  const assertion = validateAssertion(
+    { kind: 'node-value', expected: { role: 'textbox', name: 'Release name', value: 'v1.0.0' } },
+    'qa_assert',
+  );
+  assert.equal(assertion.kind, 'node-value');
+  assert.deepEqual(assertion.expected, { role: 'textbox', name: 'Release name', value: 'v1.0.0' });
+});
+
+test('node-value rejects a missing, empty, or non-string value', () => {
+  for (const expected of [{ role: 'textbox' }, { role: 'textbox', value: '  ' }, { role: 'textbox', value: 123 }]) {
+    assert.throws(() => validateAssertion({ kind: 'node-value', expected }, 'qa_assert'), (error) => {
+      assert.ok(error instanceof ScenarioValidationError);
+      assert.equal(error.position, 'qa_assert.expected.value');
+      return true;
+    });
+  }
+});
+
+test('node-value rejects a predicate with no role/name/tag or an unexpected field', () => {
+  assert.throws(() => validateAssertion({ kind: 'node-value', expected: { value: 'x' } }, 'qa_assert'), (error) => {
+    assert.ok(error instanceof ScenarioValidationError);
+    assert.equal(error.position, 'qa_assert.expected');
+    return true;
+  });
+  assert.throws(
+    () => validateAssertion({ kind: 'node-value', expected: { role: 'textbox', value: 'x', extra: 1 } }, 'qa_assert'),
+    (error) => {
+      assert.ok(error instanceof ScenarioValidationError);
+      assert.equal(error.position, 'qa_assert.expected');
+      return true;
+    },
+  );
+});

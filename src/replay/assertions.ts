@@ -20,6 +20,11 @@ export function toObservedNode(node: QaSemanticNode): QaObservedNode {
   return { role: node.role, name: node.name, tag: node.tag };
 }
 
+/** Projection of a node whose observable value was asserted, for report/triage. */
+function toObservedValueNode(node: QaSemanticNode): QaObservedNode & { value: string | null } {
+  return { role: node.role, name: node.name, tag: node.tag, value: node.value ?? null };
+}
+
 /**
  * Node budget requested for the ONE bounded re-observation performed when an
  * assertion's outcome would otherwise be decided against a truncated view.
@@ -98,6 +103,17 @@ export function evaluateAssertion(assertion: QaAssertion, observation: QaObserva
     const matches = observation.nodes.filter((node) => matchesNode(node, predicate) && node.inViewport === true);
     const found = matches.length > 0;
     return { passed: found, observed: matches.map(toObservedNode), inconclusive: !found && observation.truncated };
+  }
+  if (kind === 'node-value') {
+    const expectation = assertion.expected as QaNodePredicate & { value: string };
+    // Presence of the value is exactly as sound as presence of the node: a
+    // returned node really does carry the value the driver reported for it.
+    // NOT finding it in a truncated view is unproven, never "absent".
+    const matches = observation.nodes.filter(
+      (node) => matchesNode(node, expectation) && node.value === expectation.value,
+    );
+    const found = matches.length > 0;
+    return { passed: found, observed: matches.map(toObservedValueNode), inconclusive: !found && observation.truncated };
   }
   const expected = assertion.expected as { url?: string; contains?: string };
   const actual = observation.page.url;

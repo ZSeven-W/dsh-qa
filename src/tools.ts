@@ -333,7 +333,7 @@ function scrollAmountFor(
 
 interface AssertArgs {
   owner?: string
-  kind: 'node-present' | 'node-absent' | 'page-url' | 'node-in-viewport' | 'visual'
+  kind: 'node-present' | 'node-absent' | 'page-url' | 'node-in-viewport' | 'node-value' | 'visual'
   expected?: unknown
   question?: string
 }
@@ -526,10 +526,10 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAssert = tool<AssertArgs, unknown>({
     name: 'qa_assert',
-    description: 'Evaluate one assertion against a fresh SETTLED observation (observe until two consecutive semantic views agree, bounded by a budget; the result carries settle.stable). node-present/node-absent/node-in-viewport/page-url are deterministic. kind "visual" takes its own fresh settled observation, captures the current screen from it, and asks the host vision model a question, so it works directly after qa_act or qa_evidence and needs no separate qa_observe call first. Its ADVISORY verdict (yes/no/unclear with confidence) never changes pass/fail: trust verdict and confidence, and treat the accompanying reasoning as unverified model narration (reasoningTrust "unverified-model-narration") that may contain fabricated detail and must never be quoted as observed fact. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
+    description: 'Evaluate one assertion against a fresh SETTLED observation (observe until two consecutive semantic views agree, bounded by a budget; the result carries settle.stable). node-present/node-absent/node-in-viewport/page-url/node-value are deterministic. node-value matches a node by the usual predicate AND asserts its exact value (expected: { role?, name?, tag?, value }); it proves a fill/type by the target\'s own value. kind "visual" takes its own fresh settled observation, captures the current screen from it, and asks the host vision model a question, so it works directly after qa_act or qa_evidence and needs no separate qa_observe call first. Its ADVISORY verdict (yes/no/unclear with confidence) never changes pass/fail: trust verdict and confidence, and treat the accompanying reasoning as unverified model narration (reasoningTrust "unverified-model-narration") that may contain fabricated detail and must never be quoted as observed fact. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
     parameters: closedObject({
       owner: strProp,
-      kind: enumOf('node-present', 'node-absent', 'page-url', 'node-in-viewport', 'visual'),
+      kind: enumOf('node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value', 'visual'),
       expected: {},
       question: strProp,
     }, ['kind']),

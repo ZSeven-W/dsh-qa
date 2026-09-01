@@ -350,7 +350,7 @@ server.tool(
   'qa_assert',
   {
     owner: z.string().optional(),
-    kind: z.enum(['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'visual']),
+    kind: z.enum(['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value', 'visual']),
     expected: z.unknown().optional(),
     question: z.string().optional(),
   },

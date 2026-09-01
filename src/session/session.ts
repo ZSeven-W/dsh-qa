@@ -22,6 +22,7 @@ import {
   type QaSettlePolicy,
   type QaSettleResult,
 } from './settle.ts';
+import type { QaNodePredicate } from '../contracts.ts';
 
 /** Outcome the session core resolves for one act step. */
 export type QaActOutcome = 'ok' | 'unknown' | 'failed';
@@ -58,6 +59,29 @@ function normalizeOwner(ownerId: string): string {
 }
 
 /**
+ * The action's own direct echo, expressed as the target's SEMANTIC predicate.
+ * For a fill/type, the node whose `value` the action itself just wrote must
+ * not by itself end a proof settle window (see settle.ts). The predicate is
+ * derived from the pre-action observation because the browser driver re-mints
+ * a ref on every observation, so a ref can never be matched across two
+ * observations; role/name/tag is the only cross-observation identity.
+ */
+function actionEcho(action: QaAction, before: QaObservation | null): QaNodePredicate | null {
+  if (action.kind !== 'fill' && action.kind !== 'type') return null;
+  if (before === null) return null;
+  const node = before.nodes.find((candidate) => candidate.ref === action.ref);
+  if (node === undefined) return null;
+  const predicate: QaNodePredicate = {};
+  if (node.role !== '') predicate.role = node.role;
+  if (node.name !== '') predicate.name = node.name;
+  if (node.tag !== '') predicate.tag = node.tag;
+  if (predicate.role === undefined && predicate.name === undefined && predicate.tag === undefined) {
+    return null;
+  }
+  return predicate;
+}
+
+/**
  * QA session core: observe -> act -> re-observe -> evaluate -> evidence ->
  * cleanup, on top of a QaDriverAdapter.
  *
@@ -78,6 +102,8 @@ export class QaSession {
   readonly #settle: QaSettlePolicy;
   /** Semantic projection of the last observed view (the settle baseline). */
   #lastView: string | null = null;
+  /** The last raw observation, so an echo-masked baseline can be recomputed. */
+  #lastObservation: QaObservation | null = null;
   #started = false;
   #stopped = false;
   #stopPromise: Promise<QaStopResult> | null = null;
@@ -122,6 +148,7 @@ export class QaSession {
     this.#assertStarted();
     const observation = await this.#adapter.observe(this.#ownerId, options);
     this.#lastView = projectSemanticView(observation);
+    this.#lastObservation = observation;
     return observation;
   }
 
@@ -138,6 +165,7 @@ export class QaSession {
       settle ?? {},
     );
     this.#lastView = projectSemanticView(result.observation);
+    this.#lastObservation = result.observation;
     // Passive notification only (the Explore recorder binds the settled
     // observation here); a recorder failure can never alter session behavior.
     try {
@@ -162,10 +190,17 @@ export class QaSession {
     // observation (never the receipt) can decide it. That observation is
     // SETTLED, and as a PROOF observation it waits out an outcome that may
     // still be in flight: a single-shot read races every asynchronous UI.
-    const baselineView = this.#lastView;
+    const baselineObservation = this.#lastObservation;
+    const echo = actionEcho(action, baselineObservation);
+    const baselineView = baselineObservation === null
+      ? null
+      : echo === null
+        ? this.#lastView
+        : projectSemanticView(baselineObservation, echo);
     const settled = await this.observeSettled(undefined, {
       awaitChange: true,
       ...(baselineView === null ? {} : { baselineView }),
+      ...(echo === null ? {} : { echo }),
     });
     const outcome: QaActOutcome = receipt.status === 'confirmed' ? 'ok' : 'unknown';
     return {

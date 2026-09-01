@@ -191,6 +191,39 @@ test('page-url never depends on node completeness', () => {
   assert.equal(result.inconclusive, false)
 })
 
+test('node-value obeys the same presence/inconclusive discipline as node-present', async () => {
+  const deepWithValue = node('n-deep', 'button', 'Deep control', 'button', { inViewport: true, value: 'ON' })
+
+  // Found in a truncated view: sound evidence of both presence and value.
+  const found = evaluateAssertion(
+    { kind: 'node-value', expected: { role: 'button', name: 'Deep control', value: 'ON' } },
+    view([deepWithValue], true),
+  )
+  assert.equal(found.passed, true)
+  assert.equal(found.inconclusive, false)
+
+  // Not found in a truncated view: unproven, never "not there".
+  const missing = evaluateAssertion(
+    { kind: 'node-value', expected: { role: 'button', name: 'Deep control', value: 'ON' } },
+    view([], true),
+  )
+  assert.equal(missing.passed, false)
+  assert.equal(missing.inconclusive, true)
+
+  // Escalates once; a still-truncated view fails closed with the distinct reason.
+  const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div')], true))
+  const decision = await decideAssertion(
+    { kind: 'node-value', expected: { role: 'button', name: 'Deep control', value: 'ON' } },
+    view([], true),
+    reobserve,
+  )
+  assert.deepEqual(calls, [QA_ESCALATED_NODE_BUDGET], 'exactly ONE bounded escalation')
+  assert.equal(decision.passed, false)
+  assert.equal(decision.completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
+  assert.equal(decision.completeness.truncated, true)
+  assert.match(decision.completeness.detail, /cannot be proven/)
+})
+
 // ---------------------------------------------------------------------------
 // 2. Bounded escalation before concluding.
 // ---------------------------------------------------------------------------

@@ -37,6 +37,17 @@ function clean(value: string): string {
   return value.trim();
 }
 
+/**
+ * Normalize an intended fill text exactly like the browser driver normalizes
+ * an observable value (dsh-browser contract v5): bound the raw string, collapse
+ * whitespace runs to single spaces, trim, then clip to 180 characters. A fill
+ * is proven by its own value only when this normalization equals the observed
+ * `node.value`; anything else (a transform, a truncation) is not the echo.
+ */
+function normalizeValue(raw: string): string {
+  return raw.slice(0, 720).replace(/\s+/gu, ' ').trim().slice(0, 180);
+}
+
 function containsRedactionMarker(value: string): boolean {
   return value.includes('[REDACTED');
 }
@@ -261,11 +272,49 @@ interface SynthesizedAssertion {
   weakness: string | null;
 }
 
+/**
+ * Prove a fill by its OWN target's value: the most proximate, most durable
+ * evidence possible. The target node in the settled observation must carry the
+ * typed text (driver-normalized), and the value must not be withheld (secret),
+ * truncated (equality against a prefix is invalid), or absent (non-editable /
+ * driver without value support). Only then is a `node-value` assertion on the
+ * TARGET synthesized; it outranks every delta candidate, including a closer-
+ * scoring distant delta.
+ */
+function synthesizeValueAssertion(
+  after: QaObservation,
+  target: QaNodePredicate | null,
+  action: QaScenarioAction | null,
+): SynthesizedAssertion | null {
+  // Only a fill writes a value on its own target. The computer `type` verb is
+  // not replayable (durableAction excludes it), so it never reaches export.
+  if (action === null || action.kind !== 'fill' || target === null) return null;
+  const node = after.nodes.find((candidate) => matchesPredicate(candidate, target));
+  if (node === undefined) return null;
+  if (node.valueWithheld === true || node.secure === true) return null;
+  if (node.valueTruncated === true) return null;
+  if (typeof node.value !== 'string') return null;
+  const expected = normalizeValue(action.text);
+  if (node.value !== expected) return null;
+  return {
+    assertion: {
+      kind: 'node-value',
+      expected: { ...target, value: expected },
+      description: 'Settled post-action observation confirmed the typed value on the action target.',
+    },
+    weakness: null,
+  };
+}
+
 function synthesizeAssertion(
   before: QaObservation | null,
   after: QaObservation,
   target: QaNodePredicate | null,
+  action: QaScenarioAction | null,
 ): SynthesizedAssertion | null {
+  // A fill proven by its own value outranks every other candidate.
+  const valueAssertion = synthesizeValueAssertion(after, target, action);
+  if (valueAssertion !== null) return valueAssertion;
   if (before !== null && before.page.url !== after.page.url && clean(after.page.url) !== '') {
     return {
       assertion: {
@@ -569,7 +618,7 @@ function buildScenario(
     }
     const synthesized = stepAction.kind === 'scroll' && candidate.target !== null
       ? { assertion: synthesizeScrollAssertion(candidate.target), weakness: null }
-      : synthesizeAssertion(candidate.before, after, candidate.target);
+      : synthesizeAssertion(candidate.before, after, candidate.target, stepAction);
     if (synthesized === null || !evaluateAssertion(synthesized.assertion, after).passed) {
       excluded.push(exclusion(
         recorded,

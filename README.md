@@ -90,7 +90,11 @@ different views of the same page. A view that never settles is honestly
 unprovable: export excludes the step (`ASSERTION_NOT_PROVABLE`) and replay fails
 the step. Nothing is widened to make an unstable page pass. Assertion synthesis
 prefers evidence on or near the action target and records the weakness in the
-step intent when only a distant delta exists.
+step intent when only a distant delta exists. A `fill`'s own value echo on its
+target is masked from the change decision (it is expected, not evidence of a
+downstream outcome), and the exporter proves the fill with a `node-value`
+assertion on the target whenever the settled view shows it carrying the typed
+text.
 
 Configure it with `new QaToolHost({ settle: ... })`, `runScenario(..., { settle: ... })`,
 or the `DSH_QA_SETTLE_BUDGET_MS` / `DSH_QA_SETTLE_QUIET_MS` / `DSH_QA_SETTLE_INTERVAL_MS`

@@ -15,6 +15,8 @@ assertion may conclude from it.
 | a node WAS returned | sound | the driver returned it, so it exists |
 | `node-absent` and nothing matched | **unprovable** | the node may exist outside the window |
 | `node-present` / `node-in-viewport` and nothing matched | **unprovable** | same reason, opposite direction |
+| `node-value` and a matching node with the expected value was returned | sound | the node and its value were both reported |
+| `node-value` and nothing matched | **unprovable** | the node (and its value) may exist outside the window |
 | `page-url` | sound | the URL is carried by every observation |
 
 Evidence of presence is sound; absence of evidence is not evidence of absence.
@@ -28,7 +30,7 @@ Evidence of presence is sound; absence of evidence is not evidence of absence.
 
 2. **One bounded budget escalation before concluding.** When an outcome would
    be decided against a truncated view — any absent-claim, or a present /
-   in-viewport claim that found nothing — `decideAssertion` re-observes ONCE at
+   in-viewport / value claim that found nothing — `decideAssertion` re-observes ONCE at
    `QA_ESCALATED_NODE_BUDGET` (500, clamped by each driver to its own maximum)
    and decides against that fuller view. It never loops, never escalates twice,
    and a present-claim that already found its match never escalates at all. The

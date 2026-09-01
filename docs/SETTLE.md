@@ -44,6 +44,29 @@ still, or until a bounded budget is spent.
   pre-action baseline and then quiets down, or until the budget is spent. An
   outcome that already landed synchronously is recognised through that baseline,
   so a synchronous UI still costs only one quiet window.
+* **the action's own echo is not a change.** A `fill`/`type` writes its value
+  onto its own target, and that echo lands before the first settle observation.
+  It is expected, so it must not by itself satisfy `awaitChange` — otherwise the
+  window would close at one quiet window (300ms) and miss a downstream
+  consequence still in flight (a suggestion list, a fetch-backed status). The
+  echo target's `value` is masked from the CHANGE decision only (a value change
+  on any OTHER node is legitimate evidence), while the quiet window still uses
+  the full projection, so the view only settles once the echo AND every
+  downstream consequence have all held still. A synchronous UI with a real
+  downstream consequence (e.g. a status that flips to READY) still costs one
+  quiet window; only a fill into a completely inert field spends the budget.
+
+### A fill is proven by its own value
+
+`dsh-browser` contract v5 adds a bounded `value` to semantic nodes for editable
+controls (secret-bearing controls are `valueWithheld` and never carry a value).
+The exporter therefore prefers the TARGET's own value for a fill: when the
+settled proof observation shows the target carrying the typed text
+(driver-normalized), it synthesizes a `node-value` assertion on the target
+rather than hunting for some other node that changed. That is the most
+proximate and durable evidence possible, and it outranks every delta candidate.
+The fallback to delta ranking stays for fills whose target value is withheld
+(secret), truncated, absent (non-editable), or transformed by the page.
 * **Budget** (`QA_SETTLE_BUDGET_MS`, 2500ms) — the hard bound. In practice this
   policy can prove an outcome landing up to roughly `budgetMs - quietMs` after
   the action; a slower page needs a bigger configured budget and is never
@@ -110,7 +133,7 @@ so the two-run byte-identical determinism check
 
 | Fixture | Reproduces | Proof |
 | --- | --- | --- |
-| `fixtures/web/async-suggest.html` | mode A (suggestion after 350ms, and again close to the budget at 1800ms) | fill step exported WITH a proof assertion; replay passes twice with an identical deterministic projection |
+| `fixtures/web/async-suggest.html` | mode A (suggestion after 350ms, and again close to the budget at 1800ms) | fill step exported WITH a `node-value` proof on the target (the late suggestion is still observed so the next click can reach it); replay passes twice with an identical deterministic projection |
 | `fixtures/web/hydration-churn.html` | mode B (a far-away link renames itself 10ms after the keystroke, the real suggestion lands at 220ms) | the churning node never becomes the assertion; replay unaffected by the rename |
 | `fixtures/web/never-settles.html` | a page that never holds still (90ms ticker) | export refuses (`ASSERTION_NOT_PROVABLE` / `NO_PROVEN_STEPS`); replay fails honestly instead of passing by luck |
 

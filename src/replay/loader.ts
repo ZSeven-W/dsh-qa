@@ -89,12 +89,13 @@ function assertLossless(value: unknown, position: string): void {
 }
 
 const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer'];
-const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url', 'node-in-viewport'];
+const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value'];
 const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as const;
 const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes'] as const;
 const TARGET_FIELDS = ['launch', 'loginState'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description'] as const;
+const NODE_VALUE_EXPECTATION_FIELDS = ['role', 'name', 'tag', 'value'] as const;
 const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
 const PREDICATE_FIELDS = ['role', 'name', 'tag'] as const;
 
@@ -157,6 +158,22 @@ function validatePredicate(value: unknown, position: string): QaNodePredicate {
   const obj = expectObject(value, position);
   assertKnownFields(obj, PREDICATE_FIELDS, position);
   const out: QaNodePredicate = {};
+  if (obj.role !== undefined) out.role = expectNonEmptyString(obj.role, position + '.role');
+  if (obj.name !== undefined) out.name = expectNonEmptyString(obj.name, position + '.name');
+  if (obj.tag !== undefined) out.tag = expectNonEmptyString(obj.tag, position + '.tag');
+  if (out.role === undefined && out.name === undefined && out.tag === undefined) {
+    fail(position, 'expected at least one of role/name/tag');
+  }
+  return out;
+}
+
+/** Validates a `node-value` expectation: predicate fields plus a required exact value. */
+function validateNodeValueExpectation(value: unknown, position: string): { role?: string; name?: string; tag?: string; value: string } {
+  const obj = expectObject(value, position);
+  assertKnownFields(obj, NODE_VALUE_EXPECTATION_FIELDS, position);
+  const out: { role?: string; name?: string; tag?: string; value: string } = {
+    value: expectNonEmptyString(obj.value, position + '.value'),
+  };
   if (obj.role !== undefined) out.role = expectNonEmptyString(obj.role, position + '.role');
   if (obj.name !== undefined) out.name = expectNonEmptyString(obj.name, position + '.name');
   if (obj.tag !== undefined) out.tag = expectNonEmptyString(obj.tag, position + '.tag');
@@ -247,6 +264,8 @@ export function validateAssertion(value: unknown, position = 'assertion'): QaAss
   assertLossless(obj.expected, position + '.expected');
   if (kind === 'node-present' || kind === 'node-absent' || kind === 'node-in-viewport') {
     validatePredicate(obj.expected, position + '.expected');
+  } else if (kind === 'node-value') {
+    validateNodeValueExpectation(obj.expected, position + '.expected');
   } else {
     const expected = expectObject(obj.expected, position + '.expected');
     assertKnownFields(expected, ['url', 'contains'], position + '.expected');

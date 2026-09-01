@@ -65,7 +65,21 @@ export type QaScenarioAction =
   | { kind: 'select'; target: QaNodePredicate; option: string }
   | { kind: 'hover'; target: QaNodePredicate };
 
-export type QaAssertionKind = 'node-present' | 'node-absent' | 'page-url' | 'node-in-viewport';
+export type QaAssertionKind = 'node-present' | 'node-absent' | 'page-url' | 'node-in-viewport' | 'node-value';
+
+/**
+ * Expected shape for a `node-value` assertion: the usual semantic predicate
+ * plus the exact observable `value` the node must carry. Equality is EXACT
+ * only — a contains/prefix form is deliberately NOT supported in v0.1: a
+ * value is the driver-normalized current contents of a control, and a fill
+ * proves itself by reproducing that exact value, so a weaker match would turn
+ * a co-incidental substring (autocomplete, a shared prefix) into a false
+ * green. The value is normalized exactly like the driver normalizes values
+ * (trim, collapse whitespace, clip to 180) before comparison.
+ */
+export interface QaNodeValueExpectation extends QaNodePredicate {
+  value: string;
+}
 
 export interface QaAssertion {
   kind: QaAssertionKind;

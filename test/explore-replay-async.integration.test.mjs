@@ -109,8 +109,13 @@ test('settle: async outcomes, hydration churn, and a page that never settles', {
     assert.equal(exported.excludedActions.length, 0)
     assert.equal(exported.scenario.steps.length, 2, 'fill + click on the suggestion')
     assert.equal(exported.scenario.steps[0].action.kind, 'fill')
-    // The proof is the suggestion list that the fill produced next to the box.
-    assert.deepEqual(exported.scenario.steps[0].assert.expected, { role: 'listbox', name: 'Search suggestions' })
+    // The fill is proven by its OWN target's value — the most durable evidence —
+    // even though the late suggestion list is also present in the settled view.
+    assert.equal(exported.scenario.steps[0].assert.kind, 'node-value')
+    assert.deepEqual(
+      exported.scenario.steps[0].assert.expected,
+      { role: 'textbox', name: 'Search articles', value: 'async' },
+    )
     assert.doesNotMatch(exported.scenario.steps[0].intent, /Weak proof/)
     await call(tools.qaSessionStop, { owner })
 
@@ -151,7 +156,11 @@ test('settle: async outcomes, hydration churn, and a page that never settles', {
       name: 'settle-near-budget',
     })
     assert.equal(slowExport.ok, true)
-    assert.deepEqual(slowExport.scenario.steps[0].assert.expected, { role: 'listbox', name: 'Search suggestions' })
+    assert.equal(slowExport.scenario.steps[0].assert.kind, 'node-value')
+    assert.deepEqual(
+      slowExport.scenario.steps[0].assert.expected,
+      { role: 'textbox', name: 'Search articles', value: 'async' },
+    )
     await call(tools.qaSessionStop, { owner: slowOwner })
     const slowReplay = await call(tools.qaReplayRun, {
       scenario: slowPath,
@@ -186,7 +195,8 @@ test('settle: async outcomes, hydration churn, and a page that never settles', {
     })
     assert.equal(churnExport.ok, true)
     const churnStep = churnExport.scenario.steps[0]
-    assert.deepEqual(churnStep.assert.expected, { role: 'listbox', name: 'Search suggestions' })
+    assert.equal(churnStep.assert.kind, 'node-value')
+    assert.deepEqual(churnStep.assert.expected, { role: 'textbox', name: 'Search articles', value: 'hydra' })
     assert.ok(
       !String(churnStep.assert.expected.name).includes('ctrl-option-o'),
       'the churning node must never become the proof',

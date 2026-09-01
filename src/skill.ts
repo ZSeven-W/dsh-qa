@@ -46,8 +46,14 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   observation. An \`unknown\` receipt is NEVER success: require a semantic delta or URL change in
   that observation. A \`rejected\` / \`failed\` receipt is a hard stop. Never approve, rephrase, or
   retarget around a driver safety rejection.
+- A \`fill\` is proven by its OWN target's value: when the fresh observation shows the target
+  carrying the typed text, the exporter synthesizes a \`node-value\` assertion on that target (the
+  most durable evidence), not on some other node that happened to change. A secret-bearing control
+  (\`valueWithheld\`, password/one-time-code/cc autocomplete) never carries a value, so no value
+  assertion is synthesized for it.
 - \`qa_assert\` checks resulting state against a fresh observation. Do not repeat the action "to see
-  if it worked".
+  if it worked". \`node-value\` (\`expected: { role?, name?, tag?, value }\`) asserts a node's exact
+  current value and is deterministic, like \`node-present\` / \`node-absent\` / \`page-url\`.
 - A view can be TRUNCATED at the node budget, and a node outside that window still exists. So an
   absence can never be proven from a truncated view: \`node-absent\` re-observes once at a raised
   budget and then fails closed with \`completeness.reason: "INCONCLUSIVE_TRUNCATED"\` rather than
@@ -88,8 +94,8 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   ephemeral-ref-only, redacted, or Replay-unsupported actions are excluded with a reason.
 - Every exported step receives an assertion synthesized from and evaluated against the immediate
   fresh observation after that action. Rejected/failed actions and actions without that observation
-  never become steps. An unknown receipt needs a semantic delta or URL change; target persistence
-  alone cannot prove it.
+  never become steps. A fill is proven by its own target's value (\`node-value\`); otherwise an
+  unknown receipt needs a semantic delta or URL change, and target persistence alone cannot prove it.
 - Inspect \`excludedActions\`. An exclusion is not a pass. If every action is unproven,
   \`qa_record_export\` returns \`NO_PROVEN_STEPS\` and writes no file.
 - Run \`qa_replay_run\` on the exact exported file without hand editing it. Browser Replay is the
