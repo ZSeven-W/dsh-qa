@@ -10,7 +10,7 @@ deterministic **Replay** scenario that runs on every release.
 - **Replay mode** — declarative `QaScenario` files (lossless JSON) executed
   deterministically with per-step re-observe assertions, producing redacted
   JSON / Markdown / JSONL reports.
-- **Drivers** — `@zseven-w/dsh-browser` (BU, contract v5) and
+- **Drivers** — `@zseven-w/dsh-browser` (BU, contract v6) and
   `@zseven-w/dsh-computer` (CU, contract v4). Driver safety semantics are
   inherited, never loosened: `EXTERNAL_COMMIT_TARGET` refused, secure fields
   permanently refused, approval gates passed through, `unknown` receipts require

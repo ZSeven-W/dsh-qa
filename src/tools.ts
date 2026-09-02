@@ -239,7 +239,16 @@ export class QaToolHost {
     const { capture, settle } = await captureLatestVisual(session, options)
     const artifactPath = await persistCaptureFile(capture, this.#capturesDir())
     const info = toVisualCaptureInfo(capture)
-    return { ...info, artifactPath, ...(settle === null ? {} : { settle }) }
+    return {
+      ...info,
+      artifactPath,
+      ...(settle === null ? {} : {
+        settle,
+        // Same vocabulary as qa_assert kind:"visual": a capture taken from a
+        // view that never settled is marked, never silently presented.
+        ...(settle.stable ? {} : { captureSettled: false as const }),
+      }),
+    }
   }
 
   async dispose(): Promise<void> {

@@ -26,7 +26,7 @@ import {
 } from './explore/index.ts';
 import { decideAssertion, loadScenarioFromPath, runScenario, sessionReobserve, validateAssertion } from './replay/index.ts';
 import { writeReports } from './reporters/index.ts';
-import { captureLatestVisual, QaSessionManager, toLosslessJson } from './session/index.ts';
+import { captureLatestVisual, QaSessionManager, resolveSettlePolicy, toLosslessJson } from './session/index.ts';
 import { toVisualCaptureInfo } from './session/adapter.ts';
 import { evaluateVisualQuestion, persistCaptureFile } from './vision.ts';
 
@@ -146,7 +146,17 @@ async function assertVisualMCP(owner, session, question) {
 async function captureVisualEvidenceMCP(session, options) {
   const { capture, artifactPath, settle } = await captureVisualMCP(session, options);
   const info = toVisualCaptureInfo(capture);
-  return { ...info, artifactPath, ...(settle === null ? {} : { settle }) };
+  return {
+    ...info,
+    artifactPath,
+    ...(settle === null ? {} : {
+      settle,
+      // Same vocabulary as qa_assert kind:"visual" and the cordis tool layer:
+      // a capture taken from a view that never settled is marked, never
+      // silently presented.
+      ...(settle.stable ? {} : { captureSettled: false }),
+    }),
+  };
 }
 
 function guard(handler) {
@@ -468,6 +478,14 @@ server.tool(
         ownerId: ownerFrom(args),
         ...(args.headless === undefined ? {} : { headless: args.headless }),
         launchUrl: scenario.target.launch,
+        // Align with the cordis tool layer (src/tools.ts qa_replay_run): the
+        // env-driven settle policy (the same resolveSettlePolicy the Explore
+        // sessions use here) and the MCP visual services travel to replay
+        // explicitly, so MCP and cordis replay judge the same views the same
+        // way. The MCP server has no host llm/attachments, so advisory visual
+        // verdicts degrade to 'unclear' exactly like a vision-less cordis host.
+        settle: resolveSettlePolicy(),
+        visual: { capturesDir: MCP_CAPTURES_DIR },
       });
       if (args.outputDir !== undefined) {
         await writeReports(report, { directory: args.outputDir });

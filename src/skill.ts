@@ -48,12 +48,20 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   retarget around a driver safety rejection.
 - A \`fill\` is proven by its OWN target's value: when the fresh observation shows the target
   carrying the typed text, the exporter synthesizes a \`node-value\` assertion on that target (the
-  most durable evidence), not on some other node that happened to change. A secret-bearing control
-  (\`valueWithheld\`, password/one-time-code/cc autocomplete) never carries a value, so no value
-  assertion is synthesized for it.
+  most durable evidence), not on some other node that happened to change — including when the fill
+  REWROTE the target's accessible name (\`aria-label\` following the value, "Search" -> "Search: async"):
+  the assertion then binds the current name, never \`node-present\` of the renamed field alone. A
+  secret-bearing control (\`valueWithheld\`, password/one-time-code/cc autocomplete) never carries a
+  value, so no value assertion is synthesized for it.
+- The settle window echo-masks the action's own value write (\`fill\`/\`type\`/\`select\`, and
+  \`key\`/\`press\` on a uniquely identified target), so a downstream consequence that lands after the
+  echo is still waited for — a fresh observation that only shows the echo never proves the action alone.
 - \`qa_assert\` checks resulting state against a fresh observation. Do not repeat the action "to see
   if it worked". \`node-value\` (\`expected: { role?, name?, tag?, value }\`) asserts a node's exact
-  current value and is deterministic, like \`node-present\` / \`node-absent\` / \`page-url\`.
+  current value and is deterministic, like \`node-present\` / \`node-absent\` / \`page-url\`. It demands
+  the predicate identify EXACTLY ONE node (\`TARGET_NOT_UNIQUE\` otherwise — a twin already holding the
+  value proves nothing), and a \`valueWithheld\`/\`secure\`/\`valueTruncated\` node can never satisfy it
+  (\`VALUE_WITHHELD\` / \`VALUE_SECURE\` / \`VALUE_TRUNCATED\`).
 - A view can also be UNSTABLE: when a fresh observation's \`settle.stable\` is \`false\` the page never
   stopped changing inside the settle budget, so nothing in it proves anything. \`qa_assert\` then returns
   \`passed: false\` with \`inconclusive: true\` and \`code: "INCONCLUSIVE_UNSTABLE"\` (the same non-result
@@ -94,6 +102,7 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 - A visual finding carries \`settle: { stable, passes, budgetMs }\` from the observation it captured
   from. When \`settle.stable\` is \`false\` the finding also carries \`captureSettled: false\`: the
   advisory verdict is over a view that never stopped changing, so it proves nothing about the page.
+  A \`qa_evidence\` visual capture carries the SAME \`settle\` + \`captureSettled: false\` vocabulary.
 
 ## Export and Replay
 
@@ -109,7 +118,10 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 - Inspect \`excludedActions\`. An exclusion is not a pass. If every action is unproven,
   \`qa_record_export\` returns \`NO_PROVEN_STEPS\` and writes no file.
 - Run \`qa_replay_run\` on the exact exported file without hand editing it. Browser Replay is the
-  supported v0.1 closed loop; only a \`pass\` report closes Explore→Replay.
+  supported v0.1 closed loop; only a \`pass\` report closes Explore→Replay. A failed run carries a
+  machine \`failure.code\` for recognized non-results — \`INCONCLUSIVE_UNSTABLE\` (a view that never
+  settled) and \`TARGET_NOT_UNIQUE\` (an ambiguous action target) — so you never have to parse prose
+  to tell them from an ordinary assertion failure.
 - \`qa_session_stop\` releases the owner scope. Stop on success and failure; the trajectory remains
   exportable until another session starts for that owner or the plugin disposes.
 
