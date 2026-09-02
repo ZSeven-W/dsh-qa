@@ -1,5 +1,5 @@
 import { projectRedactedJsonValue, projectArtifactPath, redactText, type RedactionRoots } from '../redaction/index.ts';
-import type { QaRunReport, QaViewCompleteness } from '../contracts.ts';
+import type { QaEvidenceCollectionFailure, QaRunReport, QaViewCompleteness } from '../contracts.ts';
 
 // Backtick character for inline code spans (built from a code point so the
 // source stays free of markdown-confusable delimiters).
@@ -107,6 +107,11 @@ function fencedCode(text: string): string {
   return fence + flat + fence;
 }
 
+/** Narrow the run report's evidence union to the structured collection-failure marker. */
+function isEvidenceCollectionFailure(value: QaRunReport['evidence']): value is QaEvidenceCollectionFailure {
+  return value !== null && (value as { status?: unknown }).status === 'collection-failed';
+}
+
 /** Deterministic, redacted report.md content (human-readable). */
 export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots): string {
   // Redaction runs FIRST, then lone-surrogate escaping, then (for structural
@@ -125,6 +130,11 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
   lines.push('- **Schema**: ' + String(report.schemaVersion));
   lines.push('- **Started**: ' + mdInline(report.startedAt));
   lines.push('- **Finished**: ' + mdInline(report.finishedAt));
+  const receipts = report.receiptSummary;
+  lines.push('- **Receipts**: ' + String(receipts.confirmed) + ' confirmed, ' + String(receipts.unknown) + ' unknown, ' + String(receipts.rejected) + ' rejected, ' + String(receipts.failed) + ' failed');
+  if (receipts.warning !== undefined) {
+    lines.push('- **Warning**: ' + mdInline(receipts.warning));
+  }
   lines.push('');
   lines.push('## Steps');
   if (report.steps.length === 0) lines.push('- (none)');
@@ -133,6 +143,7 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     lines.push('- [' + mark + '] step ' + String(step.index) + ': ' + mdInline(step.intent));
     lines.push('  - action: ' + mdCode(inline(step.action, roots)));
     lines.push('  - receipt: ' + mdInline(step.receipt === null ? 'none' : step.receipt.status));
+    lines.push('  - outcome: ' + mdInline(step.outcome));
     lines.push('  - assertion: ' + mdInline(step.assertion.kind) + ' -> ' + (step.assertionPassed ? 'PASS' : 'FAIL'));
     lines.push('  - observed: ' + mdCode(inline(step.observed, roots)));
     if (step.completeness !== undefined) {
@@ -193,6 +204,30 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     lines.push('- step: ' + (report.failure.stepIndex === null ? 'final assertion' : String(report.failure.stepIndex)));
     lines.push('- message: ' + mdInline(report.failure.message));
     lines.push('- reproduction: ' + String(report.failure.reproduction.length) + ' step(s)');
+  }
+  if (report.evidence !== null) {
+    lines.push('');
+    lines.push('## Evidence');
+    const evidence = report.evidence;
+    if (isEvidenceCollectionFailure(evidence)) {
+      lines.push('- collection: failed (' + mdInline(evidence.reason) + ')');
+    } else {
+      lines.push('- console: ' + String(evidence.console.length) + ' record(s)');
+      lines.push('- network: ' + String(evidence.network.length) + ' record(s)');
+      lines.push('- bounded: ' + String(evidence.bounded));
+      if (evidence.dropped !== undefined) {
+        lines.push('- dropped: console ' + String(evidence.dropped.console) + ', network ' + String(evidence.dropped.network));
+      }
+      if (evidence.computer !== undefined) {
+        const computer = evidence.computer;
+        lines.push('- computer helper: ' + mdInline(computer.status.helper) + ' (platform ' + mdInline(computer.status.platform) + ')');
+        if (computer.receiptsTotal === null) {
+          lines.push('- receipt counters: unavailable (' + mdInline(computer.receiptsCountersUnavailableReason ?? 'unknown') + ')');
+        } else {
+          lines.push('- receipts: ' + String(computer.receiptsReturned) + ' returned (of ' + String(computer.receiptsTotal) + ' total; ' + String(computer.receiptsDropped) + ' dropped by the bounded ring)');
+        }
+      }
+    }
   }
   if (report.artifacts !== undefined && report.artifacts.length > 0) {
     lines.push('');

@@ -287,6 +287,12 @@ test('normalizeReportForDeterminism excludes advisory/artifacts/evidence by sche
   assert.equal(projected.advisory, undefined)
   assert.equal(projected.artifacts, undefined)
   assert.equal(projected.evidence, undefined)
+  // The run-level receipt census is deterministic (derived from steps[].receipt),
+  // so it is INCLUDED by schema, unlike evidence/advisory/artifacts.
+  assert.ok(projected.receiptSummary, 'receiptSummary (deterministic counts) is included by schema')
+  assert.equal(projected.receiptSummary.confirmed, 1)
+  assert.equal(projected.receiptSummary.unknown, 0)
+  assert.equal(projected.receiptSummary.warning, undefined)
 })
 
 // ---------------------------------------------------------------------------
@@ -464,6 +470,7 @@ test('multi-line advisory narration stays inside the blockquote and cannot forge
     steps: [],
     assertions: [],
     evidence: null,
+    receiptSummary: { confirmed: 0, unknown: 0, rejected: 0, failed: 0, total: 0 },
     advisory: [
       {
         kind: 'visual',
@@ -604,4 +611,3 @@ test('qa_evidence visual capture is followed by a working qa_assert visual, with
   // ... and the narration still travels with its trust code.
   assert.equal(result.reasoningTrust, 'unverified-model-narration')
 })
-

@@ -109,6 +109,7 @@ function makeReport(artifacts) {
     steps: [],
     assertions: [],
     evidence: null,
+    receiptSummary: { confirmed: 0, unknown: 0, rejected: 0, failed: 0, total: 0 },
     artifacts,
   }
 }
@@ -164,4 +165,3 @@ test('unconfigured path becomes [REDACTED] whole in report.json/.md/.jsonl', asy
     await rm(dir, { recursive: true, force: true })
   }
 })
-

@@ -84,6 +84,7 @@ test('R2: encoded separator credential never reaches report.json/.md/.jsonl', ()
     steps: [],
     assertions: [],
     evidence: null,
+    receiptSummary: { confirmed: 0, unknown: 0, rejected: 0, failed: 0, total: 0 },
     failure: {
       stepIndex: null,
       message: 'Authorization%3A%20Bearer%20' + SECRET,

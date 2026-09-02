@@ -49,6 +49,7 @@ function makeRun(extra: Record<string, JsonValue> = {}) {
     steps: [],
     assertions: [],
     evidence: null,
+    receiptSummary: { confirmed: 0, unknown: 0, rejected: 0, failed: 0, total: 0 },
     ...extra,
   }
 }

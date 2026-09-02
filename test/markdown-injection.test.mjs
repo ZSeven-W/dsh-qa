@@ -24,6 +24,7 @@ function makeRun(overrides = {}) {
     steps: [],
     assertions: [],
     evidence: null,
+    receiptSummary: { confirmed: 0, unknown: 0, rejected: 0, failed: 0, total: 0 },
     ...overrides,
   }
 }

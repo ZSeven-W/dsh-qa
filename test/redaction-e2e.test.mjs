@@ -79,6 +79,7 @@ test('report.json/.md/.jsonl never leak a bearer credential or URL userinfo', as
       bounded: true,
       dropped: { console: 0, network: 0 },
     },
+    receiptSummary: { confirmed: 0, unknown: 0, rejected: 0, failed: 0, total: 0 },
     failure: {
       stepIndex: 1,
       message: 'failed to reach ' + userinfoUrl,

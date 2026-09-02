@@ -300,6 +300,41 @@ export interface QaArtifact {
   kind: string;
 }
 
+/**
+ * Counts of step action receipts by driver status, plus a transparency warning
+ * when zero receipts were confirmed. This is ADDITIVE (schemaVersion stays 1):
+ * it is derived deterministically from steps[].receipt and lets a reader tell a
+ * run that passed on a confirmed dispatch from one that passed only because the
+ * settled observation decided an unknown/rejected receipt. It never changes the
+ * run status (the decide-by-observation policy is unchanged).
+ */
+export interface QaReceiptSummary {
+  confirmed: number;
+  unknown: number;
+  rejected: number;
+  failed: number;
+  /** Non-null receipt count across all steps (confirmed + unknown + rejected + failed). */
+  total: number;
+  /** Present only when zero receipts were confirmed but at least one was dispatched. */
+  warning?: string;
+}
+
+/**
+ * Fixed warning text emitted when a run dispatched at least one action but none
+ * was confirmed by the driver — the outcomes were decided by settled observation
+ * alone. Transparency, not a status change.
+ */
+export const QA_NO_CONFIRMED_RECEIPTS_WARNING =
+  'no action dispatch was confirmed by the driver; outcomes were decided by settled observation only';
+
+/**
+ * Structured marker for a failed evidence collection, replacing the old silent
+ * `evidence: null`. `reason` is the (redacted) error message.
+ */
+export interface QaEvidenceCollectionFailure {
+  status: 'collection-failed';
+  reason: string;
+}
 export interface QaRunReport {
   schemaVersion: 1;
   scenario: string;
@@ -309,7 +344,10 @@ export interface QaRunReport {
   finishedAt: string;
   steps: QaStepResult[];
   assertions: QaAssertionResult[];
-  evidence: QaEvidence | null;
+  /** Driver evidence, or a structured marker when evidence collection failed. */
+  evidence: QaEvidence | QaEvidenceCollectionFailure | null;
+  /** Deterministic counts of step receipts by driver status. */
+  receiptSummary: QaReceiptSummary;
   /** Structured artifact/evidence paths (screenshot/trace/evidence). */
   artifacts?: QaArtifact[];
   /** Advisory visual findings (non-deterministic; excluded from determinism by schema). */

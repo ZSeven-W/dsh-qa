@@ -35,6 +35,7 @@ const report = {
     },
   ],
   evidence: { console: [], network: [], bounded: true, dropped: { console: 0, network: 0 } },
+  receiptSummary: { confirmed: 1, unknown: 0, rejected: 0, failed: 0, total: 1 },
 };
 
 test('renderReportJson produces stable, parseable JSON', () => {

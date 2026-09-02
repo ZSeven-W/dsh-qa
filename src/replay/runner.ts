@@ -1,11 +1,13 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_TRUNCATED } from '../contracts.ts';
+import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_TRUNCATED, QA_NO_CONFIRMED_RECEIPTS_WARNING } from '../contracts.ts';
 import type {
   QaAdvisoryResult,
   QaArtifact,
   QaAssertionResult,
+  QaEvidenceCollectionFailure,
   QaNodePredicate,
+  QaReceiptSummary,
   QaReproductionStep,
   QaRunFailure,
   QaRunReport,
@@ -188,6 +190,28 @@ function toReproduction(steps: QaStepResult[]): QaReproductionStep[] {
   }));
 }
 
+/**
+ * Deterministic receipt census over the steps that dispatched an action. A
+ * step whose action failed to resolve (receipt null) is not an action dispatch
+ * and is not counted. `failed` is a distinct driver status from `rejected` and
+ * is counted separately so neither is silently dropped.
+ */
+function summarizeReceipts(steps: QaStepResult[]): QaReceiptSummary {
+  const summary: QaReceiptSummary = { confirmed: 0, unknown: 0, rejected: 0, failed: 0, total: 0 };
+  for (const step of steps) {
+    const receipt = step.receipt;
+    if (receipt === null) continue;
+    summary.total += 1;
+    if (receipt.status === 'confirmed') summary.confirmed += 1;
+    else if (receipt.status === 'unknown') summary.unknown += 1;
+    else if (receipt.status === 'rejected') summary.rejected += 1;
+    else summary.failed += 1;
+  }
+  if (summary.confirmed === 0 && summary.total > 0) {
+    summary.warning = QA_NO_CONFIRMED_RECEIPTS_WARNING;
+  }
+  return summary;
+}
 function blockedReport(scenario: QaScenario, startedAt: string, message: string): QaRunReport {
   return {
     schemaVersion: 1,
@@ -199,6 +223,7 @@ function blockedReport(scenario: QaScenario, startedAt: string, message: string)
     steps: [],
     assertions: [],
     evidence: null,
+    receiptSummary: { confirmed: 0, unknown: 0, rejected: 0, failed: 0, total: 0 },
     failure: { stepIndex: null, message, reproduction: [] },
   };
 }
@@ -308,7 +333,7 @@ export async function runScenario(
   const assertionResults: QaAssertionResult[] = [];
   const artifacts: QaArtifact[] = [];
   const advisoryResults: QaAdvisoryResult[] = [];
-  let evidence: QaEvidence | null = null;
+  let evidence: QaEvidence | QaEvidenceCollectionFailure | null = null;
   let failure: QaRunFailure | null = null;
 
   try {
@@ -459,8 +484,10 @@ export async function runScenario(
 
     try {
       evidence = await session.evidence();
-    } catch {
-      evidence = null;
+    } catch (error) {
+      // A failed evidence collection must be a visible, redacted marker — never
+      // a silent null a reader mistakes for "no evidence was collected".
+      evidence = { status: 'collection-failed', reason: errorMessage(error) };
     }
 
     // Advisory visual assertions: executed and recorded, never changing status.
@@ -497,6 +524,7 @@ export async function runScenario(
     steps: stepResults,
     assertions: assertionResults,
     evidence,
+    receiptSummary: summarizeReceipts(stepResults),
     ...(artifacts.length === 0 ? {} : { artifacts }),
     ...(advisoryResults.length === 0 ? {} : { advisory: advisoryResults }),
   };
