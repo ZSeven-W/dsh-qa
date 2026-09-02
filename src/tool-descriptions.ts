@@ -1,0 +1,38 @@
+// Single source of truth for the 8 qa_* tool descriptions, shared VERBATIM by
+// the two tool surfaces:
+//
+//   - src/tools.ts       (the Cordis StructuralToolDefinition layer)
+//   - src/server.mjs     (the MCP stdio server; descriptions feed tools/list)
+//
+// Keeping both surfaces pointed at this one map is what makes description drift
+// impossible to reintroduce: a new sentence, a typo, or a missing string is
+// fixed in exactly one place. The tool names are the 8 canonical qa_* verbs
+// (see QA_TOOL_NAMES in src/contracts.ts).
+
+export const QA_TOOL_DESCRIPTIONS = {
+  qa_session_start:
+    'Start one QA session for this agent scope. Choose a browser or computer driver; the chosen driver is bound to the owner for the session and loaded lazily on first use. Browser sessions accept an optional login_state: OWNER-AUTHORIZED, SCOPED, READ-ONLY login-state injection from an explicit Playwright storageState JSON file. Only entries whose origin/domain exactly matches the authorized origins are injected into a FRESH ephemeral profile (destroyed on stop); entries outside the list are never loaded, and a file that fails to parse, has no authorized entries, or holds unclassifiable entries fails the start. login_state is browser-only.',
+
+  qa_observe:
+    'Return a bounded semantic view of the current app/page, taken after a bounded settle (observe until the semantic view holds still for a quiet window, bounded by a budget). Interactive nodes carry opaque session-local refs; observe again after every action. The result carries settle.stable: when it is false the page never stopped changing inside the budget and nothing in that view proves anything — wait for the page to stop changing and re-observe.',
+
+  qa_act:
+    'Perform exactly one action. Browser verbs: click/fill/press/navigate/scroll/select/hover. Computer verbs: click/focus/type/key/scroll. scroll (browser) takes ref (scroll-into-view) or direction plus an optional amount (viewport page scroll); scroll (computer) takes ref plus direction and an optional amount; select takes ref+option; hover takes ref. click/fill/press/focus/type/key/select/hover require a ref from the latest qa_observe. The result is the receipt plus a fresh settled observation: when settle.stable is false the consequence is UNPROVEN — the result adds proven:false and code INCONCLUSIVE_UNSTABLE, the receipt still describes the dispatch honestly, and nothing in that unstable view is attributable to the action (wait for the page to stop changing, re-observe, then assert).',
+
+  qa_assert:
+    'Evaluate one assertion against a fresh SETTLED observation (observe until the semantic view holds still for a quiet window, bounded by a budget; the result carries settle.stable). An assertion is NEVER proven from an unstable view: when settle.stable is false the result is passed:false with inconclusive:true and code INCONCLUSIVE_UNSTABLE (the same honest non-result vocabulary as INCONCLUSIVE_TRUNCATED) — wait for the page to stop changing, then re-observe. node-present/node-absent/node-in-viewport/page-url/node-value are deterministic. node-value matches a node by the usual predicate AND asserts its exact value (expected: { role?, name?, tag?, value }); it proves a fill/type by the value on its own target. kind "visual" takes its own fresh settled observation, captures the current screen from it, and asks the host vision model a question, so it works directly after qa_act or qa_evidence with no separate qa_observe. Its ADVISORY verdict (yes/no/unclear with confidence) never changes pass/fail: trust verdict and confidence, and treat the accompanying reasoning as unverified model narration (reasoningTrust "unverified-model-narration") that may contain fabricated detail and must never be quoted as observed fact. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
+
+  qa_evidence:
+    'Read bounded, redacted evidence: browser console/network records, or computer helper status plus bounded action receipts. Set visual: true to also capture the current screen (Set-of-Mark) and return its metadata plus a structured artifact path; that capture is taken from its own fresh settled observation, so it never requires a preceding qa_observe. visual_fingerprint instead pins the capture to one exact browser observation and is deliberately NOT auto-refreshed, so a pinned observation that has gone stale fails by design.',
+
+  qa_record_export:
+    'Export this owner\'s redacted Explore trajectory as a fail-closed Replay scenario JSON file. Only actions with durable role+accessible-name targets and outcomes proven by immediate fresh observations become steps; exclusions are returned explicitly.',
+
+  qa_replay_run:
+    'Run a deterministic Replay scenario file end to end and return a pass/fail/blocked report. Browser scenarios only in v0.1.',
+
+  qa_session_stop:
+    'Stop the QA session for this owner and release the bound driver scope. Idempotent when no session is running.',
+} as const satisfies Record<string, string>;
+
+export type QaToolDescriptionKey = keyof typeof QA_TOOL_DESCRIPTIONS;

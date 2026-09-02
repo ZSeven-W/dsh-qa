@@ -15,6 +15,7 @@ import { ComputerAdapter } from './adapters/computer.ts'
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts'
 import { loadComputerDriver } from './adapters/loadComputer.ts'
 import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_UNSTABLE } from './contracts.ts'
+import { QA_TOOL_DESCRIPTIONS } from './tool-descriptions.ts'
 import type { QaDriverKind } from './contracts.ts'
 import {
   exportRecordedScenario,
@@ -389,7 +390,7 @@ interface ReplayArgs {
 export function createQaTools(host: QaToolHost): QaTools {
   const qaSessionStart = tool<SessionStartArgs, unknown>({
     name: 'qa_session_start',
-    description: 'Start one QA session for this agent scope. Choose a browser or computer driver; the chosen driver is bound to the owner for the session and loaded lazily on first use. Browser sessions accept an optional login_state: OWNER-AUTHORIZED, SCOPED, READ-ONLY login-state injection from an explicit Playwright storageState JSON file. Only entries whose origin/domain exactly matches the authorized origins are injected into a FRESH ephemeral profile (destroyed on stop); entries outside the list are never loaded, and a file that parses, has no authorized entries, or holds unclassifiable entries fails the start. login_state is browser-only.',
+    description: QA_TOOL_DESCRIPTIONS.qa_session_start,
     parameters: closedObject({
       owner: strProp,
       driver: enumOf('browser', 'computer'),
@@ -427,7 +428,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaObserve = tool<ObserveArgs, unknown>({
     name: 'qa_observe',
-    description: 'Return a bounded semantic view of the current app/page, taken after a bounded settle (observe until two consecutive semantic views agree). Interactive nodes carry opaque session-local refs; observe again after every action. The result carries settle.stable: when it is false the page never stopped changing inside the budget and nothing in that view proves anything.',
+    description: QA_TOOL_DESCRIPTIONS.qa_observe,
     parameters: closedObject({
       owner: strProp,
       max_nodes: intProp,
@@ -455,7 +456,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAct = tool<ActArgs, unknown>({
     name: 'qa_act',
-    description: 'Perform exactly one action. Browser verbs: click/fill/press/navigate/scroll/select/hover. Computer verbs: click/focus/type/key/scroll. scroll (browser) takes ref (scroll-into-view) or direction+amount (viewport page scroll); scroll (computer) takes ref+direction+amount; select takes ref+option; hover takes ref. click/fill/press/focus/type/key/select/hover require a ref from the latest qa_observe. The result is the receipt plus a fresh settled observation: when settle.stable is false the consequence is UNPROVEN — the result adds proven:false and code:"INCONCLUSIVE_UNSTABLE", the receipt still describes the dispatch honestly, and nothing in that unstable view is attributable to the action (wait for the page to stop changing, re-observe, then assert).',
+    description: QA_TOOL_DESCRIPTIONS.qa_act,
     parameters: closedObject({
       owner: strProp,
       action: enumOf('click', 'fill', 'press', 'navigate', 'focus', 'type', 'key', 'scroll', 'select', 'hover'),
@@ -543,7 +544,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAssert = tool<AssertArgs, unknown>({
     name: 'qa_assert',
-    description: 'Evaluate one assertion against a fresh SETTLED observation (observe until two consecutive semantic views agree, bounded by a budget; the result carries settle.stable). An assertion is NEVER proven from an unstable view: when settle.stable===false the result is passed:false with inconclusive:true and code:"INCONCLUSIVE_UNSTABLE" (the same honest non-result vocabulary as INCONCLUSIVE_TRUNCATED) — wait for the page to stop changing, then re-observe. node-present/node-absent/node-in-viewport/page-url/node-value are deterministic. node-value matches a node by the usual predicate AND asserts its exact value (expected: { role?, name?, tag?, value }); it proves a fill/type by the target\'s own value. kind "visual" takes its own fresh settled observation, captures the current screen from it, and asks the host vision model a question, so it works directly after qa_act or qa_evidence and needs no separate qa_observe call first. Its ADVISORY verdict (yes/no/unclear with confidence) never changes pass/fail: trust verdict and confidence, and treat the accompanying reasoning as unverified model narration (reasoningTrust "unverified-model-narration") that may contain fabricated detail and must never be quoted as observed fact. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
+    description: QA_TOOL_DESCRIPTIONS.qa_assert,
     parameters: closedObject({
       owner: strProp,
       kind: enumOf('node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value', 'visual'),
@@ -600,7 +601,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaEvidence = tool<EvidenceArgs, unknown>({
     name: 'qa_evidence',
-    description: 'Read bounded, redacted evidence: browser console/network records, or computer helper status plus bounded action receipts. Set visual: true to also capture the current screen (Set-of-Mark) and return its metadata plus a structured artifact path; that capture is taken from its own fresh settled observation, so it never requires a preceding qa_observe. visual_fingerprint instead pins the capture to one exact browser observation and is deliberately NOT auto-refreshed, so a pinned observation that has gone stale fails by design.',
+    description: QA_TOOL_DESCRIPTIONS.qa_evidence,
     parameters: closedObject({
       owner: strProp,
       max_console: intProp,
@@ -638,7 +639,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaRecordExport = tool<RecordExportArgs, unknown>({
     name: 'qa_record_export',
-    description: 'Export this owner\'s redacted Explore trajectory as a fail-closed Replay scenario JSON file. Only actions with durable role+accessible-name targets and outcomes proven by immediate fresh observations become steps; exclusions are returned explicitly.',
+    description: QA_TOOL_DESCRIPTIONS.qa_record_export,
     parameters: closedObject({
       owner: strProp,
       output_path: strProp,
@@ -663,7 +664,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaReplayRun = tool<ReplayArgs, unknown>({
     name: 'qa_replay_run',
-    description: 'Run a deterministic Replay scenario file end to end and return a pass/fail/blocked report. Browser scenarios only in v0.1.',
+    description: QA_TOOL_DESCRIPTIONS.qa_replay_run,
     parameters: closedObject({
       scenario: strProp,
       owner: strProp,
@@ -709,7 +710,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaSessionStop = tool<StopArgs, unknown>({
     name: 'qa_session_stop',
-    description: 'Stop the QA session for this owner and release the bound driver scope. Idempotent when no session is running.',
+    description: QA_TOOL_DESCRIPTIONS.qa_session_stop,
     parameters: closedObject({ owner: strProp }, []),
     output: outputFor(),
     timeoutMs: 30_000,

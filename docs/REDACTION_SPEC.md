@@ -197,8 +197,8 @@ replacement) is replaced by `[REDACTED]` when **both**:
 2. its Shannon entropy is **≥ 4.0 bits per code point**, computed over the token's code-point
    frequencies: `H = −Σ p(i) · log₂ p(i)`.
 
-**Thresholds (compile-time constants):** `highEntropyTokenMinLength = 20`,
-`highEntropyTokenMinEntropyBitsPerChar = 4.0`. They are fixed constants, not a runtime
+**Thresholds (compile-time constants):** `HIGH_ENTROPY_TOKEN_MIN_LENGTH = 20`,
+`HIGH_ENTROPY_TOKEN_MIN_ENTROPY_BITS_PER_CHAR = 4.0`. They are fixed constants, not a runtime
 configuration surface: a deterministic reporter must never mutate its redaction thresholds at
 runtime, so there is no configuration setter and no module-global mutable state.
 
@@ -518,7 +518,9 @@ Artifact paths in a `QaRunReport` are **structured fields with known positions**
 (`report.artifacts[].path`), not free text. They are projected through a
 dedicated **path projection** (`projectArtifactPath` in `src/redaction/engine.ts`,
 re-exported from `src/redaction/index.ts`) rather than the free-text engine.
-Only `report.artifacts[].path` is routed this way; every other string leaf —
+Only `report.artifacts[].path` and `report.advisory[].artifact.path` are routed
+this way (both are structured fields with known positions in `QaRunReport`);
+every other string leaf —
 including free-text occurrences of paths inside messages, console output, and
 evidence blobs — keeps going through the normal engine with R3 enabled
 (over-redaction there stays acceptable).
@@ -649,4 +651,3 @@ export time, so a page-controlled node name cannot smuggle a raw newline into
 the scenario file's `intent`. This is in ADDITION to the renderer escaping,
 which is mandatory regardless; the semantic target used for Replay matching is
 stored separately in `action` / `assert` and is never normalized.
-

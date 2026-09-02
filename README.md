@@ -10,8 +10,8 @@ deterministic **Replay** scenario that runs on every release.
 - **Replay mode** — declarative `QaScenario` files (lossless JSON) executed
   deterministically with per-step re-observe assertions, producing redacted
   JSON / Markdown / JSONL reports.
-- **Drivers** — `@zseven-w/dsh-browser` (BU, contract v1) and
-  `@zseven-w/dsh-computer` (CU, contract v2). Driver safety semantics are
+- **Drivers** — `@zseven-w/dsh-browser` (BU, contract v5) and
+  `@zseven-w/dsh-computer` (CU, contract v4). Driver safety semantics are
   inherited, never loosened: `EXTERNAL_COMMIT_TARGET` refused, secure fields
   permanently refused, approval gates passed through, `unknown` receipts require
   re-observation.
@@ -71,8 +71,11 @@ names, unnamed nodes, and ephemeral refs are refused instead of guessed. An
 `unknown` receipt additionally needs an observable semantic delta or URL change;
 the old target merely remaining present is not proof.
 
-The bundled Explore methodology lives at `skills/qa-explore/SKILL.md` and is
-registered through the existing optional skill-service path.
+The Explore methodology ships as two artifacts: a human-readable copy at
+`skills/qa-explore/SKILL.md` (included in the package `files`), and the playbook
+the plugin actually registers through the optional skill service — the
+`QA_SKILL_CONTENT` template literal in `src/skill.ts`, registered under the
+name `qa-orchestration` via `ctx.inject(['skills'], …)`.
 
 ## Bounded settle (asynchronous UIs)
 
@@ -157,7 +160,7 @@ The DSH host provides the runtime services below itself; a plain
 
 ```json
 "dshHostRuntime": {
-  "services": ["tools"],
+  "services": ["tools", "attachments", "llm"],
   "typing": "structural"
 }
 ```
