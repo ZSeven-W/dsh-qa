@@ -248,6 +248,13 @@ export interface QaSettleReport {
   elapsedMs: number;
   /** The budget the window ran under, for honest reporting. */
   budgetMs: number;
+  /**
+   * The quiet requirement the window concluded under (see session/settle.ts):
+   * quietMs before any (unmasked) change was observed, postChangeQuietMs once
+   * the awaited change had been seen. Reported so callers/tests can see which
+   * rule applied.
+   */
+  quietRequiredMs: number;
 }
 
 /** Closed vocabulary returned by the host-owned approval service. */

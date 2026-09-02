@@ -56,6 +56,10 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 - The settle window echo-masks the action's own value write (\`fill\`/\`type\`/\`select\`, and
   \`key\`/\`press\` on a uniquely identified target), so a downstream consequence that lands after the
   echo is still waited for — a fresh observation that only shows the echo never proves the action alone.
+- After the first non-echo change is observed, the quiet window lengthens to \`postChangeQuietMs\`
+  (default 2× \`quietMs\`), measured from the last change, so an outcome that lands after early
+  unrelated churn (a sibling mirroring the typed value, a late hydration rename) is still captured
+  rather than cut off by one short quiet window.
 - \`qa_assert\` checks resulting state against a fresh observation. Do not repeat the action "to see
   if it worked". \`node-value\` (\`expected: { role?, name?, tag?, value }\`) asserts a node's exact
   current value and is deterministic, like \`node-present\` / \`node-absent\` / \`page-url\`. It demands

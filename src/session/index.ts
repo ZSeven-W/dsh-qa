@@ -41,6 +41,7 @@ export {
   resolveSettlePolicy,
   QA_SETTLE_BUDGET_MS,
   QA_SETTLE_INTERVAL_MS,
+  QA_SETTLE_POST_CHANGE_QUIET_MS,
   QA_SETTLE_QUIET_MS,
   type QaEchoMask,
   type QaSettleCallOptions,

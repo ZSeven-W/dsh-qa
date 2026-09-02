@@ -15,6 +15,7 @@ import {
   QaSession,
   QA_SETTLE_BUDGET_MS,
   QA_SETTLE_INTERVAL_MS,
+  QA_SETTLE_POST_CHANGE_QUIET_MS,
   QA_SETTLE_QUIET_MS,
   resolveSettlePolicy,
 } from '../src/session/index.ts'
@@ -154,11 +155,13 @@ test('the settle policy is a named, clamped, configurable constant set', () => {
   assert.deepEqual(resolveSettlePolicy(), {
     budgetMs: QA_SETTLE_BUDGET_MS,
     quietMs: QA_SETTLE_QUIET_MS,
+    postChangeQuietMs: QA_SETTLE_POST_CHANGE_QUIET_MS,
     intervalMs: QA_SETTLE_INTERVAL_MS,
   })
   assert.deepEqual(resolveSettlePolicy({ budgetMs: 1, quietMs: 1, intervalMs: 99_999 }), {
     budgetMs: 20,
     quietMs: 10,
+    postChangeQuietMs: 20,
     intervalMs: 10,
   })
   process.env.DSH_QA_SETTLE_BUDGET_MS = '900'
@@ -166,6 +169,7 @@ test('the settle policy is a named, clamped, configurable constant set', () => {
   try {
     assert.equal(resolveSettlePolicy().budgetMs, 900)
     assert.equal(resolveSettlePolicy().quietMs, 120)
+    assert.equal(resolveSettlePolicy().postChangeQuietMs, 240, 'the default post-change quiet scales with the resolved quietMs (2 × 120)')
     process.env.DSH_QA_SETTLE_BUDGET_MS = 'whenever'
     assert.equal(resolveSettlePolicy().budgetMs, QA_SETTLE_BUDGET_MS, 'garbage falls back, never fails open')
   } finally {

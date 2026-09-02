@@ -149,16 +149,17 @@ test('duplicate (role,name,tag) twins: a sibling mirror must not be masked; the 
   assert.equal(bVal, 'mirror-of-typed', 'the sibling value must be observed unmasked')
   assert.equal(acted.settle.stable, true)
   // The sibling's value change is legitimate evidence: the window must conclude
-  // from it (~quietMs after 80ms), never burn the whole budget. A later
-  // suggestion landing outside the quiet window is the documented settle bound
-  // (SETTLE.md), not over-masking.
+  // from it (~postChangeQuietMs after 80ms — with this POLICY's 120→240 scale,
+  // ~320ms), never burn the whole budget. The 400ms suggestion is outside this
+  // small-scale post-change window by design; the production-scale probe that
+  // must also observe it lives in test/settle-post-change.test.mjs.
   assert.ok(
     acted.settle.elapsedMs < POLICY.budgetMs - 50,
     'the window must not spend the budget (elapsed ' + acted.settle.elapsedMs + 'ms)',
   )
 })
 
-test('duplicate twins with ONLY a sibling value downstream: the window concludes ~quietMs after it, not the whole budget', async () => {
+test('duplicate twins with ONLY a sibling value downstream: the window concludes ~postChangeQuietMs after it, not the whole budget', async () => {
   const adapter = timedAdapter({
     afterAct(since) {
       const aVal = since === null ? '' : 'typed'

@@ -44,10 +44,19 @@ still, or until a bounded budget is spent.
   pre-action baseline and then quiets down, or until the budget is spent. An
   outcome that already landed synchronously is recognised through that baseline,
   so a synchronous UI still costs only one quiet window.
+* **Post-change quiet** (`QA_SETTLE_POST_CHANGE_QUIET_MS`, default `2 × quietMs`,
+  600ms) — once `awaitChange` has been satisfied by a non-echo delta, the quiet
+  window required to conclude `stable: true` lengthens from `quietMs` to this
+  value, measured from the last observed change (each further change restarts
+  it). Before any change is observed the requirement stays `quietMs`, so inert
+  actions and the "nothing changed" path are unchanged. This is what stops one
+  short quiet window from concluding on early unrelated churn — a sibling
+  mirroring the typed value at ~80ms or a hydration rename at ~20ms — and
+  missing a real outcome that lands later (a suggestion list at ~400ms).
 * **the action's own echo is not a change.** Every action that writes a value
   onto its own target — `fill`, `type`, `select` (the chosen option), and
   `key`/`press` — is echo-masked, or the write would satisfy `awaitChange`
-  by itself, close the window at one quiet window (300ms), and miss a downstream
+  by itself, close the window at one post-change quiet window (600ms), and miss a downstream
   consequence still in flight (a suggestion list, a fetch-backed status). The
   mask is built from the PRE-ACTION observation (`QaEchoMask` in
   settle.ts): the exact pre-action ref (identity inside the baseline observation
@@ -82,7 +91,7 @@ still, or until a bounded budget is spent.
      `awaitChange` either, while the quiet window still uses the FULL
      projection (the rename and every downstream consequence restart the quiet
      window). A synchronous UI with a real downstream consequence still costs
-     one quiet window; only a write into a completely inert field spends the
+     one post-change quiet window; only a write into a completely inert field spends the
      budget.
 
 ### A fill is proven by its own value
@@ -113,8 +122,9 @@ when a leaked `value` field happens to carry the expected string
 (`VALUE_WITHHELD` / `VALUE_SECURE` / `VALUE_TRUNCATED`). Both refusals fail
 closed with their code in report.json and report.md.
 * **Budget** (`QA_SETTLE_BUDGET_MS`, 2500ms) — the hard bound. In practice this
-  policy can prove an outcome landing up to roughly `budgetMs - quietMs` after
-  the action; a slower page needs a bigger configured budget and is never
+  policy can prove an outcome landing up to roughly `budgetMs - postChangeQuietMs`
+  after the first (unmasked) change; before any change is seen it waits out the
+  whole budget. A slower page needs a bigger configured budget and is never
   silently accepted.
 * **Poll interval** (`QA_SETTLE_INTERVAL_MS`, 50ms) — spacing between
   observations inside a window. This is a poll interval, not a sleep: a settled
@@ -206,7 +216,7 @@ runScenario(scenario, adapter, { settle: { budgetMs: 5_000 } }) // Replay direct
 
 Environment overrides (clamped, garbage falls back to the defaults, never fails
 open): `DSH_QA_SETTLE_BUDGET_MS`, `DSH_QA_SETTLE_QUIET_MS`,
-`DSH_QA_SETTLE_INTERVAL_MS`.
+`DSH_QA_SETTLE_POST_CHANGE_QUIET_MS`, `DSH_QA_SETTLE_INTERVAL_MS`.
 
 ## Determinism
 

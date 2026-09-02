@@ -32,9 +32,11 @@
 //     stable (the action simply proved nothing, which the exporter already
 //     refuses); a view still churning at the deadline is NOT stable.
 //
-// Consequence, deliberately documented: this policy can prove an async outcome
-// that lands up to roughly (budgetMs - quietMs) after the action. A slower page
-// needs a bigger configured budget — it is never silently accepted.
+// Consequence, deliberately documented: once the awaited change has been seen,
+// this policy can prove an async outcome that lands up to roughly
+// (budgetMs - postChangeQuietMs) after the action; before any change is seen it
+// keeps polling until the budget is spent. A slower page needs a bigger
+// configured budget — it is never silently accepted.
 
 import type { QaObservation, QaSemanticNode, QaSettleReport } from './adapter.ts';
 import type { QaNodePredicate } from '../contracts.ts';
@@ -101,6 +103,19 @@ export const QA_SETTLE_BUDGET_MS = 2_500;
 export const QA_SETTLE_QUIET_MS = 300;
 
 /**
+ * How long the semantic projection must stay UNCHANGED after the first
+ * (unmasked) change has been observed before the view counts as settled, in
+ * milliseconds. The default is twice quietMs (600ms with the default quiet
+ * window): once awaitChange has been satisfied by a non-echo delta, a single
+ * quietMs of stillness no longer concludes the window, so an outcome that
+ * lands shortly after early unrelated churn (a sibling mirroring the typed
+ * value, a late hydration rename) is still observed. Before any change is seen
+ * the requirement stays quietMs, so an inert action and the "nothing changed"
+ * path are unchanged.
+ */
+export const QA_SETTLE_POST_CHANGE_QUIET_MS = 2 * QA_SETTLE_QUIET_MS;
+
+/**
  * Delay between two consecutive observations inside a settle window, in
  * milliseconds. This is a POLL interval, not a settle delay: the window ends as
  * soon as the view has held still for quietMs, never later than budgetMs.
@@ -120,6 +135,13 @@ export interface QaSettlePolicy {
   budgetMs: number;
   /** How long the semantic view must hold still to count as settled. */
   quietMs: number;
+  /**
+   * How long the semantic view must hold still AFTER the awaited (unmasked)
+   * change has been observed, before it counts as settled. Defaults to
+   * 2 * quietMs; clamped to [quietMs, budgetMs]. Before any change is seen the
+   * quiet requirement stays quietMs (unchanged inert/nothing-changed path).
+   */
+  postChangeQuietMs: number;
   /** Delay between consecutive observations inside the window. */
   intervalMs: number;
 }
@@ -182,10 +204,12 @@ function fromEnv(name: string): number | undefined {
 
 /**
  * Resolve the settle policy: explicit options first, then the
- * DSH_QA_SETTLE_BUDGET_MS / DSH_QA_SETTLE_QUIET_MS / DSH_QA_SETTLE_INTERVAL_MS
- * environment overrides, then the named defaults. Every value is clamped, the
- * quiet window can never exceed the budget, and the poll interval can never
- * exceed the quiet window (so a window always gets several observations).
+ * DSH_QA_SETTLE_BUDGET_MS / DSH_QA_SETTLE_QUIET_MS /
+ * DSH_QA_SETTLE_POST_CHANGE_QUIET_MS / DSH_QA_SETTLE_INTERVAL_MS environment
+ * overrides, then the named defaults. Every value is clamped, the quiet window
+ * can never exceed the budget, the post-change quiet window is clamped to
+ * [quietMs, budgetMs], and the poll interval can never exceed the quiet window
+ * (so a window always gets several observations).
  */
 export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettlePolicy {
   const budgetRaw = options?.budgetMs ?? fromEnv('DSH_QA_SETTLE_BUDGET_MS') ?? QA_SETTLE_BUDGET_MS;
@@ -200,7 +224,19 @@ export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettle
     clamp(Number.isFinite(intervalRaw) ? intervalRaw : QA_SETTLE_INTERVAL_MS, INTERVAL_MIN_MS, INTERVAL_MAX_MS),
     quietMs,
   );
-  return { budgetMs, quietMs, intervalMs };
+  // The post-change quiet requirement defaults to 2x the RESOLVED quietMs (so a
+  // custom quietMs scales the post-change window too) and is clamped to
+  // [quietMs, budgetMs]: it can never be shorter than the pre-change quiet
+  // window nor longer than the budget. Garbage falls back to the default.
+  const postChangeRaw = options?.postChangeQuietMs
+    ?? fromEnv('DSH_QA_SETTLE_POST_CHANGE_QUIET_MS')
+    ?? 2 * quietMs;
+  const postChangeQuietMs = clamp(
+    Number.isFinite(postChangeRaw) ? postChangeRaw : 2 * quietMs,
+    quietMs,
+    budgetMs,
+  );
+  return { budgetMs, quietMs, postChangeQuietMs, intervalMs };
 }
 
 /**
@@ -354,7 +390,12 @@ export async function observeUntilStable(
   let passes = 1;
   for (;;) {
     const now = Date.now();
-    const quiet = now - unchangedSince >= policy.quietMs;
+    // The quiet window required to conclude stable: quietMs before any
+    // (unmasked) change has been observed, postChangeQuietMs once awaitChange
+    // has been satisfied by a non-echo delta (each further change restarts the
+    // window, so the longer requirement is measured from the LAST change).
+    const quietRequiredMs = changed ? policy.postChangeQuietMs : policy.quietMs;
+    const quiet = now - unchangedSince >= quietRequiredMs;
     // A proof window may not conclude from silence alone: an outcome still in
     // flight looks exactly like no outcome at all.
     if (quiet && (changed || !awaitChange)) {
@@ -364,6 +405,7 @@ export async function observeUntilStable(
         passes,
         elapsedMs: now - startedAt,
         budgetMs: policy.budgetMs,
+        quietRequiredMs,
       };
     }
     const remaining = policy.budgetMs - (now - startedAt);
@@ -376,6 +418,7 @@ export async function observeUntilStable(
         passes,
         elapsedMs: now - startedAt,
         budgetMs: policy.budgetMs,
+        quietRequiredMs,
       };
     }
     await sleep(Math.min(policy.intervalMs, remaining));

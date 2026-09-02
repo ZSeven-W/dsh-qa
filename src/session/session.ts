@@ -202,6 +202,7 @@ export class QaSession {
         passes: result.passes,
         elapsedMs: result.elapsedMs,
         budgetMs: result.budgetMs,
+        quietRequiredMs: result.quietRequiredMs,
       });
     } catch { /* observational only */ }
     return result;
@@ -241,6 +242,7 @@ export class QaSession {
         passes: settled.passes,
         elapsedMs: settled.elapsedMs,
         budgetMs: settled.budgetMs,
+        quietRequiredMs: settled.quietRequiredMs,
       },
       // A confirmed/unknown receipt still describes a dispatch, but an unstable
       // proof window means the CONSEQUENCE is unproven: `outcome` stays honest

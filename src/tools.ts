@@ -457,7 +457,7 @@ export function createQaTools(host: QaToolHost): QaTools {
       })
       return {
         ...settled.observation,
-        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs },
+        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
       }
     },
     presentCall: () => ({ card: 'generic', title: 'Observe QA target' }),
@@ -587,7 +587,7 @@ export function createQaTools(host: QaToolHost): QaTools {
           kind: assertion.kind,
           observed: null,
           expected: assertion.expected,
-          settle: { stable: false, passes: settled.passes, budgetMs: settled.budgetMs },
+          settle: { stable: false, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
           reason: unstableReason(settled.budgetMs),
         }
       }
@@ -601,7 +601,7 @@ export function createQaTools(host: QaToolHost): QaTools {
         kind: assertion.kind,
         observed: decision.observed,
         expected: assertion.expected,
-        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs },
+        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
         ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
       }
     },
