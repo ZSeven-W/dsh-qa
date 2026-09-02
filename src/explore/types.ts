@@ -177,7 +177,8 @@ export interface QaExportExclusion {
     | 'TARGET_REF_NOT_FOUND'
     | 'TARGET_HAS_NO_ACCESSIBLE_NAME'
     | 'TARGET_NOT_UNIQUE'
-    | 'ASSERTION_NOT_PROVABLE';
+    | 'ASSERTION_NOT_PROVABLE'
+    | 'FRAGILE_PROOF_ONLY';
   detail: string;
   receipt: QaActionReceipt | null;
 }

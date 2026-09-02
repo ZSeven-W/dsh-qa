@@ -199,6 +199,28 @@ function durableAction(
  */
 const PROXIMATE_NODE_DISTANCE = 6;
 
+/**
+ * Accessible-name length beyond which a CONTENT-NAMED CONTAINER's delta proof is
+ * treated as ordering-fragile. A name this long is the signature of an
+ * auto-derived accessible name that concatenates every descendant's text
+ * (Wikipedia's search container announces every suggestion in one ~180-character
+ * name); a proof on that name can only replay when the remote content returns
+ * in the same order, so it is never selected as a proof (see FRAGILE_PROOF_ONLY).
+ * The cap applies only to container roles: a LEAF node's long accessible name
+ * (e.g. a 92-character link label) is an authored label, not an aggregation, so
+ * it stays a valid — if distant — proof.
+ */
+const FRAGILE_PROOF_NAME_CAP = 80;
+
+/**
+ * Roles whose accessible name the driver derives from CONTENTS (concatenated
+ * descendant text) rather than an author-supplied label. Only a node with one
+ * of these roles can carry an aggregated, order-dependent accessible name.
+ */
+const CONTENT_NAMED_CONTAINER_ROLES = new Set([
+  'search', 'region', 'list', 'listbox', 'group', 'navigation', 'main', 'form', 'table', 'menu',
+]);
+
 /** Proximity of a candidate delta to the action target. */
 type DeltaProximity = 'target-proximate' | 'distant' | 'not-applicable';
 
@@ -207,6 +229,16 @@ interface SemanticDelta {
   proximity: DeltaProximity;
   /** Human-facing name of the delta, used when recording weak proof. */
   name: string;
+}
+
+/** Evidence the delta ranking produced for one action. */
+interface DeltaEvidence {
+  /** Best non-fragile delta, or null when none exists. */
+  delta: SemanticDelta | null;
+  /** Best fragile delta the proof rule rejected, when a fragile delta was the
+   *  only kind available (named so the caller excludes the step rather than
+   *  exporting an order-dependent proof). */
+  rejectedFragile: { role: string; name: string } | null;
 }
 
 /** Document-order index of the action target, preferring the post-action view. */
@@ -223,12 +255,30 @@ function targetAnchor(
   return beforeIndex >= 0 ? beforeIndex : null;
 }
 
+/**
+ * True when a delta proof is ORDERING-fragile: the node's accessible name is a
+ * concatenation of its children's text, so the proof can only replay when the
+ * remote content returns in the same order (Wikipedia's suggestion container
+ * re-concatenates on every keystroke, producing one ~180-character name).
+ *
+ * Only a content-named CONTAINER role can carry such an aggregated name — the
+ * driver derives a container's accessible name from its contents, while a LEAF
+ * node's long accessible name is an authored label, not an aggregation (the
+ * distant-delta regression uses a 92-character link label that must stay
+ * exportable). A name assembled from many children is necessarily long, so the
+ * length cap is the concrete signal.
+ */
+function isFragileProofDelta(node: QaSemanticNode): boolean {
+  if (!CONTENT_NAMED_CONTAINER_ROLES.has(clean(node.role))) return false;
+  return clean(node.name).length > FRAGILE_PROOF_NAME_CAP;
+}
+
 function semanticDelta(
   before: QaObservation | null,
   after: QaObservation,
   target: QaNodePredicate | null,
-): SemanticDelta | null {
-  if (before === null) return null;
+): DeltaEvidence {
+  if (before === null) return { delta: null, rejectedFragile: null };
   const anchor = targetAnchor(before, after, target);
   const candidates = after.nodes
     .map((node, order) => ({ node, order, predicate: predicateFor(node) }))
@@ -252,9 +302,24 @@ function semanticDelta(
     const rightPriority = OUTCOME_ROLE_PRIORITY.get(right.node.role) ?? 10;
     return leftProximity - rightProximity || leftPriority - rightPriority || left.order - right.order;
   });
-  const best = candidates[0];
-  if (best === undefined) return null;
-  return { predicate: best.predicate, proximity: best.proximity, name: predicateName(best.predicate) };
+  // Node-value on the target outranks every delta (decided by the caller);
+  // among deltas, a short-named unique delta is the only sound proof. An
+  // ordering-fragile container delta is skipped in favour of a sound one, and
+  // when it is the ONLY delta it is reported back so the caller excludes the
+  // step with FRAGILE_PROOF_ONLY instead of exporting an order-dependent proof.
+  const best = candidates.find((item) => !isFragileProofDelta(item.node));
+  if (best !== undefined) {
+    return {
+      delta: { predicate: best.predicate, proximity: best.proximity, name: predicateName(best.predicate) },
+      rejectedFragile: null,
+    };
+  }
+  const fragile = candidates.find((item) => isFragileProofDelta(item.node));
+  if (fragile === undefined) return { delta: null, rejectedFragile: null };
+  return {
+    delta: null,
+    rejectedFragile: { role: clean(fragile.node.role), name: predicateName(fragile.predicate) },
+  };
 }
 
 interface SynthesizedAssertion {
@@ -283,21 +348,29 @@ function synthesizeValueAssertion(
   const expected = normalizeObservableValue(action.text);
   const node = after.nodes.find((candidate) => matchesPredicate(candidate, target));
   if (node === undefined) {
-    // Identity drift: the fill rewrote the target's accessible name (an
-    // aria-label / title derived from the current value, "Search" ->
-    // "Search: async"), so the pre-action predicate no longer matches the same
-    // node. Fall back to the written value on a node whose ROLE matches the
-    // pre-action target (name-agnostic), and bind the assertion to that node's
-    // CURRENT predicate — the proof stays the target's own value, never
-    // node-present of the renamed field alone.
-    const renamed = after.nodes.find((candidate) =>
-      target.role !== undefined
-      && candidate.role === target.role
-      && typeof candidate.value === 'string'
+    // Identity drift: the fill rewrote the target's accessible name or role (a
+    // label derived from the current value, or "textbox" -> "combobox" once the
+    // suggestions open), so the pre-action predicate no longer matches the same
+    // node. Fall back to the SAME identity rule the echo mask uses
+    // (settle.ts, isEchoMasked rule 2): a node whose value equals the written
+    // text, matching by NAME (role-agnostic) OR by ROLE (name-agnostic), and
+    // unique among such candidates. Bind the assertion to that node's CURRENT
+    // predicate — the proof stays the target's own value, never node-present of
+    // the renamed field alone. Several candidates holding the value with no
+    // unique identity fall through (no guess); a flagged
+    // (withheld/secure/truncated) value is never asserted.
+    const candidates = after.nodes.filter((candidate) =>
+      typeof candidate.value === 'string'
       && candidate.value === expected
       && candidate.valueWithheld !== true
       && candidate.secure !== true
-      && candidate.valueTruncated !== true);
+      && candidate.valueTruncated !== true
+      && (
+        (target.name !== undefined && candidate.name === target.name)
+        || (target.role !== undefined && candidate.role === target.role)
+      ));
+    if (candidates.length !== 1) return null;
+    const renamed = candidates[0];
     if (renamed === undefined) return null;
     const predicate = predicateFor(renamed);
     if (predicate === null || countMatches(after, predicate) !== 1) return null;
@@ -305,7 +378,7 @@ function synthesizeValueAssertion(
       assertion: {
         kind: 'node-value',
         expected: { ...predicate, value: expected },
-        description: 'Settled post-action observation confirmed the typed value on the action target, whose accessible name the fill rewrote.',
+        description: 'Settled post-action observation confirmed the typed value on the action target, whose accessible name or role the fill rewrote.',
       },
       weakness: null,
     };
@@ -324,45 +397,65 @@ function synthesizeValueAssertion(
   };
 }
 
+/** What synthesizeAssertion resolved for one action. */
+interface SynthesisResult {
+  /** The synthesized proof assertion, or null when none was derivable. */
+  assertion: SynthesizedAssertion | null;
+  /** Present exactly when the ONLY observable change was an ordering-fragile
+   *  container delta; the step is excluded with FRAGILE_PROOF_ONLY instead of
+   *  exporting that delta. */
+  fragileOnly: { role: string; name: string } | null;
+}
+
 function synthesizeAssertion(
   before: QaObservation | null,
   after: QaObservation,
   target: QaNodePredicate | null,
   action: QaScenarioAction | null,
-): SynthesizedAssertion | null {
+): SynthesisResult {
   // A fill proven by its own value outranks every other candidate.
   const valueAssertion = synthesizeValueAssertion(after, target, action);
-  if (valueAssertion !== null) return valueAssertion;
+  if (valueAssertion !== null) return { assertion: valueAssertion, fragileOnly: null };
   if (before !== null && before.page.url !== after.page.url && clean(after.page.url) !== '') {
     return {
       assertion: {
-        kind: 'page-url',
-        expected: { url: after.page.url },
-        description: 'Settled post-action observation reached the recorded URL.',
+        assertion: {
+          kind: 'page-url',
+          expected: { url: after.page.url },
+          description: 'Settled post-action observation reached the recorded URL.',
+        },
+        weakness: null,
       },
-      weakness: null,
+      fragileOnly: null,
     };
   }
-  const delta = semanticDelta(before, after, target);
-  if (delta !== null) {
+  const evidence = semanticDelta(before, after, target);
+  if (evidence.delta !== null) {
+    const delta = evidence.delta;
     const distant = delta.proximity === 'distant';
     return {
       assertion: {
-        kind: 'node-present',
-        expected: delta.predicate,
-        description: distant
-          ? 'Settled post-action observation exposed a new semantic state, but only away from the action target.'
-          : 'Settled post-action observation exposed a new semantic state.',
+        assertion: {
+          kind: 'node-present',
+          expected: delta.predicate,
+          description: distant
+            ? 'Settled post-action observation exposed a new semantic state, but only away from the action target.'
+            : 'Settled post-action observation exposed a new semantic state.',
+        },
+        weakness: distant
+          ? 'the only observable change was away from the action target ("' + delta.name + '")'
+          : null,
       },
-      weakness: distant
-        ? 'the only observable change was away from the action target ("' + delta.name + '")'
-        : null,
+      fragileOnly: null,
     };
+  }
+  if (evidence.rejectedFragile !== null) {
+    return { assertion: null, fragileOnly: evidence.rejectedFragile };
   }
   // Target persistence is not proof that any action landed, even for a
   // confirmed dispatch receipt. Every exported action needs a semantic delta
   // or URL change from the SETTLED observation above.
-  return null;
+  return { assertion: null, fragileOnly: null };
 }
 
 /**
@@ -384,6 +477,19 @@ const TRUNCATED_PROOF_WEAKNESS =
 /** True when either view this step's proof rests on was budget-truncated. */
 function proofWasTruncated(before: QaObservation | null, after: QaObservation): boolean {
   return before?.truncated === true || after.truncated === true;
+}
+
+/**
+ * Whether a truncated proof observation can actually WEAKEN this assertion.
+ * Truncation weakens a delta-derived presence claim — the "apparently new node"
+ * may have been there all along, outside `before`'s window — but it cannot
+ * weaken a `page-url` (the URL travels on every observation) or a `node-value`
+ * on a FOUND target (a returned node really carries the value the driver
+ * reported; see docs/TRUNCATION.md). The weakness note is attached only when
+ * truncation can actually weaken the proof.
+ */
+function truncationWeakensProof(assertion: QaAssertion): boolean {
+  return assertion.kind === 'node-present' || assertion.kind === 'node-in-viewport';
 }
 
 /** Step intent plus every recorded proof weakness, in one "Weak proof:" note. */
@@ -621,7 +727,9 @@ function buildScenario(
         index: steps.length + 1,
         intent: normalizeIntent(intentWithWeaknesses(
           resolved.intent,
-          candidate.after !== null && proofWasTruncated(candidate.before, candidate.after)
+          candidate.after !== null
+            && proofWasTruncated(candidate.before, candidate.after)
+            && truncationWeakensProof(resolved.assert)
             ? [TRUNCATED_PROOF_WEAKNESS]
             : [],
         )),
@@ -646,10 +754,24 @@ function buildScenario(
       excluded.push(exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'The action had no durable replay form.'));
       continue;
     }
-    const synthesized = stepAction.kind === 'scroll' && candidate.target !== null
-      ? { assertion: synthesizeScrollAssertion(candidate.target), weakness: null }
+    const synthesized: SynthesisResult = stepAction.kind === 'scroll' && candidate.target !== null
+      ? { assertion: { assertion: synthesizeScrollAssertion(candidate.target), weakness: null }, fragileOnly: null }
       : synthesizeAssertion(candidate.before, after, candidate.target, stepAction);
-    if (synthesized === null || !evaluateAssertion(synthesized.assertion, after).passed) {
+    if (synthesized.fragileOnly !== null) {
+      // The only observable change was an ordering-fragile container whose
+      // accessible name concatenates its children's text. Exporting it would
+      // make replay depend on remote content order, so the step is excluded
+      // rather than proven by a name that only matches by luck.
+      excluded.push(exclusion(
+        recorded,
+        'FRAGILE_PROOF_ONLY',
+        'The only observable change was the container role "' + synthesized.fragileOnly.role
+          + '" named "' + synthesized.fragileOnly.name + '", whose accessible name concatenates child '
+          + 'text and depends on remote content order.',
+      ));
+      continue;
+    }
+    if (synthesized.assertion === null || !evaluateAssertion(synthesized.assertion.assertion, after).passed) {
       excluded.push(exclusion(
         recorded,
         'ASSERTION_NOT_PROVABLE',
@@ -662,16 +784,20 @@ function buildScenario(
     // A distant delta is still exported (dropping it would silently lose the
     // step), but the weakness is recorded in the intent so a human can see why
     // the assertion looks unrelated to the action. A proof observation that was
-    // truncated at the node budget is recorded the same honest way.
+    // truncated at the node budget is recorded the same honest way — but only
+    // when truncation can actually weaken the assertion kind (see
+    // truncationWeakensProof).
     const intent = normalizeIntent(intentWithWeaknesses(intentFor(stepAction), [
-      ...(synthesized.weakness === null ? [] : [synthesized.weakness]),
-      ...(proofWasTruncated(candidate.before, after) ? [TRUNCATED_PROOF_WEAKNESS] : []),
+      ...(synthesized.assertion.weakness === null ? [] : [synthesized.assertion.weakness]),
+      ...(proofWasTruncated(candidate.before, after) && truncationWeakensProof(synthesized.assertion.assertion)
+        ? [TRUNCATED_PROOF_WEAKNESS]
+        : []),
     ]));
     steps.push({
       index: steps.length + 1,
       intent,
       action: stepAction,
-      assert: synthesized.assertion,
+      assert: synthesized.assertion.assertion,
     });
   }
 

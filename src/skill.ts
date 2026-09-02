@@ -49,10 +49,13 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 - A \`fill\` is proven by its OWN target's value: when the fresh observation shows the target
   carrying the typed text, the exporter synthesizes a \`node-value\` assertion on that target (the
   most durable evidence), not on some other node that happened to change — including when the fill
-  REWROTE the target's accessible name (\`aria-label\` following the value, "Search" -> "Search: async"):
-  the assertion then binds the current name, never \`node-present\` of the renamed field alone. A
-  secret-bearing control (\`valueWithheld\`, password/one-time-code/cc autocomplete) never carries a
-  value, so no value assertion is synthesized for it.
+  REWROTE the target's accessible name OR role (\`aria-label\` following the value, "Search" ->
+  "Search: async", or \`textbox\` -> \`combobox\` once suggestions open): the exporter then follows
+  the same identity rule the echo mask uses (match by name role-agnostic OR by role name-agnostic,
+  unique among candidates) and binds the assertion to the node's CURRENT predicate, never
+  \`node-present\` of the renamed field alone. A secret-bearing control (\`valueWithheld\`,
+  password/one-time-code/cc autocomplete) never carries a value, so no value assertion is
+  synthesized for it.
 - The settle window echo-masks the action's own value write (\`fill\`/\`type\`/\`select\`, and
   \`key\`/\`press\` on a uniquely identified target), so a downstream consequence that lands after the
   echo is still waited for — a fresh observation that only shows the echo never proves the action alone.
@@ -119,6 +122,10 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   fresh observation after that action. Rejected/failed actions and actions without that observation
   never become steps. A fill is proven by its own target's value (\`node-value\`); otherwise an
   unknown receipt needs a semantic delta or URL change, and target persistence alone cannot prove it.
+- A delta whose accessible name is a concatenation of its children's text is ordering-fragile (a
+  \`search\`/\`list\`/\`listbox\` container whose name exceeds ~80 characters) and is never
+  exported as a proof: it is skipped in favour of a sound delta, and when it is the only change the
+  step is excluded with \`FRAGILE_PROOF_ONLY\`.
 - Inspect \`excludedActions\`. An exclusion is not a pass. If every action is unproven,
   \`qa_record_export\` returns \`NO_PROVEN_STEPS\` and writes no file.
 - Run \`qa_replay_run\` on the exact exported file without hand editing it. Browser Replay is the

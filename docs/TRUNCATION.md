@@ -63,9 +63,14 @@ Evidence of presence is sound; absence of evidence is not evidence of absence.
    - The Explore exporter cannot re-observe a recorded trajectory, so when a
      proof observation was truncated it records the weakness in the step intent
      ("Weak proof: the proof observation was truncated at the driver node
-     budget …") exactly like the existing distant-delta weakness. A "new" node
-     may have been there all along, and a target that looks unique may have a
-     twin outside the window.
+     budget …") exactly like the existing distant-delta weakness — but ONLY when
+     truncation can actually weaken the assertion: a delta-derived
+     `node-present` / `node-in-viewport` (an "apparently new" node may have
+     been there all along, outside `before`'s window). A `page-url` (the URL
+     travels on every observation) and a `node-value` on a FOUND target (a
+     returned node really carries the reported value, per the rule table above)
+     are sound even on a truncated view, so no weakness note is attached to
+     them.
    - An action ref missing from a truncated preceding observation is excluded
      with a detail that says the target may have fallen outside the window.
 

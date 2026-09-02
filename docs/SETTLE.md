@@ -105,13 +105,17 @@ rather than hunting for some other node that changed. That is the most
 proximate and durable evidence possible, and it outranks every delta candidate.
 The fallback to delta ranking stays for fills whose target value is withheld
 (secret), truncated, absent (non-editable), or transformed by the page. When
-the fill REWROTE the target's accessible name, the exporter follows the same
-identity rule the echo mask uses: it looks up the written value on a node whose
-ROLE matches the pre-action target (name-agnostic), requires that node's
-(role, name) predicate to be unique in the settled view, and binds the
-`node-value` assertion to the node's CURRENT name — so the proof stays the
-target's own value and never degrades to `node-present` of the renamed field
-alone.
+the pre-action predicate no longer matches (the fill rewrote the target's
+accessible name OR role — `aria-label` derived from the value, or `textbox` ->
+`combobox` once suggestions open), the exporter follows the SAME identity rule
+the echo mask uses (settle.ts, `isEchoMasked` rule 2): it looks up the written
+value on a node matching by NAME (role-agnostic) OR by ROLE (name-agnostic),
+requires EXACTLY ONE such candidate AND that the node's current (role, name)
+predicate is unique in the settled view, and binds the `node-value` assertion
+to the node's CURRENT predicate — so the proof stays the target's own value and
+never degrades to `node-present` of the renamed field alone. Several candidates
+holding the value with no unique identity fall through (no guess), and a
+withheld/secure/truncated value is never asserted.
 
 At REPLAY, `node-value` re-checks the same rules (defense in depth for
 hand-written scenarios): the matching predicate must identify EXACTLY ONE node
@@ -206,6 +210,33 @@ exported — dropping it would re-introduce failure mode A — but the step's in
 records the weakness ("Weak proof: the only observable change was away from the
 action target (...) — verify manually.") and the assertion description says so
 too.
+
+### An ordering-fragile delta is never a proof
+
+A delta whose accessible name is a concatenation of its children's text depends
+on the remote content's ORDER, not on any stable element identity. Live
+evidence (Wikipedia search): the suggestion container exposes a `search` role
+whose accessible name concatenates every suggestion entry ("Search
+DeepSeekChinese artificial intelligence company…", ~180 characters), so two
+identical suggestion lists are required for the proof to replay. Such a delta
+is therefore never selected as a proof.
+
+Only a content-named CONTAINER role can carry such an aggregated name — the
+driver derives a container's accessible name from its contents, while a LEAF
+node's long accessible name is an authored label, not an aggregation (the
+distant-delta regression exercises exactly this: a 92-character `link` label
+that must stay exportable). A name assembled from many children is necessarily
+long, so the concrete signal is:
+
+* a content-named container role (`search`/`region`/`list`/`listbox`/
+  `group`/`navigation`/`main`/`form`/`table`/`menu`) whose accessible
+  name exceeds `FRAGILE_PROOF_NAME_CAP` (80 characters).
+
+Ranking is therefore node-value on the target > short-named unique delta >
+nothing: a fragile delta is skipped in favour of a sound one, and when the ONLY
+available delta is such a fragile container the step is excluded with
+`FRAGILE_PROOF_ONLY` (naming the rejected node) instead of exporting an
+order-dependent proof.
 
 ## Configuration
 
