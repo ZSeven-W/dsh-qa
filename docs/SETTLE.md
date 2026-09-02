@@ -44,17 +44,46 @@ still, or until a bounded budget is spent.
   pre-action baseline and then quiets down, or until the budget is spent. An
   outcome that already landed synchronously is recognised through that baseline,
   so a synchronous UI still costs only one quiet window.
-* **the action's own echo is not a change.** A `fill`/`type` writes its value
-  onto its own target, and that echo lands before the first settle observation.
-  It is expected, so it must not by itself satisfy `awaitChange` — otherwise the
-  window would close at one quiet window (300ms) and miss a downstream
+* **the action's own echo is not a change.** Every action that writes a value
+  onto its own target — `fill`, `type`, `select` (the chosen option), and
+  `key`/`press` — is echo-masked, or the write would satisfy `awaitChange`
+  by itself, close the window at one quiet window (300ms), and miss a downstream
   consequence still in flight (a suggestion list, a fetch-backed status). The
-  echo target's `value` is masked from the CHANGE decision only (a value change
-  on any OTHER node is legitimate evidence), while the quiet window still uses
-  the full projection, so the view only settles once the echo AND every
-  downstream consequence have all held still. A synchronous UI with a real
-  downstream consequence (e.g. a status that flips to READY) still costs one
-  quiet window; only a fill into a completely inert field spends the budget.
+  mask is built from the PRE-ACTION observation (`QaEchoMask` in
+  settle.ts): the exact pre-action ref (identity inside the baseline observation
+  only — the browser driver re-mints refs on every later observation), the full
+  pre-action predicate with EMPTY role/name/tag strings kept as exact matchers,
+  and the driver-normalized written value. A node's `value` AND `name` are
+  masked from the CHANGE decision only when the node IS the echo target, decided
+  per observation as follows (a change on any OTHER node is legitimate
+  evidence):
+  1. it carries the echo's exact pre-action ref (baseline observation only); or
+  2. its `value` equals the normalized written value AND it matches the full
+     pre-action predicate, OR its role/tag match the pre-action target
+     (name-agnostic — this is what keeps the mask working when the fill REWRITES
+     the target's accessible name, e.g. `aria-label` derived from the value:
+     "Search" -> "Search: async"); or
+  3. its role/tag match the pre-action target AND its (new) name CONTAINS the
+     written value (a renamed target that announces the value in its name is
+     still the echo even when its value is withheld); or
+  4. it is the ONLY node in the observation matching the full predicate — a
+     unique target is the echo whatever its value is (a page transform, a
+     withheld value, an echo that has not landed yet, or a `key`/`press` whose
+     written value is unknowable ahead of time — `key`/`press` masking is
+     therefore only sound for unique targets); or
+  5. it matches the predicate AND its value is still empty — with SEVERAL
+     predicate matches (duplicate role/name/tag, or an empty name shared by
+     siblings) only the twin carrying the written value is masked, an
+     empty-valued twin is masked as the pre-write state, and a sibling's
+     NON-EMPTY value that differs from the written value is NEVER masked: that
+     change is legitimate evidence and unblocks `awaitChange` within one quiet
+     window. Because the masked projection replaces the echo target's name and
+     value with null, a name the fill itself rewrote never satisfies
+     `awaitChange` either, while the quiet window still uses the FULL
+     projection (the rename and every downstream consequence restart the quiet
+     window). A synchronous UI with a real downstream consequence still costs
+     one quiet window; only a write into a completely inert field spends the
+     budget.
 
 ### A fill is proven by its own value
 
@@ -66,7 +95,23 @@ settled proof observation shows the target carrying the typed text
 rather than hunting for some other node that changed. That is the most
 proximate and durable evidence possible, and it outranks every delta candidate.
 The fallback to delta ranking stays for fills whose target value is withheld
-(secret), truncated, absent (non-editable), or transformed by the page.
+(secret), truncated, absent (non-editable), or transformed by the page. When
+the fill REWROTE the target's accessible name, the exporter follows the same
+identity rule the echo mask uses: it looks up the written value on a node whose
+ROLE matches the pre-action target (name-agnostic), requires that node's
+(role, name) predicate to be unique in the settled view, and binds the
+`node-value` assertion to the node's CURRENT name — so the proof stays the
+target's own value and never degrades to `node-present` of the renamed field
+alone.
+
+At REPLAY, `node-value` re-checks the same rules (defense in depth for
+hand-written scenarios): the matching predicate must identify EXACTLY ONE node
+(more than one fails with `TARGET_NOT_UNIQUE` — a twin that already holds the
+recorded value proves nothing about the recorded target), and a
+`valueWithheld`/`secure`/`valueTruncated` node can NEVER satisfy it, even
+when a leaked `value` field happens to carry the expected string
+(`VALUE_WITHHELD` / `VALUE_SECURE` / `VALUE_TRUNCATED`). Both refusals fail
+closed with their code in report.json and report.md.
 * **Budget** (`QA_SETTLE_BUDGET_MS`, 2500ms) — the hard bound. In practice this
   policy can prove an outcome landing up to roughly `budgetMs - quietMs` after
   the action; a slower page needs a bigger configured budget and is never
@@ -95,7 +140,15 @@ Both sides refuse an unsettled view:
   stabilized within the settle budget"), and a trajectory with no provable step
   still writes no file (`NO_PROVEN_STEPS`);
 * replay — an unsettled initial, post-action, or final observation is a run/step
-  failure ("the ... observation never settled within the 2500ms settle budget").
+  failure ("the ... observation never settled within the 2500ms settle budget"),
+  and the failure now carries the machine code `INCONCLUSIVE_UNSTABLE` in
+  `failure.code` (rendered in report.md) so the non-result is distinguishable
+  from an ordinary assertion failure without parsing prose.
+* replay target resolution — an action target whose predicate matches more than
+  one observable node fails closed with `TARGET_NOT_UNIQUE` (the same
+  vocabulary as export's exclusion) instead of acting on the first match: a
+  twin that already holds the recorded value would otherwise turn the step's
+  `node-value` into a false green while the recorded target stays empty.
 
 Nothing is widened to make an unstable page pass. An unstable page is honestly
 unprovable.
@@ -124,7 +177,9 @@ returning a false green on an unsettled view:
   `settle: { stable, passes, budgetMs }`, and when `stable === false` the finding
   also carries `captureSettled: false`, rendered next to the verdict in
   report.md and report.json. Advisory semantics are unchanged (a visual finding
-  never changes pass/fail).
+  never changes pass/fail). `qa_evidence` visual captures carry the SAME
+  `settle` + `captureSettled: false` vocabulary (tools.ts AND server.mjs), so
+  an evidence frame from a churning page is marked, never silently presented.
 
 All three surfaces reuse the one `INCONCLUSIVE_UNSTABLE` code, so an agent sees a
 single vocabulary: an unsettled result is a non-result — never a pass and never

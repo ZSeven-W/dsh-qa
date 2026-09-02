@@ -40,6 +40,47 @@ import type { QaObservation, QaSemanticNode, QaSettleReport } from './adapter.ts
 import type { QaNodePredicate } from '../contracts.ts';
 
 /**
+ * Normalize an intended value write exactly like the browser driver normalizes
+ * an observable value (dsh-browser contract v5/v6, unchanged): bound the raw string, collapse
+ * whitespace runs to single spaces, trim, then clip to 180 characters. Both the
+ * echo mask and the export-side node-value synthesis compare against this
+ * normalization, so a fill is recognized as its own echo only when the observed
+ * node.value carries exactly this form; anything else (a page transform, a
+ * truncation) is not the echo.
+ */
+export function normalizeObservableValue(raw: string): string {
+  return raw.slice(0, 720).replace(/\s+/gu, ' ').trim().slice(0, 180);
+}
+
+/**
+ * The action's own direct echo, as the stable cross-observation identity of the
+ * node the action wrote its value onto.
+ *
+ * The browser driver re-mints a node ref on every observation, so a ref can
+ * never be matched across two observations; the mask therefore identifies the
+ * echo by the value the action wrote, anchored by the pre-action predicate.
+ * ref is the EXACT pre-action identity inside the baseline observation only
+ * (the one observation that still contains the action's own ref).
+ */
+export interface QaEchoMask {
+  /**
+   * The full pre-action predicate: role/name/tag exactly as observed, EMPTY
+   * STRINGS KEPT (an empty name must match literally, not act as a wildcard).
+   * All three fields are always present here; a node whose three fields are
+   * all empty can never be echo-masked.
+   */
+  predicate: QaNodePredicate;
+  /** Exact pre-action ref of the echo target (identity inside the baseline only). */
+  ref: string;
+  /**
+   * Driver-normalized value the action wrote (fill/type text, select option).
+   * Null when the written value is unknowable ahead of time (key/press):
+   * the mask then degrades to the unique-predicate rule and the exact ref.
+   */
+  value: string | null;
+}
+
+/**
  * Default wall-clock budget for one settle window, in milliseconds.
  *
  * Sized for ordinary async UI work (a suggestion list, a fetch-backed status,
@@ -103,17 +144,17 @@ export interface QaSettleCallOptions {
    */
   baselineView?: string;
   /**
-   * The action's own direct echo on its target, expressed as the target's
-   * SEMANTIC predicate (role/name/tag, NOT the session-local ref: the browser
-   * driver re-mints a ref every observation, so a ref can never be matched
-   * across two observations). Any node matching this predicate has its `value`
-   * masked from the `awaitChange` decision — the value the action itself just
-   * wrote is expected and must not by itself end the wait — while value changes
-   * on every OTHER node remain legitimate evidence. The quiet window still uses
+   * The action's own direct echo on its target, as the stable cross-observation
+   * identity built from the pre-action observation (see QaEchoMask). A node's
+   * value AND accessible name are masked from the awaitChange decision exactly
+   * when the masking rule below identifies it as the echo target — the value the
+   * action itself just wrote (and a name the fill itself rewrote) is expected
+   * and must not by itself end the wait — while changes on every OTHER node
+   * remain legitimate evidence. The quiet window still uses
    * the full projection, so the view is only settled once the echo AND any
    * downstream consequences have all held still.
    */
-  echo?: QaNodePredicate;
+  echo?: QaEchoMask;
 }
 
 /** One settle window outcome, including the observation the caller must use. */
@@ -172,14 +213,69 @@ export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettle
  * (URL, title, and each node's role/name/tag/state/href/viewport membership,
  * in document order) is INCLUDED, so a real semantic change is never hidden.
  */
-function matchesEcho(node: QaSemanticNode, echo: QaNodePredicate): boolean {
-  if (echo.role !== undefined && node.role !== echo.role) return false;
-  if (echo.name !== undefined && node.name !== echo.name) return false;
-  if (echo.tag !== undefined && node.tag !== echo.tag) return false;
+/** True when the node matches every defined predicate field (empty strings must match literally). */
+function matchesEchoPredicate(node: QaSemanticNode, predicate: QaNodePredicate): boolean {
+  if (predicate.role !== undefined && node.role !== predicate.role) return false;
+  if (predicate.name !== undefined && node.name !== predicate.name) return false;
+  if (predicate.tag !== undefined && node.tag !== predicate.tag) return false;
   return true;
 }
 
-export function projectSemanticView(observation: QaObservation, echo?: QaNodePredicate): string {
+/**
+ * The echo-masking rule, decided per node against the WHOLE observation
+ * (predicateMatchCount is how many nodes of that observation match the full
+ * pre-action predicate). A node is the echo target — and its value is masked
+ * from the awaitChange decision — exactly when:
+ *
+ *  1. it carries the echo's exact pre-action ref (the baseline observation
+ *     only; the browser driver re-mints refs on every later observation), or
+ *  2. its value equals the driver-normalized value the action wrote, and it
+ *     matches the full pre-action predicate OR its role/tag match the
+ *     pre-action target (name-agnostic: covers a fill that REWRITES the
+ *     target's accessible name, e.g. "Search" -> "Search: async"), or
+ *  3. its role/tag match the pre-action target and its (new) name CONTAINS the
+ *     written value — a renamed target that announces the value in its name
+ *     is still the echo even when its value is withheld, or
+ *  4. it is the ONLY node in the observation matching the full predicate: a
+ *     unique target is the echo whatever its value is (a page transform of the
+ *     echo, a withheld value, an echo that has not landed yet, or a key/press
+ *     whose written value is unknowable ahead of time), or
+ *  5. it matches the predicate AND its value is still empty: with SEVERAL
+ *     predicate matches only the twin carrying the written value is masked, but
+ *     an empty-valued twin is either the pre-write target state or a
+ *     not-yet-changed sibling — masking it keeps a late echo from unblocking
+ *     awaitChange. A sibling's NON-EMPTY value that differs from the written
+ *     value is never masked: that change is legitimate evidence.
+ */
+function isEchoMasked(node: QaSemanticNode, echo: QaEchoMask, predicateMatchCount: number): boolean {
+  // 1. Exact identity inside the baseline observation.
+  if (node.ref === echo.ref) return true;
+  const matches = matchesEchoPredicate(node, echo.predicate);
+  if (echo.value !== null) {
+    const roleTag = echo.predicate.role !== undefined && echo.predicate.tag !== undefined
+      && node.role === echo.predicate.role && node.tag === echo.predicate.tag;
+    // 2. The node carrying the written value, by predicate or name-agnostic role/tag.
+    if (node.value === echo.value && (matches || roleTag)) return true;
+    // 3. A renamed pre-action target whose new name announces the written value.
+    if (roleTag && node.name.includes(echo.value)) return true;
+  }
+  // 4. A unique predicate match is the target no matter what its value is.
+  if (matches && predicateMatchCount === 1) return true;
+  // 5. Empty-valued predicate matches (the pre-write state; see the doc above).
+  if (matches && (node.value === undefined || node.value === null || node.value === '')) return true;
+  return false;
+}
+
+export function projectSemanticView(observation: QaObservation, echo?: QaEchoMask): string {
+  // The mask is decided per observation: how many nodes match the full
+  // pre-action predicate decides whether the unique-target rule applies, and
+  // the written value decides which twin is the echo when several match.
+  const predicateMatchCount = echo === undefined
+    ? 0
+    : observation.nodes.reduce(
+        (count, node) => count + (matchesEchoPredicate(node, echo.predicate) ? 1 : 0),
+        0,
+      );
   return JSON.stringify({
     url: observation.page.url,
     title: observation.page.title,
@@ -195,18 +291,26 @@ export function projectSemanticView(observation: QaObservation, echo?: QaNodePre
           title: observation.window.title,
           identity: observation.window.identity,
         },
-    nodes: observation.nodes.map((node) => [
-      node.role,
-      node.name,
-      node.tag,
-      node.interactive,
-      node.editable,
-      node.disabled,
-      node.href ?? null,
-      node.inViewport ?? null,
-      node.secure ?? null,
-      echo !== undefined && matchesEcho(node, echo) ? null : node.value ?? null,
-    ]),
+    nodes: observation.nodes.map((node) => {
+      const masked = echo !== undefined && isEchoMasked(node, echo, predicateMatchCount);
+      return [
+        node.role,
+        // The echo target's accessible NAME is masked together with its value:
+        // a fill that rewrites the target's name as part of its own echo
+        // ("Search" -> "Search: async") must not satisfy awaitChange through
+        // the name drift either. The full (quiet-window) projection still
+        // carries the real name, so the rename restarts the quiet window.
+        masked ? null : node.name,
+        node.tag,
+        node.interactive,
+        node.editable,
+        node.disabled,
+        node.href ?? null,
+        node.inViewport ?? null,
+        node.secure ?? null,
+        masked ? null : node.value ?? null,
+      ];
+    }),
   });
 }
 

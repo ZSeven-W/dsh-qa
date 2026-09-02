@@ -8,9 +8,11 @@ import type {
   QaScenarioAction,
   QaStep,
 } from '../contracts.ts';
+import { QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
 import { projectArtifactPath, redactText } from '../redaction/index.ts';
 import { evaluateAssertion, loadScenarioFromPath, validateScenario } from '../replay/index.ts';
 import type { QaObservation, QaSemanticNode } from '../session/adapter.ts';
+import { normalizeObservableValue } from '../session/settle.ts';
 import type { QaTrajectoryRecorder } from './recorder.ts';
 import type {
   QaExportExclusion,
@@ -35,17 +37,6 @@ const OUTCOME_ROLE_PRIORITY = new Map<string, number>([
 
 function clean(value: string): string {
   return value.trim();
-}
-
-/**
- * Normalize an intended fill text exactly like the browser driver normalizes
- * an observable value (dsh-browser contract v5): bound the raw string, collapse
- * whitespace runs to single spaces, trim, then clip to 180 characters. A fill
- * is proven by its own value only when this normalization equals the observed
- * `node.value`; anything else (a transform, a truncation) is not the echo.
- */
-function normalizeValue(raw: string): string {
-  return raw.slice(0, 720).replace(/\s+/gu, ' ').trim().slice(0, 180);
 }
 
 function containsRedactionMarker(value: string): boolean {
@@ -168,7 +159,7 @@ function durableAction(
   if (countMatches(before, target) !== 1) {
     return exclusion(
       recorded,
-      'TARGET_NOT_UNIQUE',
+      QA_TARGET_NOT_UNIQUE,
       'Role plus accessible name did not uniquely identify the action target.',
     );
   }
@@ -289,12 +280,39 @@ function synthesizeValueAssertion(
   // Only a fill writes a value on its own target. The computer `type` verb is
   // not replayable (durableAction excludes it), so it never reaches export.
   if (action === null || action.kind !== 'fill' || target === null) return null;
+  const expected = normalizeObservableValue(action.text);
   const node = after.nodes.find((candidate) => matchesPredicate(candidate, target));
-  if (node === undefined) return null;
+  if (node === undefined) {
+    // Identity drift: the fill rewrote the target's accessible name (an
+    // aria-label / title derived from the current value, "Search" ->
+    // "Search: async"), so the pre-action predicate no longer matches the same
+    // node. Fall back to the written value on a node whose ROLE matches the
+    // pre-action target (name-agnostic), and bind the assertion to that node's
+    // CURRENT predicate — the proof stays the target's own value, never
+    // node-present of the renamed field alone.
+    const renamed = after.nodes.find((candidate) =>
+      target.role !== undefined
+      && candidate.role === target.role
+      && typeof candidate.value === 'string'
+      && candidate.value === expected
+      && candidate.valueWithheld !== true
+      && candidate.secure !== true
+      && candidate.valueTruncated !== true);
+    if (renamed === undefined) return null;
+    const predicate = predicateFor(renamed);
+    if (predicate === null || countMatches(after, predicate) !== 1) return null;
+    return {
+      assertion: {
+        kind: 'node-value',
+        expected: { ...predicate, value: expected },
+        description: 'Settled post-action observation confirmed the typed value on the action target, whose accessible name the fill rewrote.',
+      },
+      weakness: null,
+    };
+  }
   if (node.valueWithheld === true || node.secure === true) return null;
   if (node.valueTruncated === true) return null;
   if (typeof node.value !== 'string') return null;
-  const expected = normalizeValue(action.text);
   if (node.value !== expected) return null;
   return {
     assertion: {

@@ -15,15 +15,16 @@ import type {
   QaVisualObserveOptions,
 } from './adapter.ts';
 import {
+  normalizeObservableValue,
   observeUntilStable,
   projectSemanticView,
   resolveSettlePolicy,
+  type QaEchoMask,
   type QaSettleCallOptions,
   type QaSettlePolicy,
   type QaSettleResult,
 } from './settle.ts';
 import { QA_INCONCLUSIVE_UNSTABLE } from '../contracts.ts';
-import type { QaNodePredicate } from '../contracts.ts';
 
 /** Outcome the session core resolves for one act step. */
 export type QaActOutcome = 'ok' | 'unknown' | 'failed';
@@ -71,26 +72,41 @@ function normalizeOwner(ownerId: string): string {
 }
 
 /**
- * The action's own direct echo, expressed as the target's SEMANTIC predicate.
- * For a fill/type, the node whose `value` the action itself just wrote must
- * not by itself end a proof settle window (see settle.ts). The predicate is
- * derived from the pre-action observation because the browser driver re-mints
- * a ref on every observation, so a ref can never be matched across two
- * observations; role/name/tag is the only cross-observation identity.
+ * The action's own direct echo, as a QaEchoMask (see settle.ts). Built for
+ * every action that writes a value onto its own target:
+ *
+ *  - fill/type/select: the written value is known and normalized exactly like
+ *    the driver normalizes observable values, so the mask can follow the echo
+ *    across observations by VALUE even when the action rewrites the target's
+ *    accessible name ("Search" -> "Search: async") or when several nodes share
+ *    the same role/name/tag (only the twin carrying the written value is
+ *    masked);
+ *  - key/press: the written value is unknowable ahead of time, so the mask
+ *    degrades to the unique-predicate rule (see settle.ts isEchoMasked).
+ *
+ * The pre-action predicate keeps EMPTY role/name/tag fields as exact matchers:
+ * an unnamed textbox must not mask named siblings that merely share its role
+ * and tag.
  */
-function actionEcho(action: QaAction, before: QaObservation | null): QaNodePredicate | null {
-  if (action.kind !== 'fill' && action.kind !== 'type') return null;
+function actionEcho(action: QaAction, before: QaObservation | null): QaEchoMask | null {
+  const valueWrite = action.kind === 'fill' || action.kind === 'type' || action.kind === 'select';
+  const keyLike = action.kind === 'key' || action.kind === 'press';
+  if (!valueWrite && !keyLike) return null;
   if (before === null) return null;
   const node = before.nodes.find((candidate) => candidate.ref === action.ref);
   if (node === undefined) return null;
-  const predicate: QaNodePredicate = {};
-  if (node.role !== '') predicate.role = node.role;
-  if (node.name !== '') predicate.name = node.name;
-  if (node.tag !== '') predicate.tag = node.tag;
-  if (predicate.role === undefined && predicate.name === undefined && predicate.tag === undefined) {
-    return null;
-  }
-  return predicate;
+  if (node.role === '' && node.name === '' && node.tag === '') return null;
+  const value = valueWrite
+    ? normalizeObservableValue(action.kind === 'select' ? action.option : action.text)
+    : null;
+  return {
+    predicate: { role: node.role, name: node.name, tag: node.tag },
+    ref: action.ref,
+    // An empty written value is as good as unknowable: masking every empty
+    // value-bearing node would be over-masking, so it degrades to the
+    // unique-target rule.
+    value: value === '' ? null : value,
+  };
 }
 
 /**

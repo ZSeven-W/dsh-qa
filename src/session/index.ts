@@ -35,12 +35,14 @@ export {
   type QaSessionOptions,
 } from './session.ts';
 export {
+  normalizeObservableValue,
   observeUntilStable,
   projectSemanticView,
   resolveSettlePolicy,
   QA_SETTLE_BUDGET_MS,
   QA_SETTLE_INTERVAL_MS,
   QA_SETTLE_QUIET_MS,
+  type QaEchoMask,
   type QaSettleCallOptions,
   type QaSettlePolicy,
   type QaSettleResult,
