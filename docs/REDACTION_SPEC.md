@@ -609,3 +609,44 @@ artifact must mark it as model narration rather than observation:
    `normalizeReportForDeterminism` by schema (`src/replay/determinism.ts`), so
    the new field cannot affect a determinism comparison.
 
+### 7.4 Markdown structural escaping (`report.md`)
+
+§2.0's retained-v1 "Markdown escaping" baseline is implemented in dsh-qa by
+`src/reporters/markdown.ts`, and it is stronger than the upstream sentence
+implies: it is a **structural-soundness** pass, not just surrogate hygiene.
+
+Every page-/model-/scenario-controlled string rendered into a structural
+position — scenario name, step intent, node name/role/tag (inside the `action`
+and `observed` JSON), assertion kind, failure message, advisory
+question/verdict, artifact kind labels — is escaped so it **cannot** create a
+new line, a heading, a list item, or a `**Status**` / `[PASS]` / `[FAIL]` line.
+Concretely:
+
+1. **Line terminators** (CR, LF, CRLF, U+000B, U+000C, U+0085, U+2028, U+2029)
+   are collapsed to a single visible glyph (`⏎`, U+23CE), so a value can never
+   start a new Markdown line.
+2. **Emphasis/code delimiters** (`*`, `_`, backtick) are backslash-escaped in
+   inline prose positions, so a value can never become bold/italic/code.
+3. **Leading list/heading markers** (`-`, `+`, `#`, `N.` / `N)`) are
+   backslash-escaped defensively, in case a caller ever places a value at the
+   start of a rendered line.
+4. **Code-span positions** (the redacted JSON for `action` / `observed`, and
+   artifact paths) are wrapped in a backtick fence one backtick longer than the
+   longest run of backticks inside, so an embedded backtick can never close the
+   span early.
+
+**Ordering invariant.** Redaction runs FIRST, then lone-surrogate escaping, then
+Markdown escaping — never the other way around. Escaping a control character
+before redaction could split a secret token the redactor needs to see whole;
+this is locked by a test (a secret embedded next to a newline is still
+redacted). The advisory-narration blockquote (§7.3) keeps its per-line `> `
+prefix on the already-redacted text, so a multi-line narration cannot break out
+of the quote.
+
+**Source hardening.** `intentFor` / the exported step intent in
+`src/explore/export.ts` additionally normalizes line terminators to `⏎` at
+export time, so a page-controlled node name cannot smuggle a raw newline into
+the scenario file's `intent`. This is in ADDITION to the renderer escaping,
+which is mandatory regardless; the semantic target used for Replay matching is
+stored separately in `action` / `assert` and is never normalized.
+

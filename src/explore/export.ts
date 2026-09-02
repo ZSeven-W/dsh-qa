@@ -383,6 +383,18 @@ function synthesizeScrollAssertion(target: QaNodePredicate): QaAssertion {
   };
 }
 
+/**
+ * Normalize line terminators out of a display-only intent string. The intent
+ * is prose for the scenario file and the report; the semantic target Replay
+ * matches against is stored separately in `action`/`assert`, so flattening
+ * newlines here never affects replay matching. This is a source-level hardening
+ * on top of the renderer's own Markdown escaping (mandatory regardless): a
+ * page-controlled node name must never smuggle a newline into report.md.
+ */
+function normalizeIntent(value: string): string {
+  return value.replace(/\r\n|\r|\n|\u000B|\u000C|\u0085|\u2028|\u2029/gu, '\u23CE');
+}
+
 function intentFor(action: QaScenarioAction): string {
   if (action.kind === 'navigate') return 'Navigate to the recorded URL.';
   if (action.kind === 'scroll') {
@@ -589,12 +601,12 @@ function buildScenario(
       }
       steps.push({
         index: steps.length + 1,
-        intent: intentWithWeaknesses(
+        intent: normalizeIntent(intentWithWeaknesses(
           resolved.intent,
           candidate.after !== null && proofWasTruncated(candidate.before, candidate.after)
             ? [TRUNCATED_PROOF_WEAKNESS]
             : [],
-        ),
+        )),
         action: resolved.action,
         assert: resolved.assert,
       });
@@ -633,10 +645,10 @@ function buildScenario(
     // step), but the weakness is recorded in the intent so a human can see why
     // the assertion looks unrelated to the action. A proof observation that was
     // truncated at the node budget is recorded the same honest way.
-    const intent = intentWithWeaknesses(intentFor(stepAction), [
+    const intent = normalizeIntent(intentWithWeaknesses(intentFor(stepAction), [
       ...(synthesized.weakness === null ? [] : [synthesized.weakness]),
       ...(proofWasTruncated(candidate.before, after) ? [TRUNCATED_PROOF_WEAKNESS] : []),
-    ]);
+    ]));
     steps.push({
       index: steps.length + 1,
       intent,
