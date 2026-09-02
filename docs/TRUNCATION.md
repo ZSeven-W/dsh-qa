@@ -15,8 +15,9 @@ assertion may conclude from it.
 | a node WAS returned | sound | the driver returned it, so it exists |
 | `node-absent` and nothing matched | **unprovable** | the node may exist outside the window |
 | `node-present` / `node-in-viewport` and nothing matched | **unprovable** | same reason, opposite direction |
-| `node-value` and a matching node with the expected value was returned | sound | the node and its value were both reported |
+| `node-value` and EXACTLY ONE unflagged node with the expected value was returned | sound | the node and its value were both reported |
 | `node-value` and nothing matched | **unprovable** | the node (and its value) may exist outside the window |
+| `node-value` and several nodes match, or the match is flagged | refused, not a pass | a twin holding the value proves nothing about the recorded target (`TARGET_NOT_UNIQUE`); a `valueWithheld`/`secure`/`valueTruncated` node can never satisfy it (`VALUE_WITHHELD` / `VALUE_SECURE` / `VALUE_TRUNCATED`) — both fail closed with their code, in a complete or truncated view alike |
 | `page-url` | sound | the URL is carried by every observation |
 
 Evidence of presence is sound; absence of evidence is not evidence of absence.
@@ -55,7 +56,10 @@ Evidence of presence is sound; absence of evidence is not evidence of absence.
      from a truncated view triggers the same single escalation, and the failure
      message names `INCONCLUSIVE_TRUNCATED` instead of claiming the target is
      not on the page. This is the live scroll case: after a scroll the target
-     was absent from the 60-node view and present at 100.
+     was absent from the 60-node view and present at 100. A target whose
+     predicate matches SEVERAL nodes never escalates (a fuller view can only
+     add more matches): it fails closed with `TARGET_NOT_UNIQUE` — acting on
+     the first match would be a guess.
    - The Explore exporter cannot re-observe a recorded trajectory, so when a
      proof observation was truncated it records the weakness in the step intent
      ("Weak proof: the proof observation was truncated at the driver node

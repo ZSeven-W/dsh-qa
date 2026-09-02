@@ -1,5 +1,28 @@
-import { QA_INCONCLUSIVE_TRUNCATED } from '../contracts.ts';
+import { QA_INCONCLUSIVE_TRUNCATED, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
 import type { QaObservation, QaObserveOptions, QaSemanticNode } from '../session/adapter.ts';
+
+/**
+ * Distinct refusal codes for a node-value assertion matched against a node the
+ * driver FLAGGED: a withheld (secret), secure, or truncated value can never
+ * satisfy node-value, even when a leaked value field happens to carry the
+ * expected string (defense in depth for hand-written scenarios; export already
+ * refuses to synthesize such assertions).
+ */
+export const QA_VALUE_WITHHELD = 'VALUE_WITHHELD';
+export const QA_VALUE_SECURE = 'VALUE_SECURE';
+export const QA_VALUE_TRUNCATED = 'VALUE_TRUNCATED';
+
+/** The refusal code for a flagged node, in severity order. */
+function valueFlagReason(node: QaSemanticNode): string {
+  if (node.valueWithheld === true) return QA_VALUE_WITHHELD;
+  if (node.secure === true) return QA_VALUE_SECURE;
+  return QA_VALUE_TRUNCATED;
+}
+
+/** True when the driver flagged the node's value as never assertable. */
+function isFlaggedValueNode(node: QaSemanticNode): boolean {
+  return node.valueWithheld === true || node.secure === true || node.valueTruncated === true;
+}
 import type {
   QaAssertion,
   QaAssertionKind,
@@ -20,9 +43,26 @@ export function toObservedNode(node: QaSemanticNode): QaObservedNode {
   return { role: node.role, name: node.name, tag: node.tag };
 }
 
-/** Projection of a node whose observable value was asserted, for report/triage. */
-function toObservedValueNode(node: QaSemanticNode): QaObservedNode & { value: string | null } {
-  return { role: node.role, name: node.name, tag: node.tag, value: node.value ?? null };
+/**
+ * Projection of a node whose observable value was asserted, for report/triage.
+ * The driver flags travel alongside the value so a human reading a refusal can
+ * tell WHY the value never satisfied the assertion.
+ */
+function toObservedValueNode(node: QaSemanticNode): QaObservedNode & {
+  value: string | null;
+  valueWithheld?: true;
+  secure?: true;
+  valueTruncated?: true;
+} {
+  return {
+    role: node.role,
+    name: node.name,
+    tag: node.tag,
+    value: node.value ?? null,
+    ...(node.valueWithheld === true ? { valueWithheld: true as const } : {}),
+    ...(node.secure === true ? { secure: true as const } : {}),
+    ...(node.valueTruncated === true ? { valueTruncated: true as const } : {}),
+  };
 }
 
 /**
@@ -54,6 +94,12 @@ export interface AssertionEval {
    * evidence in an incomplete view is not evidence of absence.
    */
   inconclusive: boolean;
+  /**
+   * Stable machine code when the assertion was refused for a structural reason
+   * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED, ...)
+   * rather than an ordinary value mismatch. Undefined for ordinary outcomes.
+   */
+  reason?: string;
 }
 
 /** A bounded re-observation at a raised node budget (may reject; never loops). */
@@ -66,6 +112,12 @@ export interface QaAssertionDecision {
   observation: QaObservation;
   /** Present only when truncation touched the decision (report/triage context). */
   completeness: QaViewCompleteness | null;
+  /**
+   * Stable machine code when the assertion was refused for a structural reason
+   * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED, ...)
+   * rather than an ordinary value mismatch. ADDITIVE: ordinary outcomes omit it.
+   */
+  reason?: string;
 }
 
 /**
@@ -106,14 +158,43 @@ export function evaluateAssertion(assertion: QaAssertion, observation: QaObserva
   }
   if (kind === 'node-value') {
     const expectation = assertion.expected as QaNodePredicate & { value: string };
+    // Unlike node-present, node-value must identify EXACTLY ONE node: the
+    // assertion claims a specific recorded node carries the value, and with
+    // several same-named nodes a twin that already holds the value proves
+    // nothing about the recorded target (the same uniqueness export demands,
+    // re-checked here and in resolveRef). More than one predicate match fails
+    // closed instead of passing on whichever twin happens to hold the value.
+    const predicateMatches = observation.nodes.filter((node) => matchesNode(node, expectation));
+    if (predicateMatches.length > 1) {
+      return {
+        passed: false,
+        observed: predicateMatches.map(toObservedValueNode),
+        inconclusive: false,
+        reason: QA_TARGET_NOT_UNIQUE,
+      };
+    }
     // Presence of the value is exactly as sound as presence of the node: a
     // returned node really does carry the value the driver reported for it.
     // NOT finding it in a truncated view is unproven, never "absent".
-    const matches = observation.nodes.filter(
+    const match = observation.nodes.find(
       (node) => matchesNode(node, expectation) && node.value === expectation.value,
     );
-    const found = matches.length > 0;
-    return { passed: found, observed: matches.map(toObservedValueNode), inconclusive: !found && observation.truncated };
+    if (match !== undefined && isFlaggedValueNode(match)) {
+      // A withheld/secure/truncated control can never satisfy node-value, even
+      // when a leaked value field happens to carry the expected string.
+      return {
+        passed: false,
+        observed: [toObservedValueNode(match)],
+        inconclusive: false,
+        reason: valueFlagReason(match),
+      };
+    }
+    const found = match !== undefined;
+    return {
+      passed: found,
+      observed: match === undefined ? [] : [toObservedValueNode(match)],
+      inconclusive: !found && observation.truncated,
+    };
   }
   const expected = assertion.expected as { url?: string; contains?: string };
   const actual = observation.page.url;
@@ -201,7 +282,13 @@ export async function decideAssertion(
   const first = evaluateAssertion(assertion, observation);
   if (!observation.truncated) {
     // A complete view decides everything on its own; nothing to escalate or report.
-    return { passed: first.passed, observed: first.observed, observation, completeness: null };
+    return {
+      passed: first.passed,
+      observed: first.observed,
+      observation,
+      completeness: null,
+      ...(first.reason === undefined ? {} : { reason: first.reason }),
+    };
   }
 
   let deciding = observation;
@@ -237,7 +324,13 @@ export async function decideAssertion(
       escalationFailed,
     ),
   };
-  return { passed: evaluation.passed, observed: evaluation.observed, observation: deciding, completeness };
+  return {
+    passed: evaluation.passed,
+    observed: evaluation.observed,
+    observation: deciding,
+    completeness,
+    ...(evaluation.reason === undefined ? {} : { reason: evaluation.reason }),
+  };
 }
 
 /** Minimal settled-observation surface decideAssertion escalates through. */

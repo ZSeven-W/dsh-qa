@@ -600,7 +600,10 @@ artifact must mark it as model narration rather than observation:
    narration block is unverified. Each finding renders its reasoning under
    `model narration (unverified; may contain fabricated detail):` as a
    blockquote, one `> ` prefix per line, so it is visually distinct from the
-   observed, deterministic facts above it.
+   observed, deterministic facts above it. The per-line Markdown/HTML
+   escaping of §7.4 is applied to each narration line BEFORE the `> ` prefix
+   (on the already-redacted text), so a narration cannot smuggle HTML or a
+   link inside the quote either.
 3. **Redaction is unchanged.** `question`, `reasoning`, and `reason` remain
    ordinary free-text leaves: they pass through the normal engine (R1–R4, R3
    enabled) in every artifact, exactly like before. The blockquote prefix is
@@ -636,14 +639,31 @@ Concretely:
    artifact paths) are wrapped in a backtick fence one backtick longer than the
    longest run of backticks inside, so an embedded backtick can never close the
    span early.
+5. **HTML.** `&` is entity-escaped first, then `<` and `>` become `&lt;` /
+   `&gt;`, so page/model-controlled text can never emit a live HTML element
+   (`<br>`, `<details>`, `<img onerror>`, `<script>`, `<iframe>`) when
+   `report.md` is rendered as HTML, and a page-controlled `&lt;` cannot smuggle
+   a raw `<` past the pass. The `javascript:` URI scheme is neutralized
+   (`javascript:alert(1)` has no `//`, so R1 URL redaction leaves it) so it can
+   never read as a URL even as inert text.
+6. **Link syntax.** `[` and `]` are backslash-escaped, and a `](` pair gets the
+   backslash BETWEEN the brackets, so a link label can never open and a
+   destination can never attach — page text can never form a link, and the two
+   characters `]` and `(` can never be adjacent in the output. The engine's OWN
+   trusted redaction markers are then restored (`[REDACTED]`,
+   `[REDACTED_URL]`) so reports stay human-readable — but only when the marker
+   is not directly followed by `(`, so a restored marker can never become a
+   link label. Machine codes stay verbatim: underscores are never escaped
+   (`INCONCLUSIVE_TRUNCATED`), and plain words like `qa_observe` / `max_nodes`
+   are untouched.
 
 **Ordering invariant.** Redaction runs FIRST, then lone-surrogate escaping, then
 Markdown escaping — never the other way around. Escaping a control character
 before redaction could split a secret token the redactor needs to see whole;
 this is locked by a test (a secret embedded next to a newline is still
-redacted). The advisory-narration blockquote (§7.3) keeps its per-line `> `
-prefix on the already-redacted text, so a multi-line narration cannot break out
-of the quote.
+redacted). The advisory-narration blockquote (§7.3) applies the same escaping
+per line, then its `> ` prefix, on the already-redacted text, so a multi-line
+narration cannot break out of the quote.
 
 **Source hardening.** `intentFor` / the exported step intent in
 `src/explore/export.ts` additionally normalizes line terminators to `⏎` at

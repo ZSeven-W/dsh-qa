@@ -74,6 +74,13 @@ function collapseLineTerminators(text: string): string {
  * page-/model-/scenario-controlled string: redaction runs FIRST (so escaping
  * can never split a secret token the redactor would otherwise miss), and this
  * pass runs on the redacted text only.
+ *
+ * Beyond the Markdown delimiters it also closes the two HTML-side breaks:
+ * raw HTML tags (<br>, <details>, <img onerror>, <script>, <iframe> — a GFM
+ * renderer would emit them as live elements) are entity-escaped, and link
+ * syntax ([...](...)) is neutralized so a javascript: destination can never be
+ * formed. Machine codes stay verbatim on purpose: nothing here escapes
+ * underscores (INCONCLUSIVE_TRUNCATED) or plain words (qa_observe, max_nodes).
  */
 function escapeMarkdownInline(text: string): string {
   let out = collapseLineTerminators(text);
@@ -88,6 +95,28 @@ function escapeMarkdownInline(text: string): string {
   out = out.replace(/^(\s*)([-+])(?=\s|$)/u, '$1\\$2');
   out = out.replace(/^(\s*)(#{1,6})(?=\s|$)/u, '$1\\$2');
   out = out.replace(/^(\s*)(\d+)([.)])(?=\s|$)/u, '$1$2\\$3');
+  // HTML: ampersand FIRST (so the entities emitted below are never
+  // double-escaped, and a page-controlled "&lt;" cannot smuggle a raw "<" past
+  // this pass), then the angle brackets themselves.
+  out = out.replace(/&/gu, '&amp;');
+  out = out.replace(/</gu, '&lt;');
+  out = out.replace(/>/gu, '&gt;');
+  // Dangerous URI scheme: "javascript:alert(1)" has no "//" so R1 URL
+  // redaction leaves it in the text. Even inert text must not read as a URL.
+  out = out.replace(/javascript:/giu, 'javascript&#58;');
+  // Link syntax: an escaped "[" can never open a link label, and the "]("
+  // pair — the only place a destination can attach — gets a backslash BETWEEN
+  // the brackets so the two characters can never be adjacent again. Plain
+  // parentheses elsewhere are left alone (they are inert text).
+  out = out.replace(/\]\(/gu, ']\\(');
+  out = out.replace(/\[/gu, '\\[');
+  out = out.replace(/\]/gu, '\\]');
+  // Our OWN redaction markers are trusted output: restore them so a human
+  // still reads [REDACTED] / [REDACTED_URL] — but never when the marker is
+  // directly followed by "(" (a page-controlled paren would turn the restored
+  // marker into a link label; the escaped form renders identically and cannot).
+  out = out.replace(/\\\[REDACTED\\\](?!\()/gu, '[REDACTED]');
+  out = out.replace(/\\\[REDACTED_URL\\\](?!\()/gu, '[REDACTED_URL]');
   return out;
 }
 
@@ -146,6 +175,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     lines.push('  - outcome: ' + mdInline(step.outcome));
     lines.push('  - assertion: ' + mdInline(step.assertion.kind) + ' -> ' + (step.assertionPassed ? 'PASS' : 'FAIL'));
     lines.push('  - observed: ' + mdCode(inline(step.observed, roots)));
+    if (step.reason !== undefined) {
+      lines.push('  - reason: ' + mdInline(step.reason));
+    }
     if (step.completeness !== undefined) {
       lines.push('  - view completeness: ' + mdInline(completenessLine(step.completeness)));
     }
@@ -158,6 +190,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
       '- ' + mdInline(assertion.kind) + ' -> ' + (assertion.passed ? 'PASS' : 'FAIL') +
       ' (observed: ' + mdCode(inline(assertion.observed, roots)) + ')',
     );
+    if (assertion.reason !== undefined) {
+      lines.push('  - reason: ' + mdInline(assertion.reason));
+    }
     if (assertion.completeness !== undefined) {
       lines.push('  - view completeness: ' + mdInline(completenessLine(assertion.completeness)));
     }
@@ -186,10 +221,11 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
       }
       lines.push('  - model narration (unverified; may contain fabricated detail):');
       const narration = redact(item.reasoning);
-      // Redaction runs first (redact), then the blockquote prefix is applied per
-      // line so a multi-line narration cannot break out of the quote.
+      // Redaction runs first (redact), then Markdown/HTML escaping, then the
+      // blockquote prefix is applied per line so a multi-line narration cannot
+      // break out of the quote and cannot smuggle HTML or a link inside it.
       for (const line of narration === '' ? ['(none)'] : narration.split('\n')) {
-        lines.push('    > ' + line);
+        lines.push('    > ' + escapeMarkdownInline(line));
       }
       if (item.reason !== undefined) lines.push('  - reason: ' + mdInline(item.reason));
       if (item.artifact !== undefined) {
@@ -203,6 +239,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     lines.push('## Failure');
     lines.push('- step: ' + (report.failure.stepIndex === null ? 'final assertion' : String(report.failure.stepIndex)));
     lines.push('- message: ' + mdInline(report.failure.message));
+    if (report.failure.code !== undefined) {
+      lines.push('- code: ' + mdInline(report.failure.code));
+    }
     lines.push('- reproduction: ' + String(report.failure.reproduction.length) + ' step(s)');
   }
   if (report.evidence !== null) {

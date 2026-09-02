@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_TRUNCATED, QA_NO_CONFIRMED_RECEIPTS_WARNING } from '../contracts.ts';
+import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_TRUNCATED, QA_INCONCLUSIVE_UNSTABLE, QA_NO_CONFIRMED_RECEIPTS_WARNING, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
 import type {
   QaAdvisoryResult,
   QaArtifact,
@@ -54,12 +54,53 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Error carrying a machine failure code into QaRunFailure.code. */
+class QaCodeError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'QaCodeError';
+    this.code = code;
+  }
+}
+
+/** The failure code an error carries, when it carries one. */
+function failureCodeFor(error: unknown): string | undefined {
+  return error instanceof QaCodeError ? error.code : undefined;
+}
+
+/** Human-readable spelling of an action-target predicate, for failure messages. */
+function describeTarget(target: QaNodePredicate): string {
+  const parts: string[] = [];
+  if (target.role !== undefined) parts.push('role "' + target.role + '"');
+  if (target.name !== undefined) parts.push('name "' + target.name + '"');
+  if (target.tag !== undefined) parts.push('tag "' + target.tag + '"');
+  return parts.length === 0 ? 'no fields' : parts.join(', ');
+}
+
 function resolveRef(target: QaNodePredicate, observation: QaObservation): string {
-  const node = observation.nodes.find((n) => matchesNode(n, target));
-  if (node === undefined) {
+  const matches = observation.nodes.filter((node) => matchesNode(node, target));
+  if (matches.length === 0) {
     throw new Error('no observable node matches the action target');
   }
-  return node.ref;
+  if (matches.length > 1) {
+    // Export refuses a non-unique (role, name) target; replay re-checks the
+    // same uniqueness before dispatching. Acting on the FIRST of several
+    // same-named nodes would be a guess — a twin that already holds the
+    // recorded value would turn the step's node-value into a false green
+    // while the recorded target stays empty. Fail closed instead.
+    const first = matches[0];
+    if (first === undefined) throw new Error('no observable node matches the action target');
+    throw new QaCodeError(
+      QA_TARGET_NOT_UNIQUE,
+      QA_TARGET_NOT_UNIQUE + ': ' + String(matches.length) + ' nodes match the action target ('
+      + describeTarget(target) + '); the recorded target is not uniquely identifiable, so no action was dispatched',
+    );
+  }
+  const only = matches[0];
+  if (only === undefined) throw new Error('no observable node matches the action target');
+  return only.ref;
 }
 
 /** The semantic target an action resolves to a ref, or null when it needs none. */
@@ -149,6 +190,7 @@ function buildStepResult(
   assertionPassed: boolean,
   observed: unknown,
   completeness: QaViewCompleteness | null = null,
+  reason?: string,
 ): QaStepResult {
   return {
     index: base.index,
@@ -162,6 +204,7 @@ function buildStepResult(
     observed,
     expected: assertion.expected,
     ...(completeness === null ? {} : { completeness }),
+    ...(reason === undefined ? {} : { reason }),
   };
 }
 
@@ -175,6 +218,9 @@ function assertionFailureMessage(what: string, decision: QaAssertionDecision): s
   const completeness = decision.completeness;
   if (completeness?.reason === QA_INCONCLUSIVE_TRUNCATED) {
     return what + ' is ' + QA_INCONCLUSIVE_TRUNCATED + ': ' + completeness.detail;
+  }
+  if (decision.reason !== undefined) {
+    return what + ' failed (' + decision.reason + ')';
   }
   return what + ' failed';
 }
@@ -358,7 +404,12 @@ export async function runScenario(
     const initial = await session.observeSettled();
     let current = initial.observation;
     if (!initial.stable) {
-      failure = { stepIndex: null, message: unsettledMessage('initial', initial.budgetMs), reproduction: [] };
+      failure = {
+        stepIndex: null,
+        message: unsettledMessage('initial', initial.budgetMs),
+        code: QA_INCONCLUSIVE_UNSTABLE,
+        reproduction: [],
+      };
     }
 
     for (const step of scenario.steps) {
@@ -373,9 +424,11 @@ export async function runScenario(
         current = resolution.observation;
       } catch (error) {
         stepResults.push(buildStepResult(base, step.assert, null, 'failed', false, null));
+        const code = failureCodeFor(error);
         failure = {
           stepIndex: step.index,
           message: errorMessage(error),
+          ...(code === undefined ? {} : { code }),
           reproduction: toReproduction(stepResults),
         };
         break;
@@ -414,6 +467,7 @@ export async function runScenario(
         failure = {
           stepIndex: step.index,
           message: unsettledMessage('post-action', result.settle.budgetMs),
+          code: QA_INCONCLUSIVE_UNSTABLE,
           reproduction: toReproduction(stepResults),
         };
         break;
@@ -432,6 +486,7 @@ export async function runScenario(
           decision.passed,
           decision.observed,
           decision.completeness,
+          decision.reason,
         ),
       );
       current = decision.observation;
@@ -455,6 +510,7 @@ export async function runScenario(
         failure = {
           stepIndex: null,
           message: unsettledMessage('final', finalSettle.budgetMs),
+          code: QA_INCONCLUSIVE_UNSTABLE,
           reproduction: toReproduction(stepResults),
         };
       }
@@ -469,6 +525,7 @@ export async function runScenario(
           expected: assertion.expected,
           observed: decision.observed,
           ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
+          ...(decision.reason === undefined ? {} : { reason: decision.reason }),
         });
         finalObservation = decision.observation;
         if (!decision.passed) {

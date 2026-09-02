@@ -484,9 +484,13 @@ test('multi-line advisory narration stays inside the blockquote and cannot forge
     ],
   })
   assert.match(md, /^    > first line$/m)
-  assert.match(md, /^    > ## Failure$/m, 'every narration line keeps the quote prefix')
-  assert.match(md, /^    > - message: fabricated$/m)
+  // Every narration line keeps the quote prefix AND its content is Markdown/HTML
+  // escaped (leading markers neutralized), so a narration cannot even forge a
+  // QUOTED heading or bullet — structure stays impossible, quoted or not.
+  assert.match(md, /^    > \\## Failure$/m, 'every narration line keeps the quote prefix')
+  assert.match(md, /^    > \\- message: fabricated$/m)
   assert.doesNotMatch(md, /^## Failure$/m, 'narration can never forge a report section')
+  assert.doesNotMatch(md, /^    > ## Failure$/m, 'narration can never forge even a quoted heading')
   assert.match(md, /^    > \(none\)$/m, 'empty narration renders explicitly')
 })
 

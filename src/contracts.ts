@@ -217,6 +217,23 @@ export const QA_INCONCLUSIVE_UNSTABLE = 'INCONCLUSIVE_UNSTABLE';
 export type QaInconclusiveCode = typeof QA_INCONCLUSIVE_TRUNCATED | typeof QA_INCONCLUSIVE_UNSTABLE;
 
 /**
+ * Stable reason code for a REPLAY action target that matches more than one
+ * observable node. Export already refuses to write such a scenario
+ * (TARGET_NOT_UNIQUE exclusion); replay re-checks the same uniqueness before
+ * dispatching, because acting on the FIRST of several same-named nodes would
+ * be a guess, and a twin that already holds the recorded value would turn a
+ * node-value assertion into a false green. Same vocabulary as export.
+ */
+export const QA_TARGET_NOT_UNIQUE = 'TARGET_NOT_UNIQUE';
+
+/** Machine codes a run failure may carry (QaRunFailure.code); open for future codes. */
+export type QaFailureCode =
+  | typeof QA_INCONCLUSIVE_UNSTABLE
+  | typeof QA_INCONCLUSIVE_TRUNCATED
+  | typeof QA_TARGET_NOT_UNIQUE
+  | (string & {});
+
+/**
  * Completeness context of the view an assertion was decided against.
  *
  * This is an ADDITIVE field (schemaVersion stays 1) and is present ONLY when
@@ -259,6 +276,12 @@ export interface QaStepResult {
   expected: unknown;
   /** Completeness of the deciding view; present only when truncation touched the decision. */
   completeness?: QaViewCompleteness;
+  /**
+   * Stable machine code when the assertion was refused for a structural reason
+   * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED, ...)
+   * rather than an ordinary value mismatch. ADDITIVE: schemaVersion stays 1.
+   */
+  reason?: string;
 }
 
 export interface QaAssertionResult {
@@ -269,6 +292,12 @@ export interface QaAssertionResult {
   observed: unknown;
   /** Completeness of the deciding view; present only when truncation touched the decision. */
   completeness?: QaViewCompleteness;
+  /**
+   * Stable machine code when the assertion was refused for a structural reason
+   * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED, ...)
+   * rather than an ordinary value mismatch. ADDITIVE: schemaVersion stays 1.
+   */
+  reason?: string;
 }
 
 export interface QaReproductionStep {
@@ -284,6 +313,13 @@ export interface QaRunFailure {
   /** 1-based failing step index, or null when a final assertion failed. */
   stepIndex: number | null;
   message: string;
+  /**
+   * Stable machine code when the failure is a recognized non-result or
+   * structural refusal (INCONCLUSIVE_UNSTABLE, INCONCLUSIVE_TRUNCATED,
+   * TARGET_NOT_UNIQUE, ...) instead of an ordinary assertion failure.
+   * ADDITIVE: schemaVersion stays 1; ordinary failures omit it.
+   */
+  code?: QaFailureCode;
   reproduction: QaReproductionStep[];
 }
 
