@@ -59,6 +59,7 @@ function fakeDriver(overrides = {}) {
     async visualObserve() { throw new Error('not exercised by adapter unit tests') },
     async evidence(context, options) {
       calls.push(['evidence', context, options])
+      if (overrides.evidence) return overrides.evidence(context, options)
       return {
         contractVersion: 2, scope: 'sc',
         status: { platform: 'macos', helper: 'ready', accessibilityTrusted: true, screenRecordingTrusted: true, sessionLocked: false, interactiveSessionAvailable: true, helperVersion: '0.1.0-rc.1', helperExecutable: '/x', identityStable: false, detail: 'ok' },
@@ -195,5 +196,74 @@ test('computer adapter passes scroll through and rejects select/hover with a dri
   // Browser-only scroll shapes (ref-only or direction-only) are rejected, never silently dropped.
   await assert.rejects(adapter.act('a', { kind: 'scroll', ref: 'r1' }), /computer driver.*ref/)
   await assert.rejects(adapter.act('a', { kind: 'scroll', direction: 'down' }), /computer driver.*ref/)
+})
+// ---- computer contract v4: structured rejection codes + honest receipt counters ----
+
+// Every reason string below is copied VERBATIM from @zseven-w/dsh-computer's
+// src/controller.ts (and, for session_locked, the native helper's message) so
+// these tests fail the moment the driver rewords a reason and the adapter's
+// structured-code mapping silently stops matching.
+const REASON_CASES = [
+  // controller.ts:933 (evicted by the bounded-ring memory ceiling, not TTL)
+  {
+    reason: 'OBSERVATION_EVICTED: observation was evicted by driver memory bounds before its ref expired; run computer_observe again',
+    code: 'OBSERVATION_EVICTED',
+  },
+  // controller.ts:1027 (TTL-first eviction on the approval path)
+  { reason: 'observation expired before action dispatch; run computer_observe again', code: 'STALE_OBSERVATION' },
+  // controller.ts:943 (TTL-first eviction on the ordinary path)
+  { reason: 'stale observation; run computer_observe again', code: 'STALE_OBSERVATION' },
+  // controller.ts:561 + native main.swift:312-313 ("macOS interactive desktop session is locked or unavailable")
+  { reason: 'session_locked: macOS interactive desktop session is locked or unavailable', code: 'SESSION_LOCKED' },
+  // controller.ts:935 (genuine unknown ref, distinct from OBSERVATION_EVICTED)
+  { reason: 'unknown reference in this Agent scope; run computer_observe again', code: 'UNKNOWN_REF' },
+]
+
+test('receiptCode keeps a structured code for the driver v4 rejection reasons', async () => {
+  for (const { reason, code } of REASON_CASES) {
+    const { driver } = fakeDriver({
+      act: () => receipt({ status: 'rejected', action: 'click', ref: 'r1', reason, nativeAccepted: false }),
+    })
+    const adapter = new ComputerAdapter(driver)
+    await adapter.start('a', { bundleId: APP.bundleId })
+    const result = await adapter.act('a', { kind: 'click', ref: 'r1' })
+    assert.equal(result.status, 'rejected')
+    assert.equal(result.code, code, 'reason ' + JSON.stringify(reason) + ' must map to ' + code)
+    assert.equal(result.dispatched, false)
+  }
+})
+
+test('evidence exposes the v4 per-receipt counters sourced from the driver', async () => {
+  const { driver } = fakeDriver({
+    evidence: async () => ({
+      contractVersion: 4, scope: 'sc',
+      status: { platform: 'macos', helper: 'ready', accessibilityTrusted: true, screenRecordingTrusted: true, sessionLocked: false, interactiveSessionAvailable: true, helperVersion: '0.1.0-rc.1', helperExecutable: '/x', identityStable: false, detail: 'ok' },
+      activeObservations: 0, activeNativeRequests: 0, receipts: [],
+      receipts_total: 7, receipts_dropped: 2, receipts_returned: 5, bounded: true,
+    }),
+  })
+  const adapter = new ComputerAdapter(driver)
+  await adapter.start('a', { bundleId: APP.bundleId })
+  const evidence = await adapter.evidence('a')
+  assert.equal(evidence.computer.receiptsTotal, 7)
+  assert.equal(evidence.computer.receiptsDropped, 2)
+  assert.equal(evidence.computer.receiptsReturned, 5)
+  assert.equal(evidence.computer.receiptsBounded, true)
+  assert.equal(evidence.computer.receiptsCountersUnavailableReason, undefined)
+  // No fabricated browser console/network dropped counter for the computer driver.
+  assert.equal(evidence.dropped, undefined)
+})
+
+test('pre-v4 evidence marks the receipt counters as unknown, never zero', async () => {
+  // The default fakeDriver evidence is contract v2 and has no per-receipt counters.
+  const { driver } = fakeDriver()
+  const adapter = new ComputerAdapter(driver)
+  await adapter.start('a', { bundleId: APP.bundleId })
+  const evidence = await adapter.evidence('a')
+  assert.equal(evidence.computer.receiptsTotal, null)
+  assert.equal(evidence.computer.receiptsDropped, null)
+  assert.equal(evidence.computer.receiptsReturned, null)
+  assert.equal(evidence.computer.receiptsBounded, null)
+  assert.match(evidence.computer.receiptsCountersUnavailableReason, /older than v4/)
 })
 

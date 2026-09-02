@@ -62,7 +62,9 @@ const EDITABLE_ROLES = new Set(['AXTextField', 'AXTextArea', 'AXSearchField']);
 
 function receiptCode(receipt: ComputerActionReceipt): string | undefined {
   // The computer receipt has no structured code field; derive the stable
-  // safety code from the driver's reason where it is deterministic.
+  // safety code from the driver's reason where it is deterministic. Every
+  // reason string below is matched verbatim against dsh-computer's
+  // src/controller.ts (see the line citations in computer-adapter.test.mjs).
   if (receipt.reason.includes('secure text entry')) return 'secure-text';
   if (receipt.reason.includes('host approval')) return 'APPROVAL_REQUIRED';
   if (receipt.reason.includes('approval was not granted')
@@ -70,8 +72,20 @@ function receiptCode(receipt: ComputerActionReceipt): string | undefined {
     || receipt.reason.includes('approval cancelled')) {
     return 'APPROVAL_REQUIRED';
   }
+  // v4: the bounded observation ring can evict a still-TTL-valid observation
+  // (memory ceiling); the driver reports it with a distinct structured code
+  // instead of a false "unknown reference". Preserve that code verbatim.
+  if (receipt.reason.includes('OBSERVATION_EVICTED')) return 'OBSERVATION_EVICTED';
   if (receipt.status === 'rejected' && receipt.reason.includes('unknown reference')) return 'UNKNOWN_REF';
+  // TTL-first eviction: both the generic "stale observation" and the
+  // approval-path "observation expired before action dispatch" spelling are
+  // the SAME expiry condition and must keep their structured code.
   if (receipt.reason.includes('stale')) return 'STALE_OBSERVATION';
+  if (receipt.reason.includes('observation expired before action dispatch')) return 'STALE_OBSERVATION';
+  // A locked (or otherwise unavailable) interactive desktop session fails the
+  // preflight and surfaces as "<code>: <message>"; the structured code must
+  // survive instead of collapsing to prose.
+  if (receipt.reason.includes('session_locked')) return 'SESSION_LOCKED';
   if (receipt.reason.includes('live application identity changed')
     || receipt.reason.includes('live window identity changed')
     || receipt.reason.includes('live target identity changed')
@@ -185,11 +199,26 @@ export class ComputerAdapter implements QaDriverAdapter {
       { scopeId: ownerId },
       options?.maxReceipts === undefined ? {} : { limit: options.maxReceipts },
     );
+    // Honest receipt accounting, never fabricated zeros. The computer driver
+    // has NO console/network buffers, so `dropped` is omitted (it is a
+    // browser-only field). Whether receipts were evicted from the bounded
+    // ring is told by the v4 per-receipt counters, which older drivers do not
+    // expose: then the counters are null and the reason says so, so a reader
+    // can tell "did not look" from "looked and found none".
+    const raw = evidence as ComputerEvidence & {
+      receipts_total?: number;
+      receipts_dropped?: number;
+      receipts_returned?: number;
+      bounded?: boolean;
+    };
+    const hasReceiptCounters =
+      typeof raw.receipts_total === 'number'
+      && typeof raw.receipts_dropped === 'number'
+      && typeof raw.receipts_returned === 'number';
     return {
       console: [],
       network: [],
       bounded: true,
-      dropped: { console: 0, network: 0 },
       computer: {
         contractVersion: evidence.contractVersion,
         scope: evidence.scope,
@@ -197,6 +226,21 @@ export class ComputerAdapter implements QaDriverAdapter {
         activeObservations: evidence.activeObservations,
         activeNativeRequests: evidence.activeNativeRequests,
         receipts: evidence.receipts,
+        ...(hasReceiptCounters
+          ? {
+              receiptsTotal: raw.receipts_total,
+              receiptsDropped: raw.receipts_dropped,
+              receiptsReturned: raw.receipts_returned,
+              receiptsBounded: raw.bounded === true,
+            }
+          : {
+              receiptsTotal: null,
+              receiptsDropped: null,
+              receiptsReturned: null,
+              receiptsBounded: null,
+              receiptsCountersUnavailableReason:
+                'the computer driver contract is older than v4 and does not expose per-receipt counters; receipt truncation is unknown',
+            }),
       } satisfies QaComputerEvidence,
     };
   }

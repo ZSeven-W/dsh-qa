@@ -83,6 +83,20 @@ export interface QaComputerEvidence {
   activeObservations: number;
   activeNativeRequests: number;
   receipts: unknown[];
+  /**
+   * v4+: receipts ever recorded in this scope (monotonically increasing).
+   * null when the driver contract is older than v4 and does not expose the
+   * counter, so a reader can tell "did not look" from "looked and absent".
+   */
+  receiptsTotal: number | null;
+  /** v4+: receipts evicted from the bounded ring because it exceeded its cap. */
+  receiptsDropped: number | null;
+  /** v4+: receipts actually present in `receipts` (bounded by the requested limit). */
+  receiptsReturned: number | null;
+  /** v4+: whether the receipt ring is bounded. null pre-v4. */
+  receiptsBounded: boolean | null;
+  /** Present only when the v4 counters are unavailable (pre-v4 driver). */
+  receiptsCountersUnavailableReason?: string;
 }
 
 export interface QaObservation {
@@ -110,7 +124,8 @@ export interface QaEvidence {
   /** Driver-native, already-redacted network records. */
   network: unknown[];
   bounded: boolean;
-  dropped: { console: number; network: number };
+  /** Browser-only: records dropped when the bounded console/network buffer exceeded its cap. */
+  dropped?: { console: number; network: number };
   /** Computer-only: full driver-native evidence (helper status + receipts). */
   computer?: QaComputerEvidence;
 }

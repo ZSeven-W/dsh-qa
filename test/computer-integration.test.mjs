@@ -103,8 +103,10 @@ function assertHelperReady(status) {
 // Transient Accessibility-tree settling after launch can reject an action with
 // a stale/fingerprint/identity reason; the driver's own remedy is to observe
 // again. We retry ONLY those transient reasons and never a safety rejection
-// (secure-text, approval).
-const STALE_RE = /fingerprint changed|identity changed|stale|unknown reference|observe again|consumed by another action/i
+// (secure-text, approval). 'unknown reference' is deliberately NOT retried:
+// with the driver's TTL-first eviction a ref that is gone is gone (expired or
+// evicted), and treating it as transient would hide a real dispatch failure.
+const STALE_RE = /fingerprint changed|identity changed|stale|consumed by another action/i
 
 async function actStable(session, resolveAction, gate) {
   let last = null
@@ -143,6 +145,19 @@ test('computer native acceptance flow', { timeout: 600_000 }, async () => {
     // ---- helper preflight: permissions must be REAL, never assumed ------
     const preflight = await adapter.evidence(OWNER)
     assertHelperReady(preflight.computer.status)
+    // Report which driver contract we actually ran against, and only assert
+    // the v4 receipt counters when the installed driver exposes them: a
+    // pre-v4 helper is reported and its v4-only assertions skipped, never
+    // made to fail.
+    const driverContract = driver.contractVersion ?? preflight.computer.contractVersion
+    console.log('[computer-integration] running against dsh-computer contract v' + driverContract)
+    if (driverContract < 4) {
+      console.log('[computer-integration] SKIP v4 receipt-counter assertions: contract v' + driverContract + ' is older than v4')
+    } else {
+      assert.equal(typeof preflight.computer.receiptsTotal, 'number', 'v4 driver exposes receiptsTotal')
+      assert.equal(typeof preflight.computer.receiptsDropped, 'number', 'v4 driver exposes receiptsDropped')
+      assert.equal(typeof preflight.computer.receiptsReturned, 'number', 'v4 driver exposes receiptsReturned')
+    }
 
     pid = await launchFixture(appPath)
     await sleep(2000)
@@ -237,6 +252,15 @@ test('computer native acceptance flow', { timeout: 600_000 }, async () => {
     assert.equal(stop.stopped, true)
     const postStop = await adapter.evidence(OWNER)
     assert.equal(postStop.computer.activeObservations, 0, 'driver scope has no residual observations')
+    // TTL-first eviction means a gone ref is a real error, never a transient
+    // "unknown reference" retry: assert NO receipt in the whole flow carried it.
+    const unknownRefReceipts = postStop.computer.receipts.filter((r) => /unknown reference/.test(r.reason ?? ''))
+    assert.equal(
+      unknownRefReceipts.length,
+      0,
+      'no receipt may carry "unknown reference" (a real dispatch failure, not a transient retry): ' +
+        JSON.stringify(unknownRefReceipts.map((r) => r.reason)),
+    )
     await adapter.dispose()
 
     // Report the structured artifact so the run is readable via the path
