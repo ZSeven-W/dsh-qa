@@ -100,6 +100,37 @@ Both sides refuse an unsettled view:
 Nothing is widened to make an unstable page pass. An unstable page is honestly
 unprovable.
 
+## Explore tool surfaces fail closed too
+
+The live Explore tools enforce the SAME rule the runner does, instead of
+returning a false green on an unsettled view:
+
+* **`qa_assert`** — when the settle window closes with `stable: false` the
+  result is
+  `{ ok: true, passed: false, inconclusive: true, code: "INCONCLUSIVE_UNSTABLE", ... }`
+  with `observed: null` and a `reason` telling the agent to wait and re-observe.
+  `passed` is never `true` from an unstable view, and the decision is never even
+  evaluated against churn. `INCONCLUSIVE_UNSTABLE` is the same honest non-result
+  vocabulary as `INCONCLUSIVE_TRUNCATED` (that code means "the view was
+  truncated at its node budget", this one means "the view never stopped
+  changing inside the settle budget").
+* **`qa_act`** — a confirmed/unknown receipt still reports the dispatch honestly
+  (`outcome: "ok"` / `"unknown"`), but when the proof window never settled the
+  result ADDS `proven: false` and `code: "INCONCLUSIVE_UNSTABLE"`. The receipt
+  stays `confirmed` (the dispatch DID happen); what is unproven is the
+  CONSEQUENCE, because nothing in an unstable view is attributable to the action.
+* **visual (`qa_assert kind:"visual"` and Replay advisory)** — the capture's
+  settle window travels beside the verdict as
+  `settle: { stable, passes, budgetMs }`, and when `stable === false` the finding
+  also carries `captureSettled: false`, rendered next to the verdict in
+  report.md and report.json. Advisory semantics are unchanged (a visual finding
+  never changes pass/fail).
+
+All three surfaces reuse the one `INCONCLUSIVE_UNSTABLE` code, so an agent sees a
+single vocabulary: an unsettled result is a non-result — never a pass and never
+an ordinary failure — and the recovery is always the same (wait for the page to
+stop changing, then re-observe).
+
 ## Target-proximate evidence
 
 Among the semantic deltas in the settled proof observation, evidence on or near

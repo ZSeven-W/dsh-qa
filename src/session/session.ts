@@ -22,6 +22,7 @@ import {
   type QaSettlePolicy,
   type QaSettleResult,
 } from './settle.ts';
+import { QA_INCONCLUSIVE_UNSTABLE } from '../contracts.ts';
 import type { QaNodePredicate } from '../contracts.ts';
 
 /** Outcome the session core resolves for one act step. */
@@ -44,6 +45,17 @@ export interface QaActResult {
    * the observation proves nothing — callers must fail closed on it.
    */
   settle: QaSettleReport | null;
+  /**
+   * ADDITIVE, present exactly when the dispatch was confirmed/unknown but the
+   * proof settle window never stabilized (`settle.stable === false`). `false`
+   * means the CONSEQUENCE of the action is unproven: the receipt itself is
+   * still what it says (the dispatch DID happen), but nothing observed in the
+   * unstable view can be attributed to it. Absent (and therefore implicitly
+   * proven) when the window settled.
+   */
+  proven?: false;
+  /** Machine code carried beside `proven: false` (see QA_INCONCLUSIVE_UNSTABLE). */
+  code?: typeof QA_INCONCLUSIVE_UNSTABLE;
 }
 
 export interface QaSessionOptions {
@@ -214,6 +226,11 @@ export class QaSession {
         elapsedMs: settled.elapsedMs,
         budgetMs: settled.budgetMs,
       },
+      // A confirmed/unknown receipt still describes a dispatch, but an unstable
+      // proof window means the CONSEQUENCE is unproven: `outcome` stays honest
+      // about the dispatch ('ok'/'unknown') while `proven: false` + the code
+      // tell the caller nothing in the view can be attributed to the action.
+      ...(settled.stable ? {} : { proven: false as const, code: QA_INCONCLUSIVE_UNSTABLE }),
     };
   }
 
@@ -329,21 +346,38 @@ export class QaSessionManager {
  * silently break that pin, so the pinned request goes straight to the driver
  * and its staleness error surfaces verbatim.
  */
+export interface QaLatestVisual {
+  /** The captured visual frame. */
+  capture: QaVisualCapture;
+  /**
+   * Settle window the capture's observation was taken from; null when the
+   * caller pinned an exact observation (fingerprint / observationId), where no
+   * settle window ran. `stable === false` means the captured view never
+   * stabilized within the budget, so any verdict on it is over an unstable
+   * view — advisory and unproven.
+   */
+  settle: { stable: boolean; passes: number; budgetMs: number } | null;
+}
+
 export async function captureLatestVisual(
   session: QaSession,
   options?: QaVisualObserveOptions,
-): Promise<QaVisualCapture> {
+): Promise<QaLatestVisual> {
   const pinned = session.kind === 'computer'
     ? options?.observationId !== undefined
     : options?.fingerprint !== undefined;
-  if (pinned) return session.visualObserve(options);
-  const observation = (await session.observeSettled()).observation;
+  if (pinned) return { capture: await session.visualObserve(options), settle: null };
+  const settled = await session.observeSettled();
+  const observation = settled.observation;
+  const settle = { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs };
   if (session.kind === 'computer') {
     const observationId = observation.observationId;
     if (observationId === undefined) {
       throw new Error('computer visual capture requires an observation id from the latest observation');
     }
-    return session.visualObserve({ ...(options ?? {}), observationId });
+    const capture = await session.visualObserve({ ...(options ?? {}), observationId });
+    return { capture, settle };
   }
-  return session.visualObserve(options);
+  const capture = await session.visualObserve(options);
+  return { capture, settle };
 }

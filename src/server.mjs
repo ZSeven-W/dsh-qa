@@ -17,7 +17,7 @@ import { BrowserAdapter } from './adapters/browser.ts';
 import { ComputerAdapter } from './adapters/computer.ts';
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts';
 import { loadComputerDriver } from './adapters/loadComputer.ts';
-import { QA_ADVISORY_REASONING_TRUST } from './contracts.ts';
+import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_UNSTABLE } from './contracts.ts';
 import {
   exportRecordedScenario,
   QaTrajectoryRecorder,
@@ -48,6 +48,12 @@ const DEFAULT_OWNER = 'dsh-qa';
 
 function textResult(value) {
   return { content: [{ type: 'text', text: JSON.stringify(toLosslessJson(value)) }] };
+}
+
+/** Honest reason for an assertion decided against a view that never stabilized. */
+function unstableReason(budgetMs) {
+  return 'the observation never settled within the ' + String(budgetMs)
+    + 'ms settle budget, so nothing in it proves the assertion; wait for the page to stop changing, then re-observe';
 }
 
 // Lazily construct one session manager per driver. The sibling drivers are
@@ -100,13 +106,13 @@ function ownerFrom(args) {
 const MCP_CAPTURES_DIR = join(tmpdir(), 'dsh-qa-mcp-visual-captures');
 
 async function captureVisualMCP(session, options) {
-  const capture = await captureLatestVisual(session, options);
+  const { capture, settle } = await captureLatestVisual(session, options);
   const artifactPath = await persistCaptureFile(capture, MCP_CAPTURES_DIR);
-  return { capture, artifactPath };
+  return { capture, artifactPath, settle };
 }
 
 async function assertVisualMCP(owner, session, question) {
-  const { capture, artifactPath } = await captureVisualMCP(session);
+  const { capture, artifactPath, settle } = await captureVisualMCP(session);
   const finding = await evaluateVisualQuestion(question, capture, undefined);
   recorder.visualFinding(owner, {
     question,
@@ -126,13 +132,20 @@ async function assertVisualMCP(owner, session, question) {
     reasoningTrust: QA_ADVISORY_REASONING_TRUST,
     ...(finding.reason === undefined ? {} : { reason: finding.reason }),
     artifact: { path: artifactPath, kind: 'screenshot' },
+    // The capture's settle window travels beside the verdict (additive):
+    // stable === false means the view never stopped changing, so the advisory
+    // verdict is over an unstable view and is marked as such.
+    ...(settle === null ? {} : {
+      settle,
+      ...(settle.stable ? {} : { captureSettled: false }),
+    }),
   };
 }
 
 async function captureVisualEvidenceMCP(session, options) {
-  const { capture, artifactPath } = await captureVisualMCP(session, options);
+  const { capture, artifactPath, settle } = await captureVisualMCP(session, options);
   const info = toVisualCaptureInfo(capture);
-  return { ...info, artifactPath };
+  return { ...info, artifactPath, ...(settle === null ? {} : { settle }) };
 }
 
 function guard(handler) {
@@ -183,6 +196,7 @@ server.tool(
 
 server.tool(
   'qa_observe',
+  'Return a bounded semantic view of the current app/page, taken after a bounded settle (observe until consecutive semantic views agree). Interactive nodes carry opaque session-local refs; observe again after every action. The result carries settle.stable: when it is false the page never stopped changing inside the budget and nothing in that view proves anything — wait for the page to stop changing and re-observe.',
   {
     owner: z.string().optional(),
     max_nodes: z.number().int().optional(),
@@ -221,6 +235,7 @@ function scrollAmountFor(value, allowLine) {
 
 server.tool(
   'qa_act',
+  'Perform exactly one action. Browser verbs: click/fill/press/navigate/scroll/select/hover. Computer verbs: click/focus/type/key/scroll. scroll (browser) takes ref (scroll-into-view) or direction+amount (viewport page scroll); scroll (computer) takes ref+direction+amount; select takes ref+option; hover takes ref. click/fill/press/focus/type/key/select/hover require a ref from the latest qa_observe. The result is the receipt plus a fresh settled observation: when settle.stable is false the consequence is UNPROVEN — the result adds proven:false and code INCONCLUSIVE_UNSTABLE, the receipt still describes the dispatch honestly, and nothing in that unstable view is attributable to the action (wait for the page to stop changing, re-observe, then assert).',
   {
     owner: z.string().optional(),
     action: z.enum(['click', 'fill', 'press', 'navigate', 'focus', 'type', 'key', 'scroll', 'select', 'hover']),
@@ -348,6 +363,7 @@ server.tool(
 
 server.tool(
   'qa_assert',
+  'Evaluate one assertion against a fresh SETTLED observation (observe until consecutive semantic views agree, bounded by a budget; the result carries settle.stable). An assertion is NEVER proven from an unstable view: when settle.stable is false the result is passed:false with inconclusive:true and code INCONCLUSIVE_UNSTABLE (the same honest non-result vocabulary as INCONCLUSIVE_TRUNCATED) — wait for the page to stop changing, then re-observe. node-present/node-absent/node-in-viewport/page-url/node-value are deterministic. node-value matches a node by the usual predicate AND asserts its exact value (expected: { role?, name?, tag?, value }); it proves a fill/type by the value on its own target. kind "visual" takes its own fresh settled observation, captures the current screen from it, and asks the host vision model a question, so it works directly after qa_act or qa_evidence with no separate qa_observe. Its ADVISORY verdict (yes/no/unclear with confidence) never changes pass/fail: trust verdict and confidence, and treat the accompanying reasoning as unverified model narration (reasoningTrust "unverified-model-narration") that may contain fabricated detail and must never be quoted as observed fact. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
   {
     owner: z.string().optional(),
     kind: z.enum(['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value', 'visual']),
@@ -367,6 +383,22 @@ server.tool(
     // Fail-closed: validate the assertion shape before touching the session.
     const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert');
     const settled = await session.observeSettled();
+    if (!settled.stable) {
+      // Parity with the replay runner: an assertion can never be proven from a
+      // view that never stopped changing. Fail closed with the SAME honest
+      // non-result vocabulary the agent already learns for truncated views.
+      return textResult({
+        ok: true,
+        passed: false,
+        inconclusive: true,
+        code: QA_INCONCLUSIVE_UNSTABLE,
+        kind: assertion.kind,
+        observed: null,
+        expected: assertion.expected,
+        settle: { stable: false, passes: settled.passes, budgetMs: settled.budgetMs },
+        reason: unstableReason(settled.budgetMs),
+      });
+    }
     // A truncated view can never prove an absence (and never disprove a
     // presence): the decision escalates the node budget once and fails closed
     // with INCONCLUSIVE_TRUNCATED rather than reporting a false green.

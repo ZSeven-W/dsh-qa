@@ -14,7 +14,7 @@ import { BrowserAdapter } from './adapters/browser.ts'
 import { ComputerAdapter } from './adapters/computer.ts'
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts'
 import { loadComputerDriver } from './adapters/loadComputer.ts'
-import { QA_ADVISORY_REASONING_TRUST } from './contracts.ts'
+import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_UNSTABLE } from './contracts.ts'
 import type { QaDriverKind } from './contracts.ts'
 import {
   exportRecordedScenario,
@@ -201,7 +201,7 @@ export class QaToolHost {
 
   /** Evaluate a visual assertion in Explore: capture + model verdict + recording. */
   async assertVisual(owner: string, session: QaSession, question: string): Promise<unknown> {
-    const capture = await captureLatestVisual(session)
+    const { capture, settle } = await captureLatestVisual(session)
     const artifactPath = await persistCaptureFile(capture, this.#capturesDir())
     const finding = await evaluateVisualQuestion(question, capture, this.visualServices())
     this.#recorder.visualFinding(owner, {
@@ -223,15 +223,22 @@ export class QaToolHost {
       reasoningTrust: QA_ADVISORY_REASONING_TRUST,
       ...(finding.reason === undefined ? {} : { reason: finding.reason }),
       artifact: { path: artifactPath, kind: 'screenshot' },
+      // The capture's settle window travels beside the verdict (additive):
+      // `stable === false` means the view never stopped changing, so the
+      // advisory verdict is over an unstable view and is marked as such.
+      ...(settle === null ? {} : {
+        settle,
+        ...(settle.stable ? {} : { captureSettled: false }),
+      }),
     }
   }
 
   /** Capture a visual frame for qa_evidence and return metadata + artifact path. */
   async captureVisualEvidence(session: QaSession, options?: QaVisualObserveOptions): Promise<unknown> {
-    const capture = await captureLatestVisual(session, options)
+    const { capture, settle } = await captureLatestVisual(session, options)
     const artifactPath = await persistCaptureFile(capture, this.#capturesDir())
     const info = toVisualCaptureInfo(capture)
-    return { ...info, artifactPath }
+    return { ...info, artifactPath, ...(settle === null ? {} : { settle }) }
   }
 
   async dispose(): Promise<void> {
@@ -254,6 +261,16 @@ export function ownerFrom(args: { owner?: string }, exec: ToolExecutionContext):
   const agentId = exec.agent?.id
   if (typeof agentId === 'string' && agentId.trim() !== '') return agentId.trim()
   return 'dsh-qa'
+}
+
+/**
+ * Honest, actionable reason for an assertion decided against a view that never
+ * stabilized. Mirrors the replay runner's unsettled message ("...never settled
+ * within the Nms settle budget") and adds the recovery step the agent needs.
+ */
+function unstableReason(budgetMs: number): string {
+  return 'the observation never settled within the ' + String(budgetMs)
+    + 'ms settle budget, so nothing in it proves the assertion; wait for the page to stop changing, then re-observe'
 }
 
 function guard(handler: (args: never, exec: ToolExecutionContext) => Promise<unknown>) {
@@ -438,7 +455,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAct = tool<ActArgs, unknown>({
     name: 'qa_act',
-    description: 'Perform exactly one action. Browser verbs: click/fill/press/navigate/scroll/select/hover. Computer verbs: click/focus/type/key/scroll. scroll (browser) takes ref (scroll-into-view) or direction+amount (viewport page scroll); scroll (computer) takes ref+direction+amount; select takes ref+option; hover takes ref. click/fill/press/focus/type/key/select/hover require a ref from the latest qa_observe.',
+    description: 'Perform exactly one action. Browser verbs: click/fill/press/navigate/scroll/select/hover. Computer verbs: click/focus/type/key/scroll. scroll (browser) takes ref (scroll-into-view) or direction+amount (viewport page scroll); scroll (computer) takes ref+direction+amount; select takes ref+option; hover takes ref. click/fill/press/focus/type/key/select/hover require a ref from the latest qa_observe. The result is the receipt plus a fresh settled observation: when settle.stable is false the consequence is UNPROVEN — the result adds proven:false and code:"INCONCLUSIVE_UNSTABLE", the receipt still describes the dispatch honestly, and nothing in that unstable view is attributable to the action (wait for the page to stop changing, re-observe, then assert).',
     parameters: closedObject({
       owner: strProp,
       action: enumOf('click', 'fill', 'press', 'navigate', 'focus', 'type', 'key', 'scroll', 'select', 'hover'),
@@ -526,7 +543,7 @@ export function createQaTools(host: QaToolHost): QaTools {
 
   const qaAssert = tool<AssertArgs, unknown>({
     name: 'qa_assert',
-    description: 'Evaluate one assertion against a fresh SETTLED observation (observe until two consecutive semantic views agree, bounded by a budget; the result carries settle.stable). node-present/node-absent/node-in-viewport/page-url/node-value are deterministic. node-value matches a node by the usual predicate AND asserts its exact value (expected: { role?, name?, tag?, value }); it proves a fill/type by the target\'s own value. kind "visual" takes its own fresh settled observation, captures the current screen from it, and asks the host vision model a question, so it works directly after qa_act or qa_evidence and needs no separate qa_observe call first. Its ADVISORY verdict (yes/no/unclear with confidence) never changes pass/fail: trust verdict and confidence, and treat the accompanying reasoning as unverified model narration (reasoningTrust "unverified-model-narration") that may contain fabricated detail and must never be quoted as observed fact. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
+    description: 'Evaluate one assertion against a fresh SETTLED observation (observe until two consecutive semantic views agree, bounded by a budget; the result carries settle.stable). An assertion is NEVER proven from an unstable view: when settle.stable===false the result is passed:false with inconclusive:true and code:"INCONCLUSIVE_UNSTABLE" (the same honest non-result vocabulary as INCONCLUSIVE_TRUNCATED) — wait for the page to stop changing, then re-observe. node-present/node-absent/node-in-viewport/page-url/node-value are deterministic. node-value matches a node by the usual predicate AND asserts its exact value (expected: { role?, name?, tag?, value }); it proves a fill/type by the target\'s own value. kind "visual" takes its own fresh settled observation, captures the current screen from it, and asks the host vision model a question, so it works directly after qa_act or qa_evidence and needs no separate qa_observe call first. Its ADVISORY verdict (yes/no/unclear with confidence) never changes pass/fail: trust verdict and confidence, and treat the accompanying reasoning as unverified model narration (reasoningTrust "unverified-model-narration") that may contain fabricated detail and must never be quoted as observed fact. Without a mounted vision model the visual verdict degrades to "unclear" with reason "vision-model-unavailable".',
     parameters: closedObject({
       owner: strProp,
       kind: enumOf('node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value', 'visual'),
@@ -548,6 +565,22 @@ export function createQaTools(host: QaToolHost): QaTools {
       }
       const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert')
       const settled = await session.observeSettled()
+      if (!settled.stable) {
+        // Parity with the replay runner: an assertion can never be proven from a
+        // view that never stopped changing. Fail closed with the SAME honest
+        // non-result vocabulary the agent already learns for truncated views.
+        return {
+          ok: true,
+          passed: false,
+          inconclusive: true,
+          code: QA_INCONCLUSIVE_UNSTABLE,
+          kind: assertion.kind,
+          observed: null,
+          expected: assertion.expected,
+          settle: { stable: false, passes: settled.passes, budgetMs: settled.budgetMs },
+          reason: unstableReason(settled.budgetMs),
+        }
+      }
       // A truncated view can never prove an absence (and never disprove a
       // presence): the decision escalates the node budget once and fails closed
       // with INCONCLUSIVE_TRUNCATED rather than reporting a false green.

@@ -31,6 +31,7 @@ export {
   QaSessionManager,
   type QaActOutcome,
   type QaActResult,
+  type QaLatestVisual,
   type QaSessionOptions,
 } from './session.ts';
 export {

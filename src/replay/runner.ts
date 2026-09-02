@@ -233,8 +233,11 @@ async function executeAdvisory(
   if (advisory.length === 0) return { artifacts, advisory: results };
 
   let capture: QaVisualCapture;
+  let captureSettle: { stable: boolean; passes: number; budgetMs: number } | null;
   try {
-    capture = await captureLatestVisual(session);
+    const latest = await captureLatestVisual(session);
+    capture = latest.capture;
+    captureSettle = latest.settle;
   } catch (error) {
     for (const assertion of advisory) {
       results.push(advisoryUnclear(assertion.question, errorMessage(error), 'visual-capture-failed', assertion.description));
@@ -265,6 +268,14 @@ async function executeAdvisory(
       reasoningTrust: QA_ADVISORY_REASONING_TRUST,
       ...(finding.reason === undefined ? {} : { reason: finding.reason }),
       ...(assertion.description === undefined ? {} : { description: assertion.description }),
+      // The capture's settle window travels beside the advisory verdict
+      // (additive, excluded from determinism by schema): stable === false means
+      // the view never stopped changing, so the advisory verdict is over an
+      // unstable view and is marked as such in report.md / report.json.
+      ...(captureSettle === null ? {} : {
+        settle: captureSettle,
+        ...(captureSettle.stable ? {} : { captureSettled: false as const }),
+      }),
       artifact,
     });
   }

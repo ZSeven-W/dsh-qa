@@ -141,6 +141,20 @@ export interface QaAdvisoryResult {
   description?: string;
   /** Structured reference to the captured PNG (projected through the whitelist). */
   artifact?: QaArtifact;
+  /**
+   * Settle window the capture's observation was taken from (ADDITIVE, present
+   * only when the capture was taken from a fresh settled observation — never
+   * when the caller pinned an exact observation). `stable === false` means the
+   * view never stopped changing inside the budget, so the advisory verdict sits
+   * on an unstable view. Advisory semantics are unchanged either way.
+   */
+  settle?: { stable: boolean; passes: number; budgetMs: number };
+  /**
+   * Present exactly when `settle.stable === false`: the capture's observation
+   * never settled, so the advisory verdict is over a view that proves nothing.
+   * Rendered next to the verdict in report.md / report.json.
+   */
+  captureSettled?: false;
 }
 
 export interface QaStep {
@@ -189,6 +203,18 @@ export interface QaObservedNode {
 export const QA_INCONCLUSIVE_TRUNCATED = 'INCONCLUSIVE_TRUNCATED';
 
 export type QaInconclusiveReason = typeof QA_INCONCLUSIVE_TRUNCATED;
+
+/**
+ * Stable reason code recorded when an assertion (or a post-action consequence)
+ * could NOT be proven because the bounded settle window never reached a stable
+ * view. It is the fail-closed twin of `QA_INCONCLUSIVE_TRUNCATED`: that code
+ * means "the view was incomplete (truncated at its node budget)", this one
+ * means "the view never stopped changing within the settle budget". Both are
+ * honest non-results, never an ordinary failure, and never a pass.
+ */
+export const QA_INCONCLUSIVE_UNSTABLE = 'INCONCLUSIVE_UNSTABLE';
+
+export type QaInconclusiveCode = typeof QA_INCONCLUSIVE_TRUNCATED | typeof QA_INCONCLUSIVE_UNSTABLE;
 
 /**
  * Completeness context of the view an assertion was decided against.

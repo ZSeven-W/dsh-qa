@@ -54,6 +54,13 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 - \`qa_assert\` checks resulting state against a fresh observation. Do not repeat the action "to see
   if it worked". \`node-value\` (\`expected: { role?, name?, tag?, value }\`) asserts a node's exact
   current value and is deterministic, like \`node-present\` / \`node-absent\` / \`page-url\`.
+- A view can also be UNSTABLE: when a fresh observation's \`settle.stable\` is \`false\` the page never
+  stopped changing inside the settle budget, so nothing in it proves anything. \`qa_assert\` then returns
+  \`passed: false\` with \`inconclusive: true\` and \`code: "INCONCLUSIVE_UNSTABLE"\` (the same non-result
+  vocabulary as \`INCONCLUSIVE_TRUNCATED\`) — never a false green; wait for the page to stop changing, then
+  re-observe. A \`qa_act\` on an unstable proof window keeps its receipt honest (\`confirmed\` / \`unknown\`)
+  but adds \`proven: false\` plus \`code: "INCONCLUSIVE_UNSTABLE"\`: the dispatch happened, the consequence
+  is unproven.
 - A view can be TRUNCATED at the node budget, and a node outside that window still exists. So an
   absence can never be proven from a truncated view: \`node-absent\` re-observes once at a raised
   budget and then fails closed with \`completeness.reason: "INCONCLUSIVE_TRUNCATED"\` rather than
@@ -84,6 +91,9 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   is a capture you pinned yourself with \`visual_fingerprint\` on \`qa_evidence\`: a pinned observation
   is never silently refreshed, so once it goes stale the driver refuses it by design and you must
   observe and pin again.
+- A visual finding carries \`settle: { stable, passes, budgetMs }\` from the observation it captured
+  from. When \`settle.stable\` is \`false\` the finding also carries \`captureSettled: false\`: the
+  advisory verdict is over a view that never stopped changing, so it proves nothing about the page.
 
 ## Export and Replay
 

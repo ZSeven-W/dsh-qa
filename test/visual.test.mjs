@@ -145,7 +145,7 @@ test('captureLatestVisual re-observes for the computer driver to bind an observa
   const adapter = new ComputerAdapter(driver)
   const session = new QaSession(adapter, 'visual-computer')
   await session.start({ bundleId: COMPUTER_APP.bundleId })
-  const capture = await captureLatestVisual(session)
+  const { capture } = await captureLatestVisual(session)
   assert.equal(capture.driver, 'computer')
   assert.equal(capture.observationId, 'obs_1')
 })
@@ -559,7 +559,7 @@ test('captureLatestVisual binds a browser capture to a fresh observation after a
   await session.observe()
   const observesAfterAgentObserve = state.observes
   state.now += 60_000 // one agent turn later: the 30s observation TTL has passed
-  const capture = await captureLatestVisual(session)
+  const { capture } = await captureLatestVisual(session)
   assert.equal(capture.driver, 'browser')
   assert.equal(capture.observationFingerprint, 'fp-' + state.epoch, 'the capture is bound to the observation just taken')
   assert.ok(state.observes > observesAfterAgentObserve, 'the session core re-observed before capturing')
