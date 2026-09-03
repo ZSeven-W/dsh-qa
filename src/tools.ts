@@ -604,14 +604,14 @@ export function createQaTools(host: QaToolHost): QaTools {
       // A truncated view can never prove an absence (and never disprove a
       // presence): the decision escalates the node budget once and fails closed
       // with INCONCLUSIVE_TRUNCATED rather than reporting a false green.
-      const decision = await decideAssertionWithRetry(assertion, settled.observation, sessionReobserve(session), session.settlePolicy.budgetMs)
+      const decision = await decideAssertionWithRetry(assertion, settled.observation, sessionReobserve(session), session)
       return {
         ok: true,
         passed: decision.passed,
         kind: assertion.kind,
         observed: decision.observed,
         expected: assertion.expected,
-        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened },
+        settle: { stable: settled.stable, passes: settled.passes, budgetMs: session.settlePolicy.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened ?? decision.widened },
         ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
         ...(decision.attempts <= 1 ? {} : { attempts: decision.attempts, elapsedMs: decision.elapsedMs }),
       }

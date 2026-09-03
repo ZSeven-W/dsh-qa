@@ -411,13 +411,21 @@ export interface QaEvidenceCollectionFailure {
 }
 /**
  * The widening a run (or session) performed, recorded so report.json/report.md
- * can show whether/when the settle budget widened. `at` is the step index where
- * it happened, or 'initial' when it happened on the run's initial observation.
+ * can show whether/when the settle budget widened and why. `at` is the step
+ * index where it happened, 'initial' when it happened on the run's initial
+ * observation, or 'final' when a final assertion's retry widened it.
  */
 export interface QaSettleWidening {
   fromMs: number;
   toMs: number;
-  at: number | 'initial';
+  at: number | 'initial' | 'final';
+  /**
+   * Why the budget widened: 'unstable' (a settle window still churning at the
+   * budget) or 'assertion-retry' (a positive-existence assertion retry that
+   * exhausted its budget without finding its target). ADDITIVE: schemaVersion
+   * stays 1.
+   */
+  cause: 'unstable' | 'assertion-retry';
 }
 
 export interface QaRunReport {
@@ -447,8 +455,10 @@ export interface QaRunReport {
   settle?: QaSettlePolicy;
   /**
    * Present exactly when the run widened its settle budget once (adaptation
-   * enabled and a view was still churning at budgetMs): the before/after
-   * budgets and where ('initial' or a step index). Deterministic.
+   * enabled): the before/after budgets, where ('initial', a step index, or
+   * 'final'), and why ('unstable' when a view was still churning at budgetMs,
+   * 'assertion-retry' when a positive-existence assertion retry exhausted its
+   * budget). Deterministic.
    */
   settleWidened?: QaSettleWidening;
 }

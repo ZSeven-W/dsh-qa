@@ -11,6 +11,7 @@ import type {
   QaStartOptions,
   QaStopResult,
   QaSettleReport,
+  QaSettleWidened,
   QaVisualCapture,
   QaVisualObserveOptions,
 } from './adapter.ts';
@@ -220,6 +221,30 @@ export class QaSession {
       }
     } catch { /* observational only */ }
     return result;
+  }
+
+  /**
+   * Widen the settle budget for an assertion retry that exhausted its budget
+   * without finding a positive-existence target. Uses the SAME once-per-session
+   * gate as the unstable settle path, so a session widens at most once,
+   * whichever path gets there first. Returns null when the gate already fired
+   * or widening is inapplicable (adaptiveBudgetMs <= budgetMs).
+   *
+   * Mutates the session budget in place exactly like the unstable path and
+   * re-persists the policy to the recorder, so export records the widened
+   * budget into meta.settle.
+   */
+  widenForRetry(): QaSettleWidened | null {
+    if (this.#widenGate.widened) return null;
+    if (this.#settle.adaptiveBudgetMs <= this.#settle.budgetMs) return null;
+    const fromMs = this.#settle.budgetMs;
+    const toMs = this.#settle.adaptiveBudgetMs;
+    this.#settle.budgetMs = toMs;
+    this.#widenGate.widened = true;
+    try {
+      this.#adapter.noteSettlePolicy?.(this.#ownerId, this.#settle);
+    } catch { /* observational only */ }
+    return { fromMs, toMs, cause: 'assertion-retry' };
   }
 
   async act(action: QaAction, approval?: QaApprovalGate): Promise<QaActResult> {

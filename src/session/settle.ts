@@ -546,7 +546,7 @@ export async function observeUntilStable(
         const toMs = policy.adaptiveBudgetMs;
         policy.budgetMs = toMs;
         gate.widened = true;
-        widened = { fromMs, toMs };
+        widened = { fromMs, toMs, cause: 'unstable' };
         continue;
       }
       return {

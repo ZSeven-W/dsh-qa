@@ -126,7 +126,7 @@ test('A: an outcome landing at 3500ms widens once, then the session stays widene
   const acted = await session.act({ kind: 'fill', ref: input.ref, text: 'async' })
   assert.equal(acted.settle.stable, true, JSON.stringify(acted.settle))
   assert.ok(acted.observation.nodes.some((n) => n.name === 'Async rendering'), 'the outcome must be inside the settled proof observation')
-  assert.deepEqual(acted.settle.widened, { fromMs: 2500, toMs: 6000 })
+  assert.deepEqual(acted.settle.widened, { fromMs: 2500, toMs: 6000, cause: 'unstable' })
   assert.equal(acted.settle.budgetMs, 6000, 'the widening window ran under the widened budget')
   assert.ok(acted.settle.elapsedMs >= 3500, 'the window must keep polling past the old budget to the outcome (elapsed ' + acted.settle.elapsedMs + 'ms)')
   assert.ok(acted.settle.elapsedMs < 6000, 'but still conclude within the widened budget (elapsed ' + acted.settle.elapsedMs + 'ms)')
@@ -148,7 +148,7 @@ test('B: a never-settling view widens exactly once, then fails at the widened bu
 
   const acted = await session.act({ kind: 'fill', ref: 'in', text: 'v1' })
   assert.equal(acted.settle.stable, false, JSON.stringify(acted.settle))
-  assert.deepEqual(acted.settle.widened, { fromMs: 2500, toMs: 6000 })
+  assert.deepEqual(acted.settle.widened, { fromMs: 2500, toMs: 6000, cause: 'unstable' })
   assert.equal(acted.settle.budgetMs, 6000)
   assert.ok(acted.settle.elapsedMs >= 6000 - 20, 'the window must fail at the WIDENED budget (elapsed ' + acted.settle.elapsedMs + 'ms)')
 
@@ -205,7 +205,7 @@ test('D: export persists the widened budget; replay starts widened and also wide
     const input = before.observation.nodes.find((n) => n.name === 'Search articles')
     assert.ok(input)
     const acted = await session.act({ kind: 'fill', ref: input.ref, text: 'async' })
-    assert.deepEqual(acted.settle.widened, { fromMs: 2500, toMs: 6000 })
+    assert.deepEqual(acted.settle.widened, { fromMs: 2500, toMs: 6000, cause: 'unstable' })
     await session.stop()
     const path = join(dir, 'd1.json')
     const exported = await exportRecordedScenario(recorder, 'adaptive-d1-explore', { outputPath: path })
@@ -241,7 +241,7 @@ test('D: export persists the widened budget; replay starts widened and also wide
     const slowReport = await runScenario(handWritten, slowOutcomeAdapter(), { ownerId: 'adaptive-d2-replay' })
     assert.equal(slowReport.status, 'pass', JSON.stringify(slowReport.failure))
     assert.equal(slowReport.settle.budgetMs, 6000, 'replay ends at the widened budget')
-    assert.deepEqual(slowReport.settleWidened, { fromMs: 2500, toMs: 6000, at: 1 }, 'replay records the widening at the step that hit it')
+    assert.deepEqual(slowReport.settleWidened, { fromMs: 2500, toMs: 6000, at: 1, cause: 'unstable' }, 'replay records the widening at the step that hit it')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -259,7 +259,7 @@ test('E: node-absent on an unstable view is still inconclusive, never rescued by
     assert.equal(result.code, QA_INCONCLUSIVE_UNSTABLE, JSON.stringify(result))
     assert.equal(result.observed, null)
     assert.equal(result.settle.stable, false, 'the view is still unprovable after widening')
-    assert.deepEqual(result.settle.widened, { fromMs: 2500, toMs: 6000 }, 'the settle widened but the absence is still not proven')
+    assert.deepEqual(result.settle.widened, { fromMs: 2500, toMs: 6000, cause: 'unstable' }, 'the settle widened but the absence is still not proven')
   } finally {
     await host.dispose()
   }

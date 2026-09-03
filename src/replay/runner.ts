@@ -494,7 +494,10 @@ export async function runScenario(
       // seen the whole view (see decideAssertion). A positive-existence "not
       // found" is retried within the settle budget (see decideAssertionWithRetry)
       // so a slow page's late node/role is not mistaken for absence.
-      const decision = await decideAssertionWithRetry(step.assert, result.observation, reobserve, session.settlePolicy.budgetMs);
+      const decision = await decideAssertionWithRetry(step.assert, result.observation, reobserve, session);
+      if (settleWidened === null && decision.widened !== null) {
+        settleWidened = { ...decision.widened, at: step.index };
+      }
       stepResults.push(
         buildStepResult(
           base,
@@ -522,6 +525,9 @@ export async function runScenario(
 
     if (failure === null) {
       const finalSettle = await session.observeSettled();
+      if (settleWidened === null && finalSettle.widened !== null) {
+        settleWidened = { ...finalSettle.widened, at: 'final' };
+      }
       // Reassigned when a decision escalated the node budget: the remaining
       // final assertions are then judged against that fuller view instead of
       // paying for the same escalation again.
@@ -537,7 +543,10 @@ export async function runScenario(
       for (let i = 0; failure === null && i < scenario.assertions.length; i += 1) {
         const assertion = scenario.assertions[i];
         if (assertion === undefined) continue;
-        const decision = await decideAssertionWithRetry(assertion, finalObservation, reobserve, session.settlePolicy.budgetMs);
+        const decision = await decideAssertionWithRetry(assertion, finalObservation, reobserve, session);
+        if (settleWidened === null && decision.widened !== null) {
+          settleWidened = { ...decision.widened, at: 'final' };
+        }
         assertionResults.push({
           kind: assertion.kind,
           ...(assertion.description === undefined ? {} : { description: assertion.description }),

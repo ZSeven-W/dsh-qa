@@ -237,13 +237,21 @@ export function toVisualCaptureInfo(capture: QaVisualCapture): QaVisualCaptureIn
 }
 
 /**
- * A settle budget widening, reported on the window that performed it:
- * `fromMs` is the original budget, `toMs` is the widened budget the window
- * kept polling until (the session's new effective budget).
+ * A settle budget widening, reported on the surface that performed it:
+ * `fromMs` is the original budget, `toMs` is the widened budget adopted in
+ * place (the session's new effective budget), and `cause` distinguishes the
+ * two widening paths.
  */
 export interface QaSettleWidened {
   fromMs: number;
   toMs: number;
+  /**
+   * Why the budget widened: `'unstable'` (a settle window still churning at
+   * the budget) or `'assertion-retry'` (a positive-existence assertion retry
+   * that exhausted its budget without finding its target). ADDITIVE:
+   * schemaVersion stays 1.
+   */
+  cause: 'unstable' | 'assertion-retry';
 }
 
 /**

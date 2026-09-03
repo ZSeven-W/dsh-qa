@@ -173,9 +173,11 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     );
   }
   if (report.settleWidened !== undefined) {
+    const widened = report.settleWidened;
+    const at = widened.at === 'initial' ? 'initial' : widened.at === 'final' ? 'final' : 'step ' + String(widened.at);
     lines.push(
-      '- **Settle widened**: ' + String(report.settleWidened.fromMs) + 'ms → ' + String(report.settleWidened.toMs)
-      + 'ms at ' + (report.settleWidened.at === 'initial' ? 'initial' : 'step ' + String(report.settleWidened.at)),
+      '- **Settle widened**: ' + String(widened.fromMs) + 'ms → ' + String(widened.toMs)
+      + 'ms at ' + at + ' (' + widened.cause + ')',
     );
   }
   lines.push('');

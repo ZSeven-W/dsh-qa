@@ -13,6 +13,7 @@ export {
   type QaAssertionDecision,
   type QaReobserve,
   type QaRetriedDecision,
+  type QaRetryBudgetSource,
   type QaSettledObserver,
 } from './assertions.ts';
 export {

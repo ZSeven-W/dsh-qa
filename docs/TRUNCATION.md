@@ -81,9 +81,16 @@ Evidence of presence is sound; absence of evidence is not evidence of absence.
    taken after the single escalation): a slow page's late node or role switch is
    not absence. Each re-observation is SETTLED at `QA_ESCALATED_NODE_BUDGET`;
    the loop stops as soon as the assertion is found (a returned node is sound on
-   any view) or the settle budget is exhausted, and the step / assertion result
+   any view) or the budget is exhausted, and the step / assertion result
    records `attempts` and `elapsedMs` (rendered in report.md, excluded from the
-   determinism projection as duration, not outcome). `node-absent` is NEVER
+   determinism projection as duration, not outcome). When the retry exhausts the
+   budget without finding its target AND the session's widen gate has not fired
+   AND `adaptiveBudgetMs > budgetMs`, it widens ONCE through the SAME
+   once-per-session gate as the unstable settle path (recorded with
+   `cause: "assertion-retry"`) and keeps retrying until `adaptiveBudgetMs`
+   measured from the retry's original start — so a page that settles FAST but
+   renders the node slowly is found instead of failing when the budget is below
+   page latency. `node-absent` is NEVER
    retried — absence is never proven by waiting, only by having seen the whole
    view — and a structural refusal (`TARGET_NOT_UNIQUE`, `VALUE_WITHHELD` /
    `VALUE_SECURE` / `VALUE_TRUNCATED`) is deterministic and never resolves by

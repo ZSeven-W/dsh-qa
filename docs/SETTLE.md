@@ -140,6 +140,15 @@ closed with their code in report.json and report.md.
   unchanged — absence is still never proven by waiting). `0` (or env `off`)
   disables it. This is how a live page that needs ~3.5-4.5s after a fill settles
   2/2 instead of replaying 2/2 `INCONCLUSIVE_UNSTABLE` at the 2500ms default.
+* **Assertion-retry widening** — the bounded retry (docs/TRUNCATION.md) widens
+  the budget ONCE through the SAME once-per-session gate when a
+  positive-existence assertion (`node-present` / `node-value` /
+  `node-in-viewport` / `page-url`) exhausts its retry budget without finding
+  its target. A session widens at most once, whichever path gets there first;
+  the retry keeps re-observing until `adaptiveBudgetMs` measured from the
+  retry's original start. The widening record carries `cause: "unstable"` (a
+  churning settle window) or `cause: "assertion-retry"` (an exhausted retry),
+  so the two paths are distinguishable in report.json / report.md.
 * **Poll interval** (`QA_SETTLE_INTERVAL_MS`, 50ms) — spacing between
   observations inside a window. This is a poll interval, not a sleep: a settled
   view returns immediately after its quiet window.
@@ -175,11 +184,14 @@ Both sides refuse an unsettled view:
   `node-value` into a false green while the recorded target stays empty.
 
 Nothing is widened to make an unstable page pass. The ONLY widening is the
-once-per-session adaptive budget: a view still churning at the starting budget
-gets a single, in-place extension (recorded as `widened`), and a view still
-churning at the WIDENED budget is still honestly `stable: false` / unprovable.
-An absence is never rescued by the widening either — `node-absent` is still
-never proven by waiting.
+once-per-session adaptive budget, and it has exactly two triggers, both guarded
+by the SAME once-per-session gate: (1) a settle window still churning at the
+starting budget (recorded as `widened` with `cause: "unstable"`), and (2) a
+positive-existence assertion retry that exhausted its budget without finding its
+target (recorded with `cause: "assertion-retry"`). A view still churning at the
+WIDENED budget is still honestly `stable: false` / unprovable. An absence is
+never rescued by the widening either — `node-absent` is still never proven by
+waiting.
 
 ## Explore tool surfaces fail closed too
 
@@ -194,7 +206,10 @@ returning a false green on an unsettled view:
   evaluated against churn. `INCONCLUSIVE_UNSTABLE` is the same honest non-result
   vocabulary as `INCONCLUSIVE_TRUNCATED` (that code means "the view was
   truncated at its node budget", this one means "the view never stopped
-  changing inside the settle budget").
+  changing inside the settle budget"). On a SETTLED view, a positive-existence
+  assertion whose bounded retry exhausts the budget widens the session ONCE
+  through the same gate (`settle.widened` with `cause: "assertion-retry"`) and
+  keeps retrying until the adaptive budget.
 * **`qa_act`** — a confirmed/unknown receipt still reports the dispatch honestly
   (`outcome: "ok"` / `"unknown"`), but when the proof window never settled the
   result ADDS `proven: false` and `code: "INCONCLUSIVE_UNSTABLE"`. The receipt
@@ -273,10 +288,12 @@ widening budget with `settle_adaptive_budget_ms` (clamped to `[budgetMs, 15000]`
 WIDENED budget when the session widened — into the scenario's `meta.settle` when
 it differs from the defaults, and `qa_replay_run` applies `meta.settle` over the
 env/host defaults — so replay starts at the widened budget and does not
-rediscover it. Replay itself also widens once if it still hits an unstable view
-and adaptation is enabled (recorded as `settleWidened` in the report).
+rediscover it. Replay itself also widens once, through the SAME gate, when it
+still hits an unstable view OR a positive-existence assertion retry exhausts its
+budget (recorded as `settleWidened` with `cause: "unstable"` /
+`"assertion-retry"`).
 report.json / report.md print the effective policy plus `settleWidened`
-(step index or `initial`).
+(step index, `initial`, or `final`).
 
 ## Determinism
 

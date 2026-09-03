@@ -1,5 +1,5 @@
 import { QA_INCONCLUSIVE_TRUNCATED, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
-import type { QaObservation, QaObserveOptions, QaSemanticNode } from '../session/adapter.ts';
+import type { QaObservation, QaObserveOptions, QaSemanticNode, QaSettleWidened } from '../session/adapter.ts';
 
 /**
  * Distinct refusal codes for a node-value assertion matched against a node the
@@ -349,6 +349,21 @@ export interface QaRetriedDecision extends QaAssertionDecision {
   attempts: number;
   /** Wall-clock milliseconds from the first decision until the loop stopped. */
   elapsedMs: number;
+  /** The widening this retry performed (once), or null when none happened. */
+  widened: QaSettleWidened | null;
+}
+
+/**
+ * The live-session surface the bounded retry reads its budget from and widens
+ * through. QaSession satisfies it: the budget is re-read every iteration so a
+ * widening takes effect for the in-flight retry, and the widening goes through
+ * the SAME once-per-session gate as the unstable settle path.
+ */
+export interface QaRetryBudgetSource {
+  /** The session's CURRENT settle policy (budgetMs re-read every iteration). */
+  settlePolicy: { budgetMs: number };
+  /** Widen the budget ONCE through the shared gate; null when not applicable. */
+  widenForRetry(): QaSettleWidened | null;
 }
 
 /**
@@ -360,32 +375,56 @@ export interface QaRetriedDecision extends QaAssertionDecision {
  * INCONCLUSIVE_TRUNCATED branch taken after the single budget escalation — do
  * NOT conclude immediately. Re-observe (settled, at the escalated node budget)
  * and re-evaluate until the assertion is found (sound on any view, complete or
- * truncated) or `budgetMs` is exhausted, then return the existing outcome with
+ * truncated) or the budget is exhausted, then return the existing outcome with
  * the attempt/elapsed counts attached.
+ *
+ * When `budget` is a live session (QaRetryBudgetSource) and the retry exhausts
+ * the current budget without finding its target, it widens the budget ONCE
+ * through the session's gate — the same once-per-session rule as the unstable
+ * settle path, so a session widens at most once whichever path gets there first
+ * — and keeps retrying until the adaptive (widened) budget measured from the
+ * retry's ORIGINAL start. The budget is re-read every iteration, so a widening
+ * takes effect immediately for the in-flight retry.
  *
  * `node-absent` is NEVER retried into a pass: absence is never proven by
  * waiting, only by having seen the whole view. A structural refusal
  * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED) is
- * deterministic and never resolves by waiting either.
+ * deterministic and never resolves by waiting either — and never triggers a
+ * widen.
  */
 export async function decideAssertionWithRetry(
   assertion: QaAssertion,
   observation: QaObservation,
   reobserve: QaReobserve,
-  budgetMs: number,
+  budget: number | QaRetryBudgetSource,
 ): Promise<QaRetriedDecision> {
   const startedAt = Date.now();
+  const currentBudget = (): number =>
+    typeof budget === 'number' ? budget : budget.settlePolicy.budgetMs;
+  const tryWiden = (): QaSettleWidened | null =>
+    typeof budget === 'number' ? null : budget.widenForRetry();
+
   let attempts = 1;
   let decision = await decideAssertion(assertion, observation, reobserve);
-  if (decision.passed) return { ...decision, attempts, elapsedMs: Date.now() - startedAt };
+  if (decision.passed) return { ...decision, attempts, elapsedMs: Date.now() - startedAt, widened: null };
   if (!RETRIABLE_KINDS.has(assertion.kind)) {
-    return { ...decision, attempts, elapsedMs: Date.now() - startedAt };
+    return { ...decision, attempts, elapsedMs: Date.now() - startedAt, widened: null };
   }
   if (decision.reason !== undefined && NON_RETRIABLE_REASONS.has(decision.reason)) {
-    return { ...decision, attempts, elapsedMs: Date.now() - startedAt };
+    return { ...decision, attempts, elapsedMs: Date.now() - startedAt, widened: null };
   }
+  let widened: QaSettleWidened | null = null;
   for (;;) {
-    if (Date.now() - startedAt >= budgetMs) break;
+    if (Date.now() - startedAt >= currentBudget()) {
+      // Exhausted the budget without finding the target. Widen ONCE through the
+      // same session gate as the unstable path (a session widens at most once,
+      // whichever path gets there first) and keep retrying; otherwise stop.
+      if (widened === null) {
+        widened = tryWiden();
+        if (widened !== null) continue;
+      }
+      break;
+    }
     let next: QaObservation;
     try {
       next = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
@@ -398,7 +437,7 @@ export async function decideAssertionWithRetry(
     if (decision.passed) break;
     if (decision.reason !== undefined && NON_RETRIABLE_REASONS.has(decision.reason)) break;
   }
-  return { ...decision, attempts, elapsedMs: Date.now() - startedAt };
+  return { ...decision, attempts, elapsedMs: Date.now() - startedAt, widened };
 }
 
 /** Minimal settled-observation surface decideAssertion escalates through. */
