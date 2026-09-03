@@ -39,6 +39,7 @@
 // configured budget — it is never silently accepted.
 
 import type { QaObservation, QaSemanticNode, QaSettleReport } from './adapter.ts';
+import { QA_SETTLE_SCHEMA_BUDGET_MAX } from '../contracts.ts';
 import type { QaNodePredicate } from '../contracts.ts';
 
 /**
@@ -237,6 +238,35 @@ export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettle
     budgetMs,
   );
   return { budgetMs, quietMs, postChangeQuietMs, intervalMs };
+}
+
+/** Validate + clamp one settle override value to the scenario-schema bounds. */
+function clampOverrideValue(value: number, ceiling: number): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new TypeError('settle_budget_ms and settle_quiet_ms must be positive integers (milliseconds)');
+  }
+  return Math.min(value, ceiling);
+}
+
+/**
+ * Build the settle override for a qa_session_start call from its settle_*_ms
+ * arguments. Values are clamped to the scenario-schema bounds (budgetMs <=
+ * QA_SETTLE_SCHEMA_BUDGET_MAX, quietMs <= budgetMs); garbage (non-finite,
+ * non-integer, non-positive) throws so the tool layer surfaces it as an error.
+ * Returns undefined when no argument was supplied.
+ */
+export function settleStartOverride(args: {
+  settle_budget_ms?: number;
+  settle_quiet_ms?: number;
+}): Partial<QaSettlePolicy> | undefined {
+  const budgetMs = args.settle_budget_ms === undefined
+    ? undefined
+    : clampOverrideValue(args.settle_budget_ms, QA_SETTLE_SCHEMA_BUDGET_MAX);
+  const quietMs = args.settle_quiet_ms === undefined
+    ? undefined
+    : clampOverrideValue(args.settle_quiet_ms, budgetMs ?? QA_SETTLE_SCHEMA_BUDGET_MAX);
+  if (budgetMs === undefined && quietMs === undefined) return undefined;
+  return { ...(budgetMs === undefined ? {} : { budgetMs }), ...(quietMs === undefined ? {} : { quietMs }) };
 }
 
 /**

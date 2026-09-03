@@ -249,6 +249,14 @@ Environment overrides (clamped, garbage falls back to the defaults, never fails
 open): `DSH_QA_SETTLE_BUDGET_MS`, `DSH_QA_SETTLE_QUIET_MS`,
 `DSH_QA_SETTLE_POST_CHANGE_QUIET_MS`, `DSH_QA_SETTLE_INTERVAL_MS`.
 
+An agent can widen the budget for a heavy site at Explore time with
+`qa_session_start settle_budget_ms` (and `settle_quiet_ms`), clamped to the
+scenario-schema bounds (budget ≤ 15000ms, quiet ≤ budget). `qa_record_export`
+persists the session's EFFECTIVE policy into the scenario's `meta.settle` when
+it differs from the defaults, and `qa_replay_run` applies `meta.settle` over
+the env/host defaults — so replay judges the page with the exact policy Explore
+proved it with. report.json / report.md print the effective policy.
+
 ## Determinism
 
 Settling changes duration, not outcome: the settled observation is the

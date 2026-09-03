@@ -26,7 +26,7 @@ import {
 } from './explore/index.ts';
 import { decideAssertionWithRetry, loadScenarioFromPath, runScenario, sessionReobserve, validateAssertion } from './replay/index.ts';
 import { writeReports } from './reporters/index.ts';
-import { captureLatestVisual, QaSessionManager, resolveSettlePolicy, toLosslessJson } from './session/index.ts';
+import { captureLatestVisual, QaSessionManager, resolveSettlePolicy, settleStartOverride, toLosslessJson } from './session/index.ts';
 import { toVisualCaptureInfo } from './session/adapter.ts';
 import { evaluateVisualQuestion, persistCaptureFile } from './vision.ts';
 
@@ -186,13 +186,16 @@ server.tool(
       source: z.string(),
       origins: z.array(z.string()),
     }).optional(),
+    settle_budget_ms: z.number().int().optional(),
+    settle_quiet_ms: z.number().int().optional(),
   },
   guard(async (args) => {
     const owner = ownerFrom(args);
     const driver = args.driver ?? 'browser';
     ownerDrivers.set(owner, driver);
     const manager = await getManager(driver);
-    const info = await manager.session(owner).start({
+    const settle = settleStartOverride(args);
+    const info = await manager.session(owner, settle === undefined ? {} : { settle }).start({
       ...(args.url === undefined ? {} : { url: args.url }),
       ...(args.headless === undefined ? {} : { headless: args.headless }),
       ...(args.bundle_id === undefined ? {} : { bundleId: args.bundle_id }),

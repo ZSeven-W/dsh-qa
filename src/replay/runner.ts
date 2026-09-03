@@ -375,9 +375,13 @@ export async function runScenario(
   const launch = options.launchUrl ?? scenario.target.launch;
   const startedAt = new Date().toISOString();
 
+  // The scenario's recorded meta.settle (the exact policy Explore used) wins
+  // over the env/host defaults the tool layer passed in options.settle; a
+  // scenario without meta.settle keeps the env/host defaults.
   const session = new QaSession(adapter, ownerId, {
-    ...(options.settle === undefined ? {} : { settle: options.settle }),
+    settle: { ...(options.settle ?? {}), ...(scenario.meta.settle ?? {}) },
   });
+  const effectiveSettle = session.settlePolicy;
   const stepResults: QaStepResult[] = [];
   const assertionResults: QaAssertionResult[] = [];
   const artifacts: QaArtifact[] = [];
@@ -586,6 +590,7 @@ export async function runScenario(
     status: failure === null ? 'pass' : 'fail',
     startedAt,
     finishedAt: new Date().toISOString(),
+    settle: effectiveSettle,
     steps: stepResults,
     assertions: assertionResults,
     evidence,

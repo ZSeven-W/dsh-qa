@@ -5,6 +5,7 @@
 // is refused.
 
 import { readFileSync } from 'node:fs';
+import { QA_SETTLE_SCHEMA_BUDGET_MAX } from '../contracts.ts';
 import type {
   QaAssertion,
   QaAssertionKind,
@@ -14,6 +15,7 @@ import type {
   QaScenarioAction,
   QaScenarioMeta,
   QaScenarioTarget,
+  QaSettleOverride,
   QaStep,
   QaVisualAssertion,
 } from '../contracts.ts';
@@ -91,7 +93,8 @@ function assertLossless(value: unknown, position: string): void {
 const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer'];
 const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value'];
 const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as const;
-const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes'] as const;
+const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes', 'settle'] as const;
+const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'intervalMs'] as const;
 const TARGET_FIELDS = ['launch', 'loginState'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description'] as const;
@@ -131,7 +134,47 @@ function validateMeta(value: unknown, position: string): QaScenarioMeta {
       expectNonEmptyString(item, position + '.notes[' + i + ']'),
     );
   }
-  return { name, description, driver, createdAt, ...(notes === undefined ? {} : { notes }) };
+  let settle: QaSettleOverride | undefined;
+  if (obj.settle !== undefined) settle = validateSettleOverride(obj.settle, position + '.settle');
+  return {
+    name,
+    description,
+    driver,
+    createdAt,
+    ...(notes === undefined ? {} : { notes }),
+    ...(settle === undefined ? {} : { settle }),
+  };
+}
+
+/**
+ * Validates and clamps one scenario settle override: a positive integer in
+ * milliseconds, clamped to `ceiling` (budgetMs to QA_SETTLE_SCHEMA_BUDGET_MAX,
+ * the other fields to the resolved budgetMs). Non-finite / non-integer /
+ * non-positive values fail closed; out-of-range values are clamped, never
+ * trusted.
+ */
+function validateSettleMs(value: unknown, position: string, ceiling: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    fail(position, 'expected a positive integer number of milliseconds');
+  }
+  return Math.min(value, ceiling);
+}
+
+function validateSettleOverride(value: unknown, position: string): QaSettleOverride {
+  const obj = expectObject(value, position);
+  assertKnownFields(obj, SETTLE_OVERRIDE_FIELDS, position);
+  const budgetMs = obj.budgetMs === undefined
+    ? undefined
+    : validateSettleMs(obj.budgetMs, position + '.budgetMs', QA_SETTLE_SCHEMA_BUDGET_MAX);
+  const ceiling = budgetMs ?? QA_SETTLE_SCHEMA_BUDGET_MAX;
+  const out: QaSettleOverride = {};
+  if (budgetMs !== undefined) out.budgetMs = budgetMs;
+  if (obj.quietMs !== undefined) out.quietMs = validateSettleMs(obj.quietMs, position + '.quietMs', ceiling);
+  if (obj.postChangeQuietMs !== undefined) {
+    out.postChangeQuietMs = validateSettleMs(obj.postChangeQuietMs, position + '.postChangeQuietMs', ceiling);
+  }
+  if (obj.intervalMs !== undefined) out.intervalMs = validateSettleMs(obj.intervalMs, position + '.intervalMs', ceiling);
+  return out;
 }
 
 function validateTarget(value: unknown, position: string, driver: QaDriverKind): QaScenarioTarget {

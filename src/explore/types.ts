@@ -1,4 +1,5 @@
 import type { QaDriverKind, QaScenario } from '../contracts.ts';
+import type { QaSettlePolicy } from '../session/settle.ts';
 import type {
   QaAction,
   QaActionReceipt,
@@ -160,6 +161,8 @@ export interface QaTrajectorySnapshot {
   evidenceReferences: readonly string[];
   visualFindings: readonly QaTrajectoryVisualFindingEvent[];
   recordingIssues: readonly string[];
+  /** The session's resolved settle policy (null when no session ever started). */
+  settlePolicy: QaSettlePolicy | null;
 }
 
 export interface QaExportExclusion {

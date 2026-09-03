@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { projectRedactedJsonValue, redactText } from '../redaction/index.ts';
 import { toVisualCaptureInfo } from '../session/adapter.ts';
+import type { QaSettlePolicy } from '../session/settle.ts';
 import type {
   QaAction,
   QaActionReceipt,
@@ -52,6 +53,8 @@ interface MutableTrajectory {
    * exporter judges — never the first, racing one.
    */
   settlingActionId: string | null;
+  /** The session's RESOLVED settle policy (recorded at start; see noteSettlePolicy). */
+  settlePolicy: QaSettlePolicy | null;
 }
 
 interface Sanitized<T> {
@@ -149,6 +152,7 @@ export class QaTrajectoryRecorder {
         lastObservationId: null,
         pendingActionId: null,
         settlingActionId: null,
+        settlePolicy: null,
       };
       this.#trajectories.set(ownerId, trajectory);
       this.#push(trajectory, {
@@ -333,6 +337,17 @@ export class QaTrajectoryRecorder {
     }
   }
 
+  /** Passive: persist the session's resolved settle policy for meta.settle export. */
+  recordSettlePolicy(ownerId: string, policy: QaSettlePolicy): void {
+    const trajectory = this.#trajectories.get(ownerId);
+    if (trajectory === undefined) return;
+    try {
+      trajectory.settlePolicy = cloneRedacted(policy).value;
+    } catch {
+      // Recording cannot alter session behavior; a failed record is a no-op.
+    }
+  }
+
   observationFailed(ownerId: string, error: unknown): void {
     const trajectory = this.#trajectories.get(ownerId);
     if (trajectory === undefined) return;
@@ -463,6 +478,7 @@ export class QaTrajectoryRecorder {
       evidenceReferences: trajectory.evidenceReferences,
       visualFindings,
       recordingIssues: trajectory.recordingIssues,
+      settlePolicy: trajectory.settlePolicy,
     });
   }
 
@@ -570,6 +586,7 @@ export class QaTrajectoryRecorder {
       lastObservationId: null,
       pendingActionId: null,
       settlingActionId: null,
+      settlePolicy: null,
     };
     this.#recordingError(trajectory, 'start', issue, null);
     return trajectory;
@@ -629,6 +646,11 @@ export class RecordingQaDriverAdapter implements QaDriverAdapter {
   /** Passive: binds the SETTLED observation as the pending action's proof. */
   noteSettle(ownerId: string, report: QaSettleReport): void {
     this.#safe(() => this.#recorder.settle(ownerId, report));
+  }
+
+  /** Passive: persists the session's resolved settle policy for meta.settle export. */
+  noteSettlePolicy(ownerId: string, policy: QaSettlePolicy): void {
+    this.#safe(() => this.#recorder.recordSettlePolicy(ownerId, policy));
   }
 
   async visualObserve(ownerId: string, options?: QaVisualObserveOptions): Promise<QaVisualCapture> {

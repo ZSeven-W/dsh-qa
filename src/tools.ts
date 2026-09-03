@@ -25,7 +25,7 @@ import {
 import type { QaRecordExportOptions, QaRecordExportResult } from './explore/index.ts'
 import { decideAssertionWithRetry, loadScenarioFromPath, runScenario, sessionReobserve, validateAssertion } from './replay/index.ts'
 import { writeReports } from './reporters/index.ts'
-import { captureLatestVisual, QaSessionManager, toLosslessJson } from './session/index.ts'
+import { captureLatestVisual, QaSessionManager, settleStartOverride, toLosslessJson } from './session/index.ts'
 import type { QaAction, QaVisualObserveOptions } from './session/adapter.ts'
 import type { QaSettlePolicy } from './session/settle.ts'
 import { toVisualCaptureInfo } from './session/adapter.ts'
@@ -315,6 +315,10 @@ interface SessionStartArgs {
   window_title?: string
   /** Browser-only: owner-authorized login state { source: <state-file path>, origins: [<exact origins...>] }. */
   login_state?: { source: string; origins: string[] }
+  /** Widen the settle budget for a heavy site (clamped <= 15000ms). */
+  settle_budget_ms?: number
+  /** Widen the settle quiet window (clamped <= the resolved budget). */
+  settle_quiet_ms?: number
 }
 
 interface ObserveArgs {
@@ -413,6 +417,8 @@ export function createQaTools(host: QaToolHost): QaTools {
         source: strProp,
         origins: { type: 'array', items: strProp },
       }, ['source', 'origins']),
+      settle_budget_ms: intProp,
+      settle_quiet_ms: intProp,
     }, []),
     output: outputFor(),
     timeoutMs: 60_000,
@@ -422,7 +428,8 @@ export function createQaTools(host: QaToolHost): QaTools {
       const driver = args.driver ?? 'browser'
       host.bindOwner(owner, driver)
       const manager = await host.managerFor(driver)
-      return manager.session(owner).start({
+      const settle = settleStartOverride(args)
+      return manager.session(owner, settle === undefined ? {} : { settle }).start({
         ...(args.url === undefined ? {} : { url: args.url }),
         ...(args.headless === undefined ? {} : { headless: args.headless }),
         ...(args.bundle_id === undefined ? {} : { bundleId: args.bundle_id }),

@@ -4,6 +4,7 @@
 // repository only — the driver packages never import or implement it.
 
 import type { QaLoginStateConfig } from '../loginState.ts';
+import type { QaSettlePolicy } from './settle.ts';
 
 export type QaReceiptStatus = 'confirmed' | 'unknown' | 'rejected' | 'failed';
 
@@ -317,6 +318,14 @@ export interface QaDriverAdapter {
    * must never throw, and it can never change driver behavior.
    */
   noteSettle?(ownerId: string, report: QaSettleReport): void;
+  /**
+   * Optional PASSIVE notification of the session's RESOLVED settle policy (the
+   * exact values every proof observation runs under). It exists so the Explore
+   * recorder can persist that policy into the exported scenario's meta.settle.
+   * Real drivers never implement it, it must never throw, and it can never
+   * change driver behavior.
+   */
+  noteSettlePolicy?(ownerId: string, policy: QaSettlePolicy): void;
   stop(ownerId: string): Promise<QaStopResult>;
   dispose?(): Promise<void>;
 }

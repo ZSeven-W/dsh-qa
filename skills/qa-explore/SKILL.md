@@ -10,6 +10,7 @@ Use this loop: **start → observe → choose one semantic target → act → in
 ## Method
 
 - Keep one explicit `owner` from `qa_session_start` through `qa_record_export`.
+- A heavy site can widen the settle budget at start: pass `settle_budget_ms` (and `settle_quiet_ms`) to `qa_session_start`, clamped to the schema bounds (budget ≤ 15000ms). Whatever effective policy Explore ran with is what `qa_record_export` records into `meta.settle`, and `qa_replay_run` applies it (env/host defaults otherwise), printing the effective policy in report.json / report.md.
 - Begin with `qa_observe`. Prefer a unique role plus accessible name. Treat refs, coordinates, indices, observation ids, and generated ids as ephemeral live-session handles.
 - Perform exactly one `qa_act`, then inspect its fresh post-action observation before deciding what happened. Re-observe when diagnosing, and never reuse an old ref.
 - An `unknown` receipt is never success. It needs a semantic delta or URL change in the fresh observation. A `rejected` or `failed` receipt is a hard stop; honor every driver safety rejection and never route around it.

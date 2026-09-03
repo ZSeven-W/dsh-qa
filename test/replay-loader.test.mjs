@@ -220,3 +220,43 @@ test('node-value rejects a predicate with no role/name/tag or an unexpected fiel
     },
   );
 });
+
+test('node-value accepts a role-less predicate (name + value)', () => {
+  const assertion = validateAssertion(
+    { kind: 'node-value', expected: { name: 'Search Wikipedia', value: 'DeepSeek' } },
+    'qa_assert',
+  );
+  assert.equal(assertion.kind, 'node-value');
+  assert.deepEqual(assertion.expected, { name: 'Search Wikipedia', value: 'DeepSeek' });
+});
+
+test('meta.settle validates, clamps, and rejects garbage', () => {
+  const withSettle = validScenario();
+  withSettle.meta.settle = { budgetMs: 6000, quietMs: 300 };
+  assert.deepEqual(validateScenario(withSettle).meta.settle, { budgetMs: 6000, quietMs: 300 });
+
+  // over-max budget clamps to the schema maximum
+  const overBudget = validScenario();
+  overBudget.meta.settle = { budgetMs: 20000 };
+  assert.equal(validateScenario(overBudget).meta.settle.budgetMs, 15000);
+
+  // the other fields clamp to <= the resolved budget
+  const quietOver = validScenario();
+  quietOver.meta.settle = { budgetMs: 1000, quietMs: 5000, intervalMs: 9000 };
+  const clampedQuiet = validateScenario(quietOver).meta.settle;
+  assert.equal(clampedQuiet.budgetMs, 1000);
+  assert.equal(clampedQuiet.quietMs, 1000);
+  assert.equal(clampedQuiet.intervalMs, 1000);
+
+  // garbage fails closed at the named position
+  for (const bad of [-5, 0, 1.5, '6000', null, NaN, Infinity]) {
+    const g = validScenario();
+    g.meta.settle = { budgetMs: bad };
+    expectPosition(() => validateScenario(g), 'meta.settle.budgetMs');
+  }
+
+  // unknown settle field is rejected
+  const unknown = validScenario();
+  unknown.meta.settle = { budgetMs: 1000, bogus: 1 };
+  expectPosition(() => validateScenario(unknown), 'meta.settle');
+});

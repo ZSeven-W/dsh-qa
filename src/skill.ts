@@ -37,6 +37,7 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 
 - \`qa_session_start\` binds one owner scope to one driver. Choose an explicit owner and keep it
   unchanged through export. Browser takes \`url\`; Computer binds strong app/window identity.
+- A heavy site can widen the settle budget at start: pass \`settle_budget_ms\` (and \`settle_quiet_ms\`) to \`qa_session_start\`, clamped to the schema bounds (budget <= 15000ms). Whatever effective policy Explore ran with is what \`qa_record_export\` records into \`meta.settle\`, and \`qa_replay_run\` applies it (env/host defaults otherwise), printing the effective policy in report.json / report.md.
 - Begin with \`qa_observe\`. Prefer a unique role plus accessible name, take one purposeful action,
   then inspect the fresh observation returned by \`qa_act\`. Re-observe when diagnosing and never
   reuse an old ref. A truncated view is incomplete, not empty.

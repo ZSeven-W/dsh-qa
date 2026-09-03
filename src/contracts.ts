@@ -5,6 +5,7 @@
 // assertions evaluated after all steps.
 
 import type { QaActionReceipt, QaEvidence } from './session/adapter.ts';
+import type { QaSettlePolicy } from './session/settle.ts';
 import type { QaLoginStateConfig } from './loginState.ts';
 
 export type QaDriverKind = 'browser' | 'computer';
@@ -32,6 +33,26 @@ export interface QaScenarioMeta {
   createdAt: string;
   /** Deterministic informational notes (Explore visual findings surfaced as notes). */
   notes?: string[];
+  /**
+   * Scenario-level settle override recorded by qa_record_export from the Explore
+   * session's effective policy (present only when it differs from the defaults),
+   * and applied by qa_replay_run so replay judges the page with the same settle
+   * policy Explore used. All fields optional; the loader validates positive
+   * integers and clamps budgetMs <= QA_SETTLE_SCHEMA_BUDGET_MAX and the others
+   * <= budgetMs.
+   */
+  settle?: QaSettleOverride;
+}
+
+/** Upper clamp for a persisted scenario settle override budget (ms). */
+export const QA_SETTLE_SCHEMA_BUDGET_MAX = 15_000;
+
+/** Optional per-field settle override for a scenario (meta.settle). */
+export interface QaSettleOverride {
+  budgetMs?: number;
+  quietMs?: number;
+  postChangeQuietMs?: number;
+  intervalMs?: number;
 }
 
 export interface QaScenarioTarget {
@@ -404,4 +425,10 @@ export interface QaRunReport {
   /** Advisory visual findings (non-deterministic; excluded from determinism by schema). */
   advisory?: QaAdvisoryResult[];
   failure?: QaRunFailure;
+  /**
+   * The effective settle policy this run applied (scenario meta.settle over
+   * env/host defaults). Printed in report.json / report.md so a reader can see
+   * which budget the run actually judged the page under. Deterministic.
+   */
+  settle?: QaSettlePolicy;
 }

@@ -6,13 +6,21 @@ import type {
   QaNodePredicate,
   QaScenario,
   QaScenarioAction,
+  QaSettleOverride,
   QaStep,
 } from '../contracts.ts';
-import { QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
+import { QA_SETTLE_SCHEMA_BUDGET_MAX, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
 import { projectArtifactPath, redactText } from '../redaction/index.ts';
 import { evaluateAssertion, loadScenarioFromPath, validateScenario } from '../replay/index.ts';
 import type { QaObservation, QaSemanticNode } from '../session/adapter.ts';
-import { normalizeObservableValue } from '../session/settle.ts';
+import {
+  normalizeObservableValue,
+  QA_SETTLE_BUDGET_MS,
+  QA_SETTLE_INTERVAL_MS,
+  QA_SETTLE_POST_CHANGE_QUIET_MS,
+  QA_SETTLE_QUIET_MS,
+} from '../session/settle.ts';
+import type { QaSettlePolicy } from '../session/settle.ts';
 import type { QaTrajectoryRecorder } from './recorder.ts';
 import type {
   QaExportExclusion,
@@ -667,6 +675,42 @@ function resolveDirectionScroll(candidates: Candidate[], index: number): Resolve
   return null;
 }
 
+/** The pure default settle policy, against which export detects a non-default session policy. */
+function defaultSettlePolicy(): QaSettlePolicy {
+  return {
+    budgetMs: QA_SETTLE_BUDGET_MS,
+    quietMs: QA_SETTLE_QUIET_MS,
+    postChangeQuietMs: QA_SETTLE_POST_CHANGE_QUIET_MS,
+    intervalMs: QA_SETTLE_INTERVAL_MS,
+  };
+}
+
+/**
+ * The scenario-schema settle override for a session's effective policy, or
+ * undefined when the policy equals the defaults. When a non-default policy is
+ * recorded it is written IN FULL (all four fields) so replay reproduces exactly
+ * the policy Explore used; values are clamped to the schema bounds
+ * (budgetMs <= QA_SETTLE_SCHEMA_BUDGET_MAX, the others <= budgetMs) so the file
+ * always round-trips through the loader's own validation.
+ */
+function scenarioSettleOverride(policy: QaSettlePolicy | null): QaSettleOverride | undefined {
+  if (policy === null) return undefined;
+  const defaults = defaultSettlePolicy();
+  if (
+    policy.budgetMs === defaults.budgetMs
+    && policy.quietMs === defaults.quietMs
+    && policy.postChangeQuietMs === defaults.postChangeQuietMs
+    && policy.intervalMs === defaults.intervalMs
+  ) {
+    return undefined;
+  }
+  const budgetMs = Math.min(Math.max(1, Math.round(policy.budgetMs)), QA_SETTLE_SCHEMA_BUDGET_MAX);
+  const quietMs = Math.min(Math.max(1, Math.round(policy.quietMs)), budgetMs);
+  const postChangeQuietMs = Math.min(Math.max(1, Math.round(policy.postChangeQuietMs)), budgetMs);
+  const intervalMs = Math.min(Math.max(1, Math.round(policy.intervalMs)), budgetMs);
+  return { budgetMs, quietMs, postChangeQuietMs, intervalMs };
+}
+
 function buildScenario(
   trajectory: QaTrajectorySnapshot,
   options: QaRecordExportOptions,
@@ -882,6 +926,9 @@ function buildScenario(
   // only the deterministic question text is surfaced, so the exported scenario
   // replays byte-identically without a vision model available.
   const visualNotes = trajectory.visualFindings.map((finding) => 'visual finding: ' + finding.question);
+  // Persist the Explore session's effective settle policy so replay judges the
+  // page with the same budget/quiet windows (omitted when it is the default).
+  const settleOverride = scenarioSettleOverride(trajectory.settlePolicy);
   const rawScenario: QaScenario = {
     meta: {
       name: redactText(options.name?.trim() || fallbackName),
@@ -892,6 +939,7 @@ function buildScenario(
       driver: trajectory.driver,
       createdAt: new Date().toISOString(),
       ...(visualNotes.length === 0 ? {} : { notes: visualNotes }),
+      ...(settleOverride === undefined ? {} : { settle: settleOverride }),
     },
     target: { launch: trajectory.launch },
     steps,

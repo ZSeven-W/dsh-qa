@@ -164,6 +164,13 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
   if (receipts.warning !== undefined) {
     lines.push('- **Warning**: ' + mdInline(receipts.warning));
   }
+  if (report.settle !== undefined) {
+    const settle = report.settle;
+    lines.push(
+      '- **Settle policy**: budget ' + String(settle.budgetMs) + 'ms, quiet ' + String(settle.quietMs)
+      + 'ms, post-change quiet ' + String(settle.postChangeQuietMs) + 'ms, interval ' + String(settle.intervalMs) + 'ms',
+    );
+  }
   lines.push('');
   lines.push('## Steps');
   if (report.steps.length === 0) lines.push('- (none)');

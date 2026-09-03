@@ -168,6 +168,9 @@ export class QaSession {
     if (this.#started) throw new Error('session is already started');
     const info = await this.#adapter.start(this.#ownerId, options);
     this.#started = true;
+    // Passive: hand the recorder this session's RESOLVED settle policy so the
+    // exporter can persist it into meta.settle (see adapter noteSettlePolicy).
+    this.#adapter.noteSettlePolicy?.(this.#ownerId, this.#settle);
     return info;
   }
 
@@ -308,12 +311,19 @@ export class QaSessionManager {
     this.#options = options;
   }
 
-  session(ownerId: string): QaSession {
+  session(ownerId: string, options: QaSessionOptions = {}): QaSession {
     if (this.#disposed) throw new Error('session manager is disposed');
     const owner = normalizeOwner(ownerId);
     let session = this.#sessions.get(owner);
     if (!session) {
-      session = new QaSession(this.#adapter, owner, this.#options);
+      // Per-session options (a qa_session_start settle override) merge over the
+      // manager defaults, field-wise for settle so a widened budget keeps the
+      // manager's other settle fields.
+      session = new QaSession(this.#adapter, owner, {
+        ...this.#options,
+        ...options,
+        settle: { ...(this.#options.settle ?? {}), ...(options.settle ?? {}) },
+      });
       this.#sessions.set(owner, session);
     }
     return session;

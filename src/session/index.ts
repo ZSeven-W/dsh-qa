@@ -39,6 +39,7 @@ export {
   observeUntilStable,
   projectSemanticView,
   resolveSettlePolicy,
+  settleStartOverride,
   QA_SETTLE_BUDGET_MS,
   QA_SETTLE_INTERVAL_MS,
   QA_SETTLE_POST_CHANGE_QUIET_MS,
