@@ -69,6 +69,7 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   the predicate identify EXACTLY ONE node (\`TARGET_NOT_UNIQUE\` otherwise — a twin already holding the
   value proves nothing), and a \`valueWithheld\`/\`secure\`/\`valueTruncated\` node can never satisfy it
   (\`VALUE_WITHHELD\` / \`VALUE_SECURE\` / \`VALUE_TRUNCATED\`).
+- A POSITIVE existence assertion (\`node-present\` / \`node-value\` / \`node-in-viewport\` / \`page-url\`) that is first "not found" is re-observed within the settle budget before failing — the node may just be slow to render — and the result records \`attempts\` / \`elapsedMs\`. \`node-absent\` is never retried into a pass: absence is never proven by waiting, only by having seen the whole view.
 - A view can also be UNSTABLE: when a fresh observation's \`settle.stable\` is \`false\` the page never
   stopped changing inside the settle budget, so nothing in it proves anything. \`qa_assert\` then returns
   \`passed: false\` with \`inconclusive: true\` and \`code: "INCONCLUSIVE_UNSTABLE"\` (the same non-result

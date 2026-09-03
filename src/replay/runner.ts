@@ -21,7 +21,7 @@ import { captureLatestVisual, QaSession, type QaActResult } from '../session/ses
 import type { QaSettlePolicy } from '../session/settle.ts';
 import { evaluateVisualQuestion, persistCaptureFile, type QaVisualServices } from '../vision.ts';
 import {
-  decideAssertion,
+  decideAssertionWithRetry,
   matchesNode,
   sessionReobserve,
   QA_ESCALATED_NODE_BUDGET,
@@ -191,6 +191,8 @@ function buildStepResult(
   observed: unknown,
   completeness: QaViewCompleteness | null = null,
   reason?: string,
+  attempts?: number,
+  elapsedMs?: number,
 ): QaStepResult {
   return {
     index: base.index,
@@ -205,6 +207,7 @@ function buildStepResult(
     expected: assertion.expected,
     ...(completeness === null ? {} : { completeness }),
     ...(reason === undefined ? {} : { reason }),
+    ...(attempts === undefined || attempts <= 1 ? {} : { attempts, elapsedMs: elapsedMs ?? 0 }),
   };
 }
 
@@ -475,8 +478,10 @@ export async function runScenario(
 
       // confirmed OR unknown receipt: only the fresh SETTLED re-observation
       // decides — and never a TRUNCATED one when the outcome depends on having
-      // seen the whole view (see decideAssertion).
-      const decision = await decideAssertion(step.assert, result.observation, reobserve);
+      // seen the whole view (see decideAssertion). A positive-existence "not
+      // found" is retried within the settle budget (see decideAssertionWithRetry)
+      // so a slow page's late node/role is not mistaken for absence.
+      const decision = await decideAssertionWithRetry(step.assert, result.observation, reobserve, session.settlePolicy.budgetMs);
       stepResults.push(
         buildStepResult(
           base,
@@ -487,6 +492,8 @@ export async function runScenario(
           decision.observed,
           decision.completeness,
           decision.reason,
+          decision.attempts,
+          decision.elapsedMs,
         ),
       );
       current = decision.observation;
@@ -517,7 +524,7 @@ export async function runScenario(
       for (let i = 0; failure === null && i < scenario.assertions.length; i += 1) {
         const assertion = scenario.assertions[i];
         if (assertion === undefined) continue;
-        const decision = await decideAssertion(assertion, finalObservation, reobserve);
+        const decision = await decideAssertionWithRetry(assertion, finalObservation, reobserve, session.settlePolicy.budgetMs);
         assertionResults.push({
           kind: assertion.kind,
           ...(assertion.description === undefined ? {} : { description: assertion.description }),
@@ -526,6 +533,7 @@ export async function runScenario(
           observed: decision.observed,
           ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
           ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+          ...(decision.attempts <= 1 ? {} : { attempts: decision.attempts, elapsedMs: decision.elapsedMs }),
         });
         finalObservation = decision.observation;
         if (!decision.passed) {

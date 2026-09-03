@@ -24,7 +24,7 @@ import {
   QaTrajectoryRecorder,
   RecordingQaDriverAdapter,
 } from './explore/index.ts';
-import { decideAssertion, loadScenarioFromPath, runScenario, sessionReobserve, validateAssertion } from './replay/index.ts';
+import { decideAssertionWithRetry, loadScenarioFromPath, runScenario, sessionReobserve, validateAssertion } from './replay/index.ts';
 import { writeReports } from './reporters/index.ts';
 import { captureLatestVisual, QaSessionManager, resolveSettlePolicy, toLosslessJson } from './session/index.ts';
 import { toVisualCaptureInfo } from './session/adapter.ts';
@@ -415,7 +415,7 @@ server.tool(
     // A truncated view can never prove an absence (and never disprove a
     // presence): the decision escalates the node budget once and fails closed
     // with INCONCLUSIVE_TRUNCATED rather than reporting a false green.
-    const decision = await decideAssertion(assertion, settled.observation, sessionReobserve(session));
+    const decision = await decideAssertionWithRetry(assertion, settled.observation, sessionReobserve(session), session.settlePolicy.budgetMs);
     return textResult({
       ok: true,
       passed: decision.passed,
@@ -424,6 +424,7 @@ server.tool(
       expected: assertion.expected,
       settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
       ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
+      ...(decision.attempts <= 1 ? {} : { attempts: decision.attempts, elapsedMs: decision.elapsedMs }),
     });
   }),
 );

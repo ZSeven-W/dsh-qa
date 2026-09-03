@@ -333,6 +333,74 @@ export async function decideAssertion(
   };
 }
 
+/** Assertion kinds whose "not found" outcome may be retried (positive existence). */
+const RETRIABLE_KINDS = new Set<QaAssertionKind>(['node-present', 'node-value', 'node-in-viewport', 'page-url']);
+
+/** Structural refusal codes waiting can never fix (a twin, or a flagged value). */
+const NON_RETRIABLE_REASONS = new Set<string>([
+  QA_TARGET_NOT_UNIQUE,
+  QA_VALUE_WITHHELD,
+  QA_VALUE_SECURE,
+  QA_VALUE_TRUNCATED,
+]);
+
+export interface QaRetriedDecision extends QaAssertionDecision {
+  /** Settled observations the assertion was evaluated against (always >= 1). */
+  attempts: number;
+  /** Wall-clock milliseconds from the first decision until the loop stopped. */
+  elapsedMs: number;
+}
+
+/**
+ * Decide a positive-existence assertion with a BOUNDED retry.
+ *
+ * Real sites are slow: after the post-action settle concludes, the asserted
+ * node (a lazy-loaded suggestion, a late-hydrated role switch) may not have
+ * rendered yet. When the first settled decision is "not found" — including the
+ * INCONCLUSIVE_TRUNCATED branch taken after the single budget escalation — do
+ * NOT conclude immediately. Re-observe (settled, at the escalated node budget)
+ * and re-evaluate until the assertion is found (sound on any view, complete or
+ * truncated) or `budgetMs` is exhausted, then return the existing outcome with
+ * the attempt/elapsed counts attached.
+ *
+ * `node-absent` is NEVER retried into a pass: absence is never proven by
+ * waiting, only by having seen the whole view. A structural refusal
+ * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED) is
+ * deterministic and never resolves by waiting either.
+ */
+export async function decideAssertionWithRetry(
+  assertion: QaAssertion,
+  observation: QaObservation,
+  reobserve: QaReobserve,
+  budgetMs: number,
+): Promise<QaRetriedDecision> {
+  const startedAt = Date.now();
+  let attempts = 1;
+  let decision = await decideAssertion(assertion, observation, reobserve);
+  if (decision.passed) return { ...decision, attempts, elapsedMs: Date.now() - startedAt };
+  if (!RETRIABLE_KINDS.has(assertion.kind)) {
+    return { ...decision, attempts, elapsedMs: Date.now() - startedAt };
+  }
+  if (decision.reason !== undefined && NON_RETRIABLE_REASONS.has(decision.reason)) {
+    return { ...decision, attempts, elapsedMs: Date.now() - startedAt };
+  }
+  for (;;) {
+    if (Date.now() - startedAt >= budgetMs) break;
+    let next: QaObservation;
+    try {
+      next = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
+    } catch {
+      // No settled fuller view is available: keep the existing outcome.
+      break;
+    }
+    attempts += 1;
+    decision = await decideAssertion(assertion, next, reobserve);
+    if (decision.passed) break;
+    if (decision.reason !== undefined && NON_RETRIABLE_REASONS.has(decision.reason)) break;
+  }
+  return { ...decision, attempts, elapsedMs: Date.now() - startedAt };
+}
+
 /** Minimal settled-observation surface decideAssertion escalates through. */
 export interface QaSettledObserver {
   observeSettled(options?: QaObserveOptions): Promise<{ observation: QaObservation; stable: boolean; budgetMs: number }>;

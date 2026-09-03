@@ -1,5 +1,6 @@
 export {
   decideAssertion,
+  decideAssertionWithRetry,
   evaluateAssertion,
   matchesNode,
   sessionReobserve,
@@ -11,6 +12,7 @@ export {
   type AssertionEval,
   type QaAssertionDecision,
   type QaReobserve,
+  type QaRetriedDecision,
   type QaSettledObserver,
 } from './assertions.ts';
 export {

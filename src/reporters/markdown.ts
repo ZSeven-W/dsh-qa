@@ -175,6 +175,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     lines.push('  - outcome: ' + mdInline(step.outcome));
     lines.push('  - assertion: ' + mdInline(step.assertion.kind) + ' -> ' + (step.assertionPassed ? 'PASS' : 'FAIL'));
     lines.push('  - observed: ' + mdCode(inline(step.observed, roots)));
+    if (step.attempts !== undefined) {
+      lines.push('  - assertion retries: ' + String(step.attempts) + ' attempt(s) over ' + String(step.elapsedMs ?? 0) + 'ms');
+    }
     if (step.reason !== undefined) {
       lines.push('  - reason: ' + mdInline(step.reason));
     }
@@ -190,6 +193,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
       '- ' + mdInline(assertion.kind) + ' -> ' + (assertion.passed ? 'PASS' : 'FAIL') +
       ' (observed: ' + mdCode(inline(assertion.observed, roots)) + ')',
     );
+    if (assertion.attempts !== undefined) {
+      lines.push('  - assertion retries: ' + String(assertion.attempts) + ' attempt(s) over ' + String(assertion.elapsedMs ?? 0) + 'ms');
+    }
     if (assertion.reason !== undefined) {
       lines.push('  - reason: ' + mdInline(assertion.reason));
     }

@@ -74,6 +74,21 @@ Evidence of presence is sound; absence of evidence is not evidence of absence.
    - An action ref missing from a truncated preceding observation is excluded
      with a detail that says the target may have fallen outside the window.
 
+6. **A positive-existence "not found" is retried, bounded by the settle budget.**
+   `decideAssertionWithRetry` (src/replay/assertions.ts) re-observes a
+   `node-present` / `node-value` / `node-in-viewport` / `page-url` that was
+   first decided "not found" (including the `INCONCLUSIVE_TRUNCATED` branch
+   taken after the single escalation): a slow page's late node or role switch is
+   not absence. Each re-observation is SETTLED at `QA_ESCALATED_NODE_BUDGET`;
+   the loop stops as soon as the assertion is found (a returned node is sound on
+   any view) or the settle budget is exhausted, and the step / assertion result
+   records `attempts` and `elapsedMs` (rendered in report.md, excluded from the
+   determinism projection as duration, not outcome). `node-absent` is NEVER
+   retried — absence is never proven by waiting, only by having seen the whole
+   view — and a structural refusal (`TARGET_NOT_UNIQUE`, `VALUE_WITHHELD` /
+   `VALUE_SECURE` / `VALUE_TRUNCATED`) is deterministic and never resolves by
+   waiting either.
+
 ## Budget
 
 `QA_ESCALATED_NODE_BUDGET` is a named constant in src/replay/assertions.ts.

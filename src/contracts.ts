@@ -282,6 +282,15 @@ export interface QaStepResult {
    * rather than an ordinary value mismatch. ADDITIVE: schemaVersion stays 1.
    */
   reason?: string;
+  /**
+   * Bounded-retry accounting for a positive-existence assertion that was
+   * re-observed: how many settled observations it was evaluated against, and
+   * the wall-clock time that took. Present only when a retry actually ran
+   * (attempts > 1). ADDITIVE: schemaVersion stays 1, and both fields are
+   * excluded from the determinism projection (they are duration, not outcome).
+   */
+  attempts?: number;
+  elapsedMs?: number;
 }
 
 export interface QaAssertionResult {
@@ -298,6 +307,12 @@ export interface QaAssertionResult {
    * rather than an ordinary value mismatch. ADDITIVE: schemaVersion stays 1.
    */
   reason?: string;
+  /**
+   * Bounded-retry accounting (see QaStepResult.attempts). Present only when a
+   * retry actually ran. ADDITIVE and excluded from the determinism projection.
+   */
+  attempts?: number;
+  elapsedMs?: number;
 }
 
 export interface QaReproductionStep {
