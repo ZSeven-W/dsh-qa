@@ -52,7 +52,7 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   REWROTE the target's accessible name OR role (\`aria-label\` following the value, "Search" ->
   "Search: async", or \`textbox\` -> \`combobox\` once suggestions open): the exporter then follows
   the same identity rule the echo mask uses (match by name role-agnostic OR by role name-agnostic,
-  unique among candidates) and binds the assertion to the node's CURRENT predicate, never
+  unique among candidates) and binds the assertion to the node's MOST STABLE predicate: the unique accessible name alone (role omitted) when the role changed, so a fast replay still matches before the role switch; role+name only when the name alone is ambiguous. It never degrades to
   \`node-present\` of the renamed field alone. A secret-bearing control (\`valueWithheld\`,
   password/one-time-code/cc autocomplete) never carries a value, so no value assertion is
   synthesized for it.

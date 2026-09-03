@@ -212,7 +212,12 @@ test('A: a role-changing fill is proven by node-value on the renamed target, ind
     assert.equal(exported.excludedActions.length, 0, JSON.stringify(exported.excludedActions))
     const step = exported.scenario.steps[0]
     assert.equal(step.assert.kind, 'node-value', 'the proof is the target value, never the suggestion container')
-    assert.deepEqual(step.assert.expected, { role: 'combobox', name: 'Search Wikipedia', value: 'DeepSeek' })
+    // The role drifted (textbox -> combobox) during the action, so the predicate
+    // binds to the unique accessible name and OMITS the role (QA-BL-039): a fast
+    // replay observes the pre-switch textbox and would never re-match a role.
+    assert.deepEqual(step.assert.expected, { name: 'Search Wikipedia', value: 'DeepSeek' })
+    assert.equal(step.assert.expected.role, undefined)
+    assert.match(step.assert.description, /Discriminator: name-only/)
     assert.doesNotMatch(step.intent, /Weak proof/, 'a node-value on the found target is sound even on a truncated view')
 
     // Replay passes against the same fixture and against a fixture whose

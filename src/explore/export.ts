@@ -281,11 +281,27 @@ function semanticDelta(
   if (before === null) return { delta: null, rejectedFragile: null };
   const anchor = targetAnchor(before, after, target);
   const candidates = after.nodes
-    .map((node, order) => ({ node, order, predicate: predicateFor(node) }))
-    .filter((item): item is { node: QaSemanticNode; order: number; predicate: QaNodePredicate } => (
-      item.predicate !== null
-      && countMatches(after, item.predicate) === 1
-      && countMatches(before, item.predicate) === 0
+    .map((node, order) => {
+      const base = predicateFor(node);
+      if (base === null || base.name === undefined) return null;
+      // Role drift: when the node's accessible name existed in `before` under a
+      // DIFFERENT role, the role changed within the trajectory (Wikipedia's
+      // search input: textbox -> combobox). Prefer the name-only predicate for
+      // the emitted proof when the name is unique in the settled view, exactly
+      // like the node-value discriminator; "new" is still decided against the
+      // role+name predicate, so a role drift stays a legitimate delta.
+      const roleDrifted = before.nodes.some(
+        (candidate) => candidate.name === base.name && candidate.role !== base.role,
+      );
+      const predicate = roleDrifted && countMatches(after, { name: base.name }) === 1
+        ? { name: base.name }
+        : base;
+      return { node, order, base, predicate };
+    })
+    .filter((item): item is { node: QaSemanticNode; order: number; base: QaNodePredicate; predicate: QaNodePredicate } => (
+      item !== null
+      && countMatches(after, item.base) === 1
+      && countMatches(before, item.base) === 0
     ))
     .map((item) => ({
       ...item,
@@ -326,6 +342,58 @@ interface SynthesizedAssertion {
   assertion: QaAssertion;
   /** Non-null when the proof is weak, for the human-readable step intent. */
   weakness: string | null;
+}
+
+/**
+ * The MOST STABLE discriminator for a node-value assertion whose target's role
+ * the fill rewrote. A role that changes over time (Wikipedia's search input:
+ * `textbox` -> `combobox` once the lazy typeahead module loads) must never be
+ * the only thing the predicate binds to, because a fast replay can observe the
+ * pre-switch role and then never find the node. Prefer the accessible name
+ * alone when it is unique among ALL nodes in the settled view; fall back to
+ * role+name only when the name alone is ambiguous (and only when role+name is
+ * itself unique — the one case where the changed role is the only unique key).
+ */
+interface ValueDiscriminator {
+  predicate: QaNodePredicate;
+  explanation: string;
+}
+
+function valueDiscriminator(
+  after: QaObservation,
+  node: QaSemanticNode,
+  target: QaNodePredicate,
+  roleChanged: boolean,
+): ValueDiscriminator | null {
+  const role = clean(node.role);
+  const name = clean(node.name);
+  if (!roleChanged) {
+    // Role stable: role+name is the natural identity (mirrors predicateFor).
+    if (role === '' || name === '') return null;
+    if (countMatches(after, { role, name }) !== 1) return null;
+    return {
+      predicate: { role, name },
+      explanation: 'role+name: the role stayed stable across the action, so the predicate keeps the role.',
+    };
+  }
+  // Role changed: prefer name-only, which needs only a non-empty unique name.
+  if (name !== '' && countMatches(after, { name }) === 1) {
+    return {
+      predicate: { name },
+      explanation: 'name-only: the role changed from "' + (target.role ?? '') + '" to "' + role
+        + '" during the action, and the accessible name is unique among all nodes, so the role is omitted '
+        + 'to keep replay stable across the role switch.',
+    };
+  }
+  if (name !== '' && role !== '' && countMatches(after, { role, name }) === 1) {
+    return {
+      predicate: { role, name },
+      explanation: 'role+name: the role changed from "' + (target.role ?? '') + '" to "' + role
+        + '" during the action and the accessible name is ambiguous, so role+name is the only unique key '
+        + '(the changed role is used only because nothing else uniquely identifies the node).',
+    };
+  }
+  return null;
 }
 
 /**
@@ -372,13 +440,20 @@ function synthesizeValueAssertion(
     if (candidates.length !== 1) return null;
     const renamed = candidates[0];
     if (renamed === undefined) return null;
-    const predicate = predicateFor(renamed);
-    if (predicate === null || countMatches(after, predicate) !== 1) return null;
+    // A role that changed between the pre- and post-action observation is the
+    // very thing a fast replay cannot re-match, so the predicate must be the
+    // MOST STABLE discriminator, never a re-pinned role (see valueDiscriminator).
+    const roleChanged = target.role !== undefined && clean(renamed.role) !== target.role;
+    const discriminator = valueDiscriminator(after, renamed, target, roleChanged);
+    if (discriminator === null) return null;
+    const description = roleChanged
+      ? 'Settled post-action observation confirmed the typed value on the action target. Discriminator: ' + discriminator.explanation
+      : 'Settled post-action observation confirmed the typed value on the action target, whose accessible name the fill rewrote.';
     return {
       assertion: {
         kind: 'node-value',
-        expected: { ...predicate, value: expected },
-        description: 'Settled post-action observation confirmed the typed value on the action target, whose accessible name or role the fill rewrote.',
+        expected: { ...discriminator.predicate, value: expected },
+        description,
       },
       weakness: null,
     };
