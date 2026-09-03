@@ -156,7 +156,10 @@ async function handshake() {
 console.log('[smoke:pack] 1/5 build + typecheck + test (prepack gate) ...');
 run('npm', ['run', 'build'], { cwd: ROOT });
 run('npm', ['run', 'typecheck'], { cwd: ROOT });
-run('npm', ['run', 'test'], { cwd: ROOT });
+// The full suite (browser integration + the 50k redaction fuzz) now runs
+// longer than the default 300s budget; give it a 10-minute ceiling so the
+// pack smoke does not false-fail at step 1 on a healthy tree.
+run('npm', ['run', 'test'], { cwd: ROOT, timeoutMs: 600_000 });
 
 // ---------------------------------------------------------------------------
 // 2. Pack the REAL repository root. The tarball is what `npm publish` (or a
@@ -265,5 +268,46 @@ console.log(entryOut.trim());
 if (!/ENTRY_OK/.test(entryOut)) fail('installed entry did not report ENTRY_OK');
 console.log('[smoke:pack] entry OK: installed ' + PKG_NAME + ' resolves and loads its plugin entry');
 
+// ---------------------------------------------------------------------------
+// 7. Run the PUBLISHED example end to end from the installed copy. This is the
+//    packaging regression QA-BL-001 closed: the shipped scenario depends on
+//    fixtures/web/ (which must be in package.json files) and must not depend
+//    on a hardcoded port. Pack + install the sibling @zseven-w/dsh-browser
+//    (the host normally provides it; plain npm cannot fetch it yet), then run
+//    the installed scripts/run-example.mjs with cwd = installDir. The runner
+//    serves fixtures/web/ FROM THE INSTALLED PACKAGE (never the worktree) and
+//    replays it headlessly, so this step FAILS when fixtures/web/ is dropped
+//    from files or the example cannot reach status "pass".
+console.log('\n[smoke:pack] 7/7 pack + install the browser driver, run the published example');
+const browserRoot = join(ROOT, '..', 'dsh-browser');
+if (!existsSync(join(browserRoot, 'package.json'))) {
+  fail('sibling @zseven-w/dsh-browser repo not found at ' + browserRoot);
+}
+const browserPackDir = mkdtempSync(join(tmpdir(), 'dsh-qa-browser-pack-'));
+tempDirs.push(browserPackDir);
+const browserPackOut = run('npm', ['pack', '--ignore-scripts', '--cache', cacheDir, '--pack-destination', browserPackDir], { cwd: browserRoot, env: { npm_config_cache: cacheDir } });
+console.log(browserPackOut.split('\n').slice(-6).join('\n'));
+const browserTarballs = readdirSync(browserPackDir).filter((f) => f.endsWith('.tgz'));
+if (browserTarballs.length !== 1) fail('expected exactly one browser-driver tarball in ' + browserPackDir + ', found ' + JSON.stringify(browserTarballs));
+const browserTarballPath = join(browserPackDir, browserTarballs[0]);
+console.log('[smoke:pack] browser-driver tarball: ' + browserTarballPath + ' (' + statSync(browserTarballPath).size + ' bytes)');
+const browserInstallOut = run('npm', ['i', browserTarballPath, '--cache', cacheDir], { cwd: installDir, timeoutMs: 600_000, env: { npm_config_cache: cacheDir } });
+console.log(browserInstallOut.split('\n').slice(-8).join('\n'));
+
+const runExamplePath = join(installDir, 'node_modules', PKG_NAME, 'scripts', 'run-example.mjs');
+if (!existsSync(runExamplePath)) fail('installed ' + PKG_NAME + '/scripts/run-example.mjs is missing after install');
+const exampleReportDir = mkdtempSync(join(tmpdir(), 'dsh-qa-example-report-'));
+tempDirs.push(exampleReportDir);
+const exampleOut = run('node', [runExamplePath, '--output-dir', exampleReportDir], { cwd: installDir, timeoutMs: 300_000 });
+console.log(exampleOut.trim());
+if (!/\[example\] status: pass/.test(exampleOut)) {
+  fail('the published example did not report "[example] status: pass"');
+}
+const exampleReportJson = JSON.parse(readFileSync(join(exampleReportDir, 'report.json'), 'utf8'));
+if (exampleReportJson.status !== 'pass') {
+  fail('the published example report.json status is ' + JSON.stringify(exampleReportJson.status) + ', expected "pass"');
+}
+console.log('[smoke:pack] published example OK: status=pass, report=' + join(exampleReportDir, 'report.json'));
+
 cleanup();
-console.log('\nSMOKE PASSED: the packed tarball installs with plain npm (no ERESOLVE), pulls zero @deepseek-ai/* packages, the installed lib/server.mjs serves initialize + tools/list with all ' + EXPECTED_TOOLS.length + ' tools, and the installed package entry (name/apply/inject) loads.');
+console.log('\nSMOKE PASSED: the packed tarball installs with plain npm (no ERESOLVE), pulls zero @deepseek-ai/* packages, the installed lib/server.mjs serves initialize + tools/list with all ' + EXPECTED_TOOLS.length + ' tools, the installed package entry (name/apply/inject) loads, and the installed scripts/run-example.mjs replays the shipped example to status "pass" from the installed copy.');
