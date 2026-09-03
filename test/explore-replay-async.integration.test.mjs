@@ -259,7 +259,7 @@ test('settle: async outcomes, hydration churn, and a page that never settles', {
       headless: true,
     })
     assert.equal(neverReplay.status, 'fail', 'replay must fail honestly, not pass by luck')
-    assert.match(neverReplay.failure.message, /never settled within the 2500ms settle budget/)
+    assert.match(neverReplay.failure.message, /never settled within the 6000ms settle budget/)
   } finally {
     await host.dispose()
     server.closeAllConnections?.()

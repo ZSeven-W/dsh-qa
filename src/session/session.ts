@@ -23,6 +23,7 @@ import {
   type QaSettleCallOptions,
   type QaSettlePolicy,
   type QaSettleResult,
+  type QaSettleWidenGate,
 } from './settle.ts';
 import { QA_INCONCLUSIVE_UNSTABLE } from '../contracts.ts';
 
@@ -128,6 +129,8 @@ export class QaSession {
   readonly #adapter: QaDriverAdapter;
   readonly #ownerId: string;
   readonly #settle: QaSettlePolicy;
+  /** Once-per-session widening gate: flips after the session's first widen. */
+  readonly #widenGate: QaSettleWidenGate = { widened: false };
   /** Semantic projection of the last observed view (the settle baseline). */
   #lastView: string | null = null;
   /** The last raw observation, so an echo-masked baseline can be recomputed. */
@@ -194,6 +197,7 @@ export class QaSession {
       () => this.#adapter.observe(this.#ownerId, options),
       this.#settle,
       settle ?? {},
+      this.#widenGate,
     );
     this.#lastView = projectSemanticView(result.observation);
     this.#lastObservation = result.observation;
@@ -206,7 +210,14 @@ export class QaSession {
         elapsedMs: result.elapsedMs,
         budgetMs: result.budgetMs,
         quietRequiredMs: result.quietRequiredMs,
+        widened: result.widened,
       });
+      // A widening mutated the session's effective budget in place: re-persist
+      // the policy so the exporter records the WIDENED budget into meta.settle
+      // (replay then starts widened and does not rediscover it).
+      if (result.widened !== null) {
+        this.#adapter.noteSettlePolicy?.(this.#ownerId, this.#settle);
+      }
     } catch { /* observational only */ }
     return result;
   }
@@ -246,6 +257,7 @@ export class QaSession {
         elapsedMs: settled.elapsedMs,
         budgetMs: settled.budgetMs,
         quietRequiredMs: settled.quietRequiredMs,
+        widened: settled.widened,
       },
       // A confirmed/unknown receipt still describes a dispatch, but an unstable
       // proof window means the CONSEQUENCE is unproven: `outcome` stays honest

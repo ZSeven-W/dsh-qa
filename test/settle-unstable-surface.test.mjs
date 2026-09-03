@@ -14,7 +14,7 @@ import { QA_INCONCLUSIVE_UNSTABLE } from '../src/contracts.ts'
 // failure. These tests drive the REAL tool surface (createQaTools / QaToolHost)
 // with a synthetic churning adapter and lock the fail-closed parity.
 
-const SETTLE = { budgetMs: 120, quietMs: 40, intervalMs: 10 }
+const SETTLE = { budgetMs: 120, quietMs: 40, intervalMs: 10, adaptiveBudgetMs: 0 }
 
 /** Observation flips every call (title ticks), so the view never settles. */
 function churningAdapter() {

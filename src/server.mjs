@@ -188,6 +188,7 @@ server.tool(
     }).optional(),
     settle_budget_ms: z.number().int().optional(),
     settle_quiet_ms: z.number().int().optional(),
+    settle_adaptive_budget_ms: z.number().int().optional(),
   },
   guard(async (args) => {
     const owner = ownerFrom(args);
@@ -229,7 +230,7 @@ server.tool(
     });
     return textResult({
       ...settled.observation,
-      settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
+      settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened },
     });
   }),
 );
@@ -411,7 +412,7 @@ server.tool(
         kind: assertion.kind,
         observed: null,
         expected: assertion.expected,
-        settle: { stable: false, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
+        settle: { stable: false, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened },
         reason: unstableReason(settled.budgetMs),
       });
     }
@@ -425,7 +426,7 @@ server.tool(
       kind: assertion.kind,
       observed: decision.observed,
       expected: assertion.expected,
-      settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
+      settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened },
       ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
       ...(decision.attempts <= 1 ? {} : { attempts: decision.attempts, elapsedMs: decision.elapsedMs }),
     });

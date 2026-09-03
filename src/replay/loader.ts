@@ -94,7 +94,7 @@ const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer'];
 const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value'];
 const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as const;
 const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes', 'settle'] as const;
-const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'intervalMs'] as const;
+const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'intervalMs', 'adaptiveBudgetMs'] as const;
 const TARGET_FIELDS = ['launch', 'loginState'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description'] as const;
@@ -174,6 +174,16 @@ function validateSettleOverride(value: unknown, position: string): QaSettleOverr
     out.postChangeQuietMs = validateSettleMs(obj.postChangeQuietMs, position + '.postChangeQuietMs', ceiling);
   }
   if (obj.intervalMs !== undefined) out.intervalMs = validateSettleMs(obj.intervalMs, position + '.intervalMs', ceiling);
+  if (obj.adaptiveBudgetMs !== undefined) {
+    // Unlike the other fields, 0 is valid: it disables adaptation. Clamped to
+    // the schema maximum; the [budgetMs, max] floor is applied later by
+    // resolveSettlePolicy when replay builds the session.
+    const adaptive = obj.adaptiveBudgetMs;
+    if (typeof adaptive !== 'number' || !Number.isFinite(adaptive) || !Number.isInteger(adaptive) || adaptive < 0) {
+      fail(position + '.adaptiveBudgetMs', 'expected a non-negative integer number of milliseconds');
+    }
+    out.adaptiveBudgetMs = Math.min(adaptive, QA_SETTLE_SCHEMA_BUDGET_MAX);
+  }
   return out;
 }
 

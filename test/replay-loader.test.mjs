@@ -259,4 +259,18 @@ test('meta.settle validates, clamps, and rejects garbage', () => {
   const unknown = validScenario();
   unknown.meta.settle = { budgetMs: 1000, bogus: 1 };
   expectPosition(() => validateScenario(unknown), 'meta.settle');
+
+  // adaptiveBudgetMs: 0 disables, positive values clamp to the schema maximum,
+  // and garbage (negative / fractional / non-number) fails closed.
+  const adaptiveDisabled = validScenario();
+  adaptiveDisabled.meta.settle = { budgetMs: 2500, adaptiveBudgetMs: 0 };
+  assert.deepEqual(validateScenario(adaptiveDisabled).meta.settle, { budgetMs: 2500, adaptiveBudgetMs: 0 });
+  const adaptiveClamp = validScenario();
+  adaptiveClamp.meta.settle = { adaptiveBudgetMs: 20000 };
+  assert.equal(validateScenario(adaptiveClamp).meta.settle.adaptiveBudgetMs, 15000);
+  for (const bad of [-5, 1.5, '6000', null, NaN, Infinity]) {
+    const g = validScenario();
+    g.meta.settle = { adaptiveBudgetMs: bad };
+    expectPosition(() => validateScenario(g), 'meta.settle.adaptiveBudgetMs');
+  }
 });

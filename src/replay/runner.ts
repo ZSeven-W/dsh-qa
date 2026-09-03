@@ -13,6 +13,7 @@ import type {
   QaRunReport,
   QaScenario,
   QaScenarioAction,
+  QaSettleWidening,
   QaStepResult,
   QaViewCompleteness,
 } from '../contracts.ts';
@@ -381,13 +382,15 @@ export async function runScenario(
   const session = new QaSession(adapter, ownerId, {
     settle: { ...(options.settle ?? {}), ...(scenario.meta.settle ?? {}) },
   });
-  const effectiveSettle = session.settlePolicy;
+  // The report prints the FINAL effective policy (reflecting a widening) plus a
+  // widening record (where it happened), so neither is captured up front.
   const stepResults: QaStepResult[] = [];
   const assertionResults: QaAssertionResult[] = [];
   const artifacts: QaArtifact[] = [];
   const advisoryResults: QaAdvisoryResult[] = [];
   let evidence: QaEvidence | QaEvidenceCollectionFailure | null = null;
   let failure: QaRunFailure | null = null;
+  let settleWidened: QaSettleWidening | null = null;
 
   try {
     await session.start({
@@ -409,6 +412,9 @@ export async function runScenario(
     // Symmetry with export: every verification observation is SETTLED, and an
     // unstable view is a failure, never a silent pass.
     const initial = await session.observeSettled();
+    if (settleWidened === null && initial.widened !== null) {
+      settleWidened = { ...initial.widened, at: 'initial' };
+    }
     let current = initial.observation;
     if (!initial.stable) {
       failure = {
@@ -452,6 +458,9 @@ export async function runScenario(
           reproduction: toReproduction(stepResults),
         };
         break;
+      }
+      if (settleWidened === null && result.settle !== null && result.settle.widened !== null) {
+        settleWidened = { ...result.settle.widened, at: step.index };
       }
 
       if (result.outcome === 'failed' || result.observation === null) {
@@ -590,11 +599,12 @@ export async function runScenario(
     status: failure === null ? 'pass' : 'fail',
     startedAt,
     finishedAt: new Date().toISOString(),
-    settle: effectiveSettle,
+    settle: session.settlePolicy,
     steps: stepResults,
     assertions: assertionResults,
     evidence,
     receiptSummary: summarizeReceipts(stepResults),
+    ...(settleWidened === null ? {} : { settleWidened }),
     ...(artifacts.length === 0 ? {} : { artifacts }),
     ...(advisoryResults.length === 0 ? {} : { advisory: advisoryResults }),
   };

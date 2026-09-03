@@ -237,6 +237,16 @@ export function toVisualCaptureInfo(capture: QaVisualCapture): QaVisualCaptureIn
 }
 
 /**
+ * A settle budget widening, reported on the window that performed it:
+ * `fromMs` is the original budget, `toMs` is the widened budget the window
+ * kept polling until (the session's new effective budget).
+ */
+export interface QaSettleWidened {
+  fromMs: number;
+  toMs: number;
+}
+
+/**
  * Outcome of one bounded settle window (see session/settle.ts). `stable` is
  * true only when two CONSECUTIVE observations had an identical semantic
  * projection; false means the view kept changing until the budget ran out and
@@ -256,6 +266,12 @@ export interface QaSettleReport {
    * rule applied.
    */
   quietRequiredMs: number;
+  /**
+   * Non-null exactly when THIS window widened the budget in place (once per
+   * session): the view was still churning at `budgetMs`, so the window kept
+   * polling the same projection until `toMs` instead of returning stable:false.
+   */
+  widened: QaSettleWidened | null;
 }
 
 /** Closed vocabulary returned by the host-owned approval service. */

@@ -168,7 +168,14 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     const settle = report.settle;
     lines.push(
       '- **Settle policy**: budget ' + String(settle.budgetMs) + 'ms, quiet ' + String(settle.quietMs)
-      + 'ms, post-change quiet ' + String(settle.postChangeQuietMs) + 'ms, interval ' + String(settle.intervalMs) + 'ms',
+      + 'ms, post-change quiet ' + String(settle.postChangeQuietMs) + 'ms, interval ' + String(settle.intervalMs)
+      + 'ms, adaptive ' + String(settle.adaptiveBudgetMs) + 'ms',
+    );
+  }
+  if (report.settleWidened !== undefined) {
+    lines.push(
+      '- **Settle widened**: ' + String(report.settleWidened.fromMs) + 'ms → ' + String(report.settleWidened.toMs)
+      + 'ms at ' + (report.settleWidened.at === 'initial' ? 'initial' : 'step ' + String(report.settleWidened.at)),
     );
   }
   lines.push('');

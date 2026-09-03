@@ -24,7 +24,7 @@ import { QA_INCONCLUSIVE_UNSTABLE } from '../src/contracts.ts'
 //       visual services the cordis tool layer (src/tools.ts) passes, so MCP
 //       and cordis replay behave identically.
 
-const SETTLE = { budgetMs: 160, quietMs: 50, intervalMs: 10 }
+const SETTLE = { budgetMs: 160, quietMs: 50, intervalMs: 10, adaptiveBudgetMs: 0 }
 
 function churningAdapter() {
   let n = 0

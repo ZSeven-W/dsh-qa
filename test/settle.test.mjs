@@ -13,6 +13,7 @@ import {
   observeUntilStable,
   projectSemanticView,
   QaSession,
+  QA_SETTLE_ADAPTIVE_BUDGET_MS,
   QA_SETTLE_BUDGET_MS,
   QA_SETTLE_INTERVAL_MS,
   QA_SETTLE_POST_CHANGE_QUIET_MS,
@@ -33,7 +34,10 @@ import {
 // the production budget (which the browser fixtures exercise).
 
 const LAUNCH = 'http://127.0.0.1:7399/'
-const SETTLE = { budgetMs: 900, quietMs: 120, intervalMs: 5 }
+// adaptiveBudgetMs: 0 pins the SMALL bounded-settle contract this suite
+// exercises; the once-per-session widening has its own dedicated tests
+// (test/settle-adaptive.test.mjs) at production scale.
+const SETTLE = { budgetMs: 900, quietMs: 120, intervalMs: 5, adaptiveBudgetMs: 0 }
 const FAST = { settle: SETTLE }
 const SHORTCUT_RAW = "Editing help: press [o] to open the toolbar. It's not mandatory. [o]"
 const SHORTCUT_HYDRATED = "Editing help: press [ctrl-option-o] to open the toolbar. It's not mandatory. [ctrl-option-o]"
@@ -157,12 +161,14 @@ test('the settle policy is a named, clamped, configurable constant set', () => {
     quietMs: QA_SETTLE_QUIET_MS,
     postChangeQuietMs: QA_SETTLE_POST_CHANGE_QUIET_MS,
     intervalMs: QA_SETTLE_INTERVAL_MS,
+    adaptiveBudgetMs: QA_SETTLE_ADAPTIVE_BUDGET_MS,
   })
   assert.deepEqual(resolveSettlePolicy({ budgetMs: 1, quietMs: 1, intervalMs: 99_999 }), {
     budgetMs: 20,
     quietMs: 10,
     postChangeQuietMs: 20,
     intervalMs: 10,
+    adaptiveBudgetMs: 6000,
   })
   process.env.DSH_QA_SETTLE_BUDGET_MS = '900'
   process.env.DSH_QA_SETTLE_QUIET_MS = '120'

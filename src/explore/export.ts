@@ -15,6 +15,7 @@ import { evaluateAssertion, loadScenarioFromPath, validateScenario } from '../re
 import type { QaObservation, QaSemanticNode } from '../session/adapter.ts';
 import {
   normalizeObservableValue,
+  QA_SETTLE_ADAPTIVE_BUDGET_MS,
   QA_SETTLE_BUDGET_MS,
   QA_SETTLE_INTERVAL_MS,
   QA_SETTLE_POST_CHANGE_QUIET_MS,
@@ -682,6 +683,7 @@ function defaultSettlePolicy(): QaSettlePolicy {
     quietMs: QA_SETTLE_QUIET_MS,
     postChangeQuietMs: QA_SETTLE_POST_CHANGE_QUIET_MS,
     intervalMs: QA_SETTLE_INTERVAL_MS,
+    adaptiveBudgetMs: QA_SETTLE_ADAPTIVE_BUDGET_MS,
   };
 }
 
@@ -701,6 +703,7 @@ function scenarioSettleOverride(policy: QaSettlePolicy | null): QaSettleOverride
     && policy.quietMs === defaults.quietMs
     && policy.postChangeQuietMs === defaults.postChangeQuietMs
     && policy.intervalMs === defaults.intervalMs
+    && policy.adaptiveBudgetMs === defaults.adaptiveBudgetMs
   ) {
     return undefined;
   }
@@ -708,7 +711,11 @@ function scenarioSettleOverride(policy: QaSettlePolicy | null): QaSettleOverride
   const quietMs = Math.min(Math.max(1, Math.round(policy.quietMs)), budgetMs);
   const postChangeQuietMs = Math.min(Math.max(1, Math.round(policy.postChangeQuietMs)), budgetMs);
   const intervalMs = Math.min(Math.max(1, Math.round(policy.intervalMs)), budgetMs);
-  return { budgetMs, quietMs, postChangeQuietMs, intervalMs };
+  // 0 (adaptation disabled) persists as 0, not clamped up to a positive value.
+  const adaptiveBudgetMs = policy.adaptiveBudgetMs === 0
+    ? 0
+    : Math.min(Math.max(1, Math.round(policy.adaptiveBudgetMs)), QA_SETTLE_SCHEMA_BUDGET_MAX);
+  return { budgetMs, quietMs, postChangeQuietMs, intervalMs, adaptiveBudgetMs };
 }
 
 function buildScenario(

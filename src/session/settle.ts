@@ -38,7 +38,7 @@
 // keeps polling until the budget is spent. A slower page needs a bigger
 // configured budget — it is never silently accepted.
 
-import type { QaObservation, QaSemanticNode, QaSettleReport } from './adapter.ts';
+import type { QaObservation, QaSemanticNode, QaSettleReport, QaSettleWidened } from './adapter.ts';
 import { QA_SETTLE_SCHEMA_BUDGET_MAX } from '../contracts.ts';
 import type { QaNodePredicate } from '../contracts.ts';
 
@@ -94,6 +94,18 @@ export interface QaEchoMask {
 export const QA_SETTLE_BUDGET_MS = 2_500;
 
 /**
+ * Default adaptive (widened) settle budget, in milliseconds.
+ *
+ * A genuinely slow page (live Wikipedia needs ~3.5-4.5s after a fill for its
+ * lazy typeahead role switch and suggestions) is never silently accepted, but
+ * a fixed 2500ms starting budget fails it 2/2 as INCONCLUSIVE_UNSTABLE while
+ * 6000ms passes 2/2. The adaptive budget keeps 2500ms as the fast, common-case
+ * starting point and widens the session's effective budget ONCE (to this value)
+ * when a settle window is still churning at budgetMs. 0 disables widening.
+ */
+export const QA_SETTLE_ADAPTIVE_BUDGET_MS = 6_000;
+
+/**
  * How long the semantic projection must stay UNCHANGED before the view counts
  * as settled, in milliseconds. It is the longest silence this policy accepts
  * as "finished": a follow-up change arriving within quietMs of the previous
@@ -145,6 +157,23 @@ export interface QaSettlePolicy {
   postChangeQuietMs: number;
   /** Delay between consecutive observations inside the window. */
   intervalMs: number;
+  /**
+   * The widened budget a session may adopt ONCE when a settle window is still
+   * churning at `budgetMs`. Clamped to [budgetMs, QA_SETTLE_SCHEMA_BUDGET_MAX];
+   * 0 disables adaptation (a value <= budgetMs is a no-op: nothing to widen).
+   * `qa_session_start` exposes it as `settle_adaptive_budget_ms` and the env
+   * override is `DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS` (`off` or `0` disables).
+   */
+  adaptiveBudgetMs: number;
+}
+
+/**
+ * Mutable once-per-session widening gate handed to observeUntilStable by the
+ * session core. A direct observeUntilStable call with no gate never widens.
+ */
+export interface QaSettleWidenGate {
+  /** True once the session has widened its budget; a second widen never happens. */
+  widened: boolean;
 }
 
 /** Per-call settle behaviour (the policy itself stays global and configured). */
@@ -204,13 +233,45 @@ function fromEnv(name: string): number | undefined {
 }
 
 /**
+ * Read the adaptive-budget env override. Unlike the other settle env values,
+ * the string `off` (case-insensitive) and the number 0 both DISABLE adaptation
+ * rather than falling back to the default. Garbage still falls back.
+ */
+function adaptiveEnvValue(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const trimmed = raw.trim();
+  if (trimmed.toLowerCase() === 'off') return 0;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Resolve the adaptive budget against the already-resolved budget. 0 (disabled)
+ * passes through untouched; garbage falls back to the default; anything else is
+ * clamped to [budgetMs, QA_SETTLE_SCHEMA_BUDGET_MAX] so a value at or below the
+ * budget is a no-op (nothing to widen) and an absurd value never exceeds the
+ * schema maximum.
+ */
+function resolveAdaptiveBudgetMs(explicit: number | undefined, budgetMs: number): number {
+  const raw = explicit !== undefined
+    ? explicit
+    : adaptiveEnvValue('DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS') ?? QA_SETTLE_ADAPTIVE_BUDGET_MS;
+  if (raw === 0) return 0; // disabled
+  if (!Number.isFinite(raw) || raw < 0) return QA_SETTLE_ADAPTIVE_BUDGET_MS; // garbage → default
+  return clamp(raw, budgetMs, QA_SETTLE_SCHEMA_BUDGET_MAX);
+}
+
+/**
  * Resolve the settle policy: explicit options first, then the
  * DSH_QA_SETTLE_BUDGET_MS / DSH_QA_SETTLE_QUIET_MS /
- * DSH_QA_SETTLE_POST_CHANGE_QUIET_MS / DSH_QA_SETTLE_INTERVAL_MS environment
- * overrides, then the named defaults. Every value is clamped, the quiet window
- * can never exceed the budget, the post-change quiet window is clamped to
- * [quietMs, budgetMs], and the poll interval can never exceed the quiet window
- * (so a window always gets several observations).
+ * DSH_QA_SETTLE_POST_CHANGE_QUIET_MS / DSH_QA_SETTLE_INTERVAL_MS /
+ * DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS environment overrides, then the named
+ * defaults. Every value is clamped, the quiet window can never exceed the
+ * budget, the post-change quiet window is clamped to [quietMs, budgetMs], the
+ * poll interval can never exceed the quiet window (so a window always gets
+ * several observations), and the adaptive budget is clamped to
+ * [budgetMs, QA_SETTLE_SCHEMA_BUDGET_MAX] (`0` / `off` disables it).
  */
 export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettlePolicy {
   const budgetRaw = options?.budgetMs ?? fromEnv('DSH_QA_SETTLE_BUDGET_MS') ?? QA_SETTLE_BUDGET_MS;
@@ -237,7 +298,8 @@ export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettle
     quietMs,
     budgetMs,
   );
-  return { budgetMs, quietMs, postChangeQuietMs, intervalMs };
+  const adaptiveBudgetMs = resolveAdaptiveBudgetMs(options?.adaptiveBudgetMs, budgetMs);
+  return { budgetMs, quietMs, postChangeQuietMs, intervalMs, adaptiveBudgetMs };
 }
 
 /** Validate + clamp one settle override value to the scenario-schema bounds. */
@@ -249,15 +311,28 @@ function clampOverrideValue(value: number, ceiling: number): number {
 }
 
 /**
+ * Validate + clamp the adaptive-budget override. Unlike the other settle args,
+ * 0 is VALID here (it disables adaptation), so it needs its own rule.
+ */
+function clampAdaptiveOverrideValue(value: number): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    throw new TypeError('settle_adaptive_budget_ms must be a non-negative integer (milliseconds)');
+  }
+  return Math.min(value, QA_SETTLE_SCHEMA_BUDGET_MAX);
+}
+
+/**
  * Build the settle override for a qa_session_start call from its settle_*_ms
  * arguments. Values are clamped to the scenario-schema bounds (budgetMs <=
- * QA_SETTLE_SCHEMA_BUDGET_MAX, quietMs <= budgetMs); garbage (non-finite,
- * non-integer, non-positive) throws so the tool layer surfaces it as an error.
+ * QA_SETTLE_SCHEMA_BUDGET_MAX, quietMs <= budgetMs, adaptiveBudgetMs <=
+ * QA_SETTLE_SCHEMA_BUDGET_MAX with 0 meaning disabled); garbage (non-finite,
+ * non-integer, negative) throws so the tool layer surfaces it as an error.
  * Returns undefined when no argument was supplied.
  */
 export function settleStartOverride(args: {
   settle_budget_ms?: number;
   settle_quiet_ms?: number;
+  settle_adaptive_budget_ms?: number;
 }): Partial<QaSettlePolicy> | undefined {
   const budgetMs = args.settle_budget_ms === undefined
     ? undefined
@@ -265,8 +340,15 @@ export function settleStartOverride(args: {
   const quietMs = args.settle_quiet_ms === undefined
     ? undefined
     : clampOverrideValue(args.settle_quiet_ms, budgetMs ?? QA_SETTLE_SCHEMA_BUDGET_MAX);
-  if (budgetMs === undefined && quietMs === undefined) return undefined;
-  return { ...(budgetMs === undefined ? {} : { budgetMs }), ...(quietMs === undefined ? {} : { quietMs }) };
+  const adaptiveBudgetMs = args.settle_adaptive_budget_ms === undefined
+    ? undefined
+    : clampAdaptiveOverrideValue(args.settle_adaptive_budget_ms);
+  if (budgetMs === undefined && quietMs === undefined && adaptiveBudgetMs === undefined) return undefined;
+  return {
+    ...(budgetMs === undefined ? {} : { budgetMs }),
+    ...(quietMs === undefined ? {} : { quietMs }),
+    ...(adaptiveBudgetMs === undefined ? {} : { adaptiveBudgetMs }),
+  };
 }
 
 /**
@@ -395,11 +477,21 @@ function sleep(ms: number): Promise<void> {
  * observations with an identical projection). The caller decides what an
  * unstable result means; this function never pretends an unsettled view
  * settled, and it never widens the comparison to make one "agree".
+ *
+ * When `gate` is supplied (the session core passes one), a view still CHURNING
+ * at `budgetMs` widens the budget IN PLACE, once: the window keeps polling the
+ * SAME projection (same echo mask, same baseline, same quiet requirement) until
+ * `adaptiveBudgetMs` from the original start, and `policy.budgetMs` is mutated
+ * to that widened value so every later settle in the session runs widened.
+ * The `widened` field on the result records the widening (or null). A direct
+ * call with no gate never widens, and an inert view (quiet but unchanged) is
+ * never widened — absence is still never proven by waiting.
  */
 export async function observeUntilStable(
   observe: () => Promise<QaObservation>,
   policy: QaSettlePolicy = resolveSettlePolicy(),
   options: QaSettleCallOptions = {},
+  gate?: QaSettleWidenGate,
 ): Promise<QaSettleResult> {
   const awaitChange = options.awaitChange === true;
   const echo = options.echo;
@@ -418,6 +510,7 @@ export async function observeUntilStable(
   // is already the awaited change: compare against the pre-action baseline.
   let changed = options.baselineView !== undefined && options.baselineView !== changedProjection;
   let passes = 1;
+  let widened: QaSettleWidened | null = null;
   for (;;) {
     const now = Date.now();
     // The quiet window required to conclude stable: quietMs before any
@@ -436,10 +529,26 @@ export async function observeUntilStable(
         elapsedMs: now - startedAt,
         budgetMs: policy.budgetMs,
         quietRequiredMs,
+        widened,
       };
     }
     const remaining = policy.budgetMs - (now - startedAt);
     if (remaining <= 0) {
+      // Still churning at the deadline and not yet widened: widen IN PLACE once
+      // instead of returning stable:false. The same window keeps polling (same
+      // echo mask, baseline, and quiet requirement) until adaptiveBudgetMs from
+      // the original start; policy.budgetMs mutates so the whole session runs
+      // widened from here on. A quiet-at-deadline (inert) view is NOT widened:
+      // it is stable (nothing moved), and widening it would turn a no-op into
+      // an unbounded wait for a change that is not coming.
+      if (gate !== undefined && !gate.widened && !quiet && policy.adaptiveBudgetMs > policy.budgetMs) {
+        const fromMs = policy.budgetMs;
+        const toMs = policy.adaptiveBudgetMs;
+        policy.budgetMs = toMs;
+        gate.widened = true;
+        widened = { fromMs, toMs };
+        continue;
+      }
       return {
         observation: latest,
         // Quiet at the deadline: the view is stable, it simply never moved.
@@ -449,6 +558,7 @@ export async function observeUntilStable(
         elapsedMs: now - startedAt,
         budgetMs: policy.budgetMs,
         quietRequiredMs,
+        widened,
       };
     }
     await sleep(Math.min(policy.intervalMs, remaining));

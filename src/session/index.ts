@@ -18,6 +18,7 @@ export type {
   QaSemanticNode,
   QaSessionInfo,
   QaSettleReport,
+  QaSettleWidened,
   QaStartOptions,
   QaStopResult,
   QaVisualCapture,
@@ -40,6 +41,7 @@ export {
   projectSemanticView,
   resolveSettlePolicy,
   settleStartOverride,
+  QA_SETTLE_ADAPTIVE_BUDGET_MS,
   QA_SETTLE_BUDGET_MS,
   QA_SETTLE_INTERVAL_MS,
   QA_SETTLE_POST_CHANGE_QUIET_MS,
@@ -48,4 +50,5 @@ export {
   type QaSettleCallOptions,
   type QaSettlePolicy,
   type QaSettleResult,
+  type QaSettleWidenGate,
 } from './settle.ts';

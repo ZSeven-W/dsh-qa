@@ -53,6 +53,8 @@ export interface QaSettleOverride {
   quietMs?: number;
   postChangeQuietMs?: number;
   intervalMs?: number;
+  /** Adaptive (once-per-session widening) budget; 0 disables adaptation. */
+  adaptiveBudgetMs?: number;
 }
 
 export interface QaScenarioTarget {
@@ -407,6 +409,17 @@ export interface QaEvidenceCollectionFailure {
   status: 'collection-failed';
   reason: string;
 }
+/**
+ * The widening a run (or session) performed, recorded so report.json/report.md
+ * can show whether/when the settle budget widened. `at` is the step index where
+ * it happened, or 'initial' when it happened on the run's initial observation.
+ */
+export interface QaSettleWidening {
+  fromMs: number;
+  toMs: number;
+  at: number | 'initial';
+}
+
 export interface QaRunReport {
   schemaVersion: 1;
   scenario: string;
@@ -427,8 +440,15 @@ export interface QaRunReport {
   failure?: QaRunFailure;
   /**
    * The effective settle policy this run applied (scenario meta.settle over
-   * env/host defaults). Printed in report.json / report.md so a reader can see
-   * which budget the run actually judged the page under. Deterministic.
+   * env/host defaults), reflecting the WIDENED budget when the run widened.
+   * Printed in report.json / report.md so a reader can see which budget the run
+   * actually judged the page under. Deterministic.
    */
   settle?: QaSettlePolicy;
+  /**
+   * Present exactly when the run widened its settle budget once (adaptation
+   * enabled and a view was still churning at budgetMs): the before/after
+   * budgets and where ('initial' or a step index). Deterministic.
+   */
+  settleWidened?: QaSettleWidening;
 }

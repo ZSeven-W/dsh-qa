@@ -319,6 +319,8 @@ interface SessionStartArgs {
   settle_budget_ms?: number
   /** Widen the settle quiet window (clamped <= the resolved budget). */
   settle_quiet_ms?: number
+  /** Adaptive (once-per-session widening) budget; 0 disables adaptation. */
+  settle_adaptive_budget_ms?: number
 }
 
 interface ObserveArgs {
@@ -419,6 +421,7 @@ export function createQaTools(host: QaToolHost): QaTools {
       }, ['source', 'origins']),
       settle_budget_ms: intProp,
       settle_quiet_ms: intProp,
+      settle_adaptive_budget_ms: intProp,
     }, []),
     output: outputFor(),
     timeoutMs: 60_000,
@@ -464,7 +467,7 @@ export function createQaTools(host: QaToolHost): QaTools {
       })
       return {
         ...settled.observation,
-        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
+        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened },
       }
     },
     presentCall: () => ({ card: 'generic', title: 'Observe QA target' }),
@@ -594,7 +597,7 @@ export function createQaTools(host: QaToolHost): QaTools {
           kind: assertion.kind,
           observed: null,
           expected: assertion.expected,
-          settle: { stable: false, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
+          settle: { stable: false, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened },
           reason: unstableReason(settled.budgetMs),
         }
       }
@@ -608,7 +611,7 @@ export function createQaTools(host: QaToolHost): QaTools {
         kind: assertion.kind,
         observed: decision.observed,
         expected: assertion.expected,
-        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs },
+        settle: { stable: settled.stable, passes: settled.passes, budgetMs: settled.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened },
         ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
         ...(decision.attempts <= 1 ? {} : { attempts: decision.attempts, elapsedMs: decision.elapsedMs }),
       }

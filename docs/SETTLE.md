@@ -125,11 +125,21 @@ recorded value proves nothing about the recorded target), and a
 when a leaked `value` field happens to carry the expected string
 (`VALUE_WITHHELD` / `VALUE_SECURE` / `VALUE_TRUNCATED`). Both refusals fail
 closed with their code in report.json and report.md.
-* **Budget** (`QA_SETTLE_BUDGET_MS`, 2500ms) — the hard bound. In practice this
-  policy can prove an outcome landing up to roughly `budgetMs - postChangeQuietMs`
-  after the first (unmasked) change; before any change is seen it waits out the
-  whole budget. A slower page needs a bigger configured budget and is never
-  silently accepted.
+* **Budget** (`QA_SETTLE_BUDGET_MS`, 2500ms) — the STARTING hard bound. In
+  practice this policy can prove an outcome landing up to roughly
+  `budgetMs - postChangeQuietMs` after the first (unmasked) change; before any
+  change is seen it waits out the whole budget. A slower page is never silently
+  accepted — see the adaptive widening below.
+* **Adaptive widening** (`QA_SETTLE_ADAPTIVE_BUDGET_MS`, 6000ms) — when a settle
+  window is still CHURNING at `budgetMs`, the session widens its effective budget
+  ONCE, in place, to this value (clamped to `[budgetMs, 15000]`) instead of
+  returning `stable: false`. The SAME window keeps polling (same echo mask, same
+  baseline, same quiet requirement) until `adaptiveBudgetMs` from the original
+  start; `budgetMs` then becomes `adaptiveBudgetMs` for every later settle in the
+  session. It never widens twice, and it never widens an INERT view (quiet but
+  unchanged — absence is still never proven by waiting). `0` (or env `off`)
+  disables it. This is how a live page that needs ~3.5-4.5s after a fill settles
+  2/2 instead of replaying 2/2 `INCONCLUSIVE_UNSTABLE` at the 2500ms default.
 * **Poll interval** (`QA_SETTLE_INTERVAL_MS`, 50ms) — spacing between
   observations inside a window. This is a poll interval, not a sleep: a settled
   view returns immediately after its quiet window.
@@ -164,8 +174,12 @@ Both sides refuse an unsettled view:
   twin that already holds the recorded value would otherwise turn the step's
   `node-value` into a false green while the recorded target stays empty.
 
-Nothing is widened to make an unstable page pass. An unstable page is honestly
-unprovable.
+Nothing is widened to make an unstable page pass. The ONLY widening is the
+once-per-session adaptive budget: a view still churning at the starting budget
+gets a single, in-place extension (recorded as `widened`), and a view still
+churning at the WIDENED budget is still honestly `stable: false` / unprovable.
+An absence is never rescued by the widening either — `node-absent` is still
+never proven by waiting.
 
 ## Explore tool surfaces fail closed too
 
@@ -247,15 +261,22 @@ runScenario(scenario, adapter, { settle: { budgetMs: 5_000 } }) // Replay direct
 
 Environment overrides (clamped, garbage falls back to the defaults, never fails
 open): `DSH_QA_SETTLE_BUDGET_MS`, `DSH_QA_SETTLE_QUIET_MS`,
-`DSH_QA_SETTLE_POST_CHANGE_QUIET_MS`, `DSH_QA_SETTLE_INTERVAL_MS`.
+`DSH_QA_SETTLE_POST_CHANGE_QUIET_MS`, `DSH_QA_SETTLE_INTERVAL_MS`,
+`DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS` (the string `off` or the number `0` disables
+adaptation).
 
 An agent can widen the budget for a heavy site at Explore time with
 `qa_session_start settle_budget_ms` (and `settle_quiet_ms`), clamped to the
-scenario-schema bounds (budget ≤ 15000ms, quiet ≤ budget). `qa_record_export`
-persists the session's EFFECTIVE policy into the scenario's `meta.settle` when
-it differs from the defaults, and `qa_replay_run` applies `meta.settle` over
-the env/host defaults — so replay judges the page with the exact policy Explore
-proved it with. report.json / report.md print the effective policy.
+scenario-schema bounds (budget ≤ 15000ms, quiet ≤ budget), and set the adaptive
+widening budget with `settle_adaptive_budget_ms` (clamped to `[budgetMs, 15000]`,
+`0` disables). `qa_record_export` persists the session's EFFECTIVE policy — the
+WIDENED budget when the session widened — into the scenario's `meta.settle` when
+it differs from the defaults, and `qa_replay_run` applies `meta.settle` over the
+env/host defaults — so replay starts at the widened budget and does not
+rediscover it. Replay itself also widens once if it still hits an unstable view
+and adaptation is enabled (recorded as `settleWidened` in the report).
+report.json / report.md print the effective policy plus `settleWidened`
+(step index or `initial`).
 
 ## Determinism
 
