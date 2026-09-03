@@ -30,6 +30,7 @@
     "src",
     "scripts",
     "scenarios",
+    "fixtures/web",
     "skills",
     "cordis.patch.yml",
     ".mcp.json",
@@ -46,6 +47,7 @@
     "test": "node --test --test-concurrency=1 test/*.test.mjs test/*.test.ts",
     "smoke:bundle": "node scripts/smoke-bundle.mjs",
     "smoke:pack": "node scripts/smoke-pack.mjs",
+    "example": "node scripts/run-example.mjs",
     "prepack": "npm run build && npm run typecheck && npm test"
   },
   "dependencies": {

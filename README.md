@@ -168,6 +168,35 @@ The DSH host provides the runtime services below itself; a plain
 The optional skill service is registered exclusively through
 `ctx.inject(['skills'], cb)` and torn down with `fiber.dispose()`.
 
+## Running the shipped example
+
+The package ships a self-contained browser example:
+`scenarios/examples/fixture-web.json` drives the `fixtures/web/` page. After
+`npm pack` and a plain install, run it from the installed copy — no files from
+this repository's working tree are needed:
+
+```bash
+node node_modules/@zseven-w/dsh-qa/scripts/run-example.mjs
+```
+
+(or, from inside the installed package directory, `npm run example`).
+
+`run-example.mjs` serves `fixtures/web/` on an ephemeral loopback port (never
+a hardcoded one), rebinds the scenario's `target.launch` to that origin, replays
+it headlessly through the browser driver, and writes `report.json` / `report.md`
+/ `report.jsonl`. A working install prints:
+
+```
+[example] status: pass
+[example] report: <dir>/report.json
+```
+
+Exit code is `0` iff `status === "pass"`; pass `--output-dir <dir>` to choose
+where reports go (default `./dsh-qa-example-report`). The browser driver is
+host-provided in a DSH install; on a plain npm install, install
+`@zseven-w/dsh-browser` alongside it. `scripts/smoke-pack.mjs` runs this exact
+command from the packed tarball and asserts `status: "pass"`.
+
 ## Development
 
 ```bash

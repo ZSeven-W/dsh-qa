@@ -3,7 +3,11 @@
     "name": "fixture-web-form-validation",
     "description": "Fill the release name, run validation, and assert the result region flips to PASS (reproduces the 2026-08-25 acceptance web flow).",
     "driver": "browser",
-    "createdAt": "2026-08-29T00:00:00.000Z"
+    "createdAt": "2026-08-29T00:00:00.000Z",
+    "notes": [
+      "Served from the shipped fixtures/web/ directory (package.json files includes fixtures/web).",
+      "target.launch is an example default (port 7399); scripts/run-example.mjs rebinds it to an ephemeral loopback port via ReplayRunOptions.launchUrl, so the example works on a normal install without a hardcoded port."
+    ]
   },
   "target": {
     "launch": "http://127.0.0.1:7399/"
