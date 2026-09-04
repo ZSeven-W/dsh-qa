@@ -132,6 +132,16 @@ export interface QaActionReceipt {
   code?: string;
   reason?: string;
   dispatched: boolean;
+  /**
+   * Recorder-internal action identity, set ONLY by the Explore recording
+   * adapter (never by a driver) so the session core can pass the EXACT
+   * recorded action back through noteEscalatedScrollProof: the recorder then
+   * re-binds exactly that action's proof observation instead of trusting
+   * whatever action happened to settle most recently. Absent on receipts from
+   * plain adapters (replay, test doubles), where the scroll-proof escalation
+   * never runs anyway.
+   */
+  actionId?: string;
 }
 
 export interface QaEvidence {
@@ -370,13 +380,17 @@ export interface QaDriverAdapter {
    * adapter. The session core calls it exactly once when it accepted the ONE
    * bounded budget-escalated observation taken after a scroll-by-ref (see
    * QaSession.act) as that action's proof observation: the recorder re-binds
-   * the action's proof to the fuller observation so export can evaluate the
-   * node-in-viewport proof against it. Its PRESENCE is also the capability
-   * gate — the session core never escalates through an adapter that does not
-   * implement it, so Replay's plain adapters (and therefore replay behaviour)
-   * are untouched. It must never throw and can never change driver behavior.
+   * EXACTLY that action's proof (identified by the recorded action id the
+   * recording adapter stamped onto the receipt) to the fuller observation, so
+   * export can evaluate the node-in-viewport proof against it. A null or
+   * non-matching action id is refused by the recorder and recorded as a
+   * recording issue — never silently re-bound to another action. Its PRESENCE
+   * is also the capability gate — the session core never escalates through an
+   * adapter that does not implement it, so Replay's plain adapters (and
+   * therefore replay behaviour) are untouched. It must never throw and can
+   * never change driver behavior.
    */
-  noteEscalatedScrollProof?(ownerId: string): void;
+  noteEscalatedScrollProof?(ownerId: string, actionId: string | null): void;
   stop(ownerId: string): Promise<QaStopResult>;
   dispose?(): Promise<void>;
 }

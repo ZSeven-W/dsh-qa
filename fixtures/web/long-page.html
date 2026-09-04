@@ -16,8 +16,9 @@
       QA-BL-045 reproduction (History_of_China navbox defect). The page carries
       120 links BEFORE the unique "Deep Target" link in DOM order, so the driver
       default observation window (60 nodes, composed-tree DOM order) NEVER
-      returns the target. 28 of those links are visibility-hidden: the driver
-      skips elements without boxes, so the page stays inside the driver's
+      returns the target. 28 of those links carry the `hidden` attribute
+      (display: none): the driver skips elements without boxes, so the page
+      stays inside the driver's
       clamped 100-node budget that the ONE bounded escalation at
       QA_ESCALATED_NODE_BUDGET can actually observe (the browser driver clamps
       maxNodes to 1..100). The target sits at emitted position ~95: beyond the

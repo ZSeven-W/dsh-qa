@@ -49,11 +49,30 @@ export interface QaActResult {
   /** Receipts attached as evidence for this step. */
   evidence: QaActionReceipt[];
   /**
-   * Settle window that produced `observation`. Null for rejected/failed
-   * receipts. `settle.stable === false` means the view never stabilized and
-   * the observation proves nothing — callers must fail closed on it.
+   * Settle window that produced the action's own proof baseline: the FIRST
+   * post-action window. Null for rejected/failed receipts.
+   * `settle.stable === false` means the view never stabilized and the
+   * observation proves nothing — callers must fail closed on it. When an
+   * accepted escalation replaced the proof observation, that window's report
+   * lives in `escalatedSettle` instead; `settle` still reports the window
+   * the baseline was taken from.
    */
   settle: QaSettleReport | null;
+  /**
+   * ADDITIVE, present exactly when the record-time scroll-proof escalation
+   * was ACCEPTED (see #escalateScrollProof): `observation` is then the
+   * escalated fuller view, and `escalatedSettle` reports the escalated
+   * window that produced it. Absent when the escalation never ran or was
+   * refused (the proof then stays the settled observation).
+   */
+  proofEscalated?: true;
+  /**
+   * The escalated window's report; present exactly when `proofEscalated`
+   * is. `stable` is always true here (an unsettled escalated window is
+   * refused), and `widened` is always null (the escalated re-read never
+   * widens the session policy).
+   */
+  escalatedSettle?: QaSettleReport;
   /**
    * ADDITIVE, present exactly when the dispatch was confirmed/unknown but the
    * proof settle window never stabilized (`settle.stable === false`). `false`
@@ -163,6 +182,18 @@ function scrollProofExtends(settled: QaObservation, escalated: QaObservation): b
     if (left === undefined || right === undefined || !scrollProofNodeEquivalent(left, right)) return false;
   }
   return true;
+}
+
+/** Field projection of one settle window result (no observation). */
+function settleReportOf(result: QaSettleResult): QaSettleReport {
+  return {
+    stable: result.stable,
+    passes: result.passes,
+    elapsedMs: result.elapsedMs,
+    budgetMs: result.budgetMs,
+    quietRequiredMs: result.quietRequiredMs,
+    widened: result.widened,
+  };
 }
 
 /**
@@ -278,6 +309,38 @@ export class QaSession {
   }
 
   /**
+   * One bounded settle window that is SIDE-EFFECT-FREE for the session: the
+   * record-time scroll-proof escalation uses this instead of observeSettled,
+   * so the proof re-read can never
+   *
+   *  - replace #lastView / #lastObservation (the baseline for the next
+   *    action stays the action's own settled observation), or
+   *  - widen the settle budget or flip the once-per-session gate (no widen
+   *    gate is passed — a churning escalated window returns stable:false at
+   *    budgetMs instead of mutating the policy; the policy object is also
+   *    handed over as a shallow copy so no widening path could ever touch
+   *    the session's), or
+   *  - re-persist the policy via noteSettlePolicy.
+   *
+   * The passive noteSettle IS still emitted, so the Explore recorder records
+   * the window's observations and can re-bind the accepted proof to the last
+   * of them.
+   */
+  async #observeEscalated(options?: QaObserveOptions): Promise<QaSettleResult> {
+    this.#assertStarted();
+    const result = await observeUntilStable(
+      () => this.#adapter.observe(this.#ownerId, options),
+      { ...this.#settle },
+      {},
+      undefined,
+    );
+    try {
+      this.#adapter.noteSettle?.(this.#ownerId, settleReportOf(result));
+    } catch { /* observational only */ }
+    return result;
+  }
+
+  /**
    * Widen the settle budget for an assertion retry that exhausted its budget
    * without finding a positive-existence target. Uses the SAME once-per-session
    * gate as the unstable settle path, so a session widens at most once,
@@ -332,27 +395,32 @@ export class QaSession {
     // view export could never evaluate the node-in-viewport proof. At most one
     // escalation per action; a refused one keeps the settled observation.
     let proofObservation = settled.observation;
+    let escalatedSettle: QaSettleReport | null = null;
     if (
       settled.stable
       && proofObservation.truncated
       && typeof this.#adapter.noteEscalatedScrollProof === 'function'
     ) {
-      proofObservation = await this.#escalateScrollProof(action, baselineObservation, proofObservation)
-        ?? proofObservation;
+      const escalated = await this.#escalateScrollProof(
+        action,
+        baselineObservation,
+        proofObservation,
+        receipt.actionId ?? null,
+      );
+      if (escalated !== null) {
+        proofObservation = escalated.observation;
+        escalatedSettle = escalated.settle;
+      }
     }
     return {
       receipt,
       observation: proofObservation,
       outcome,
       evidence: [receipt],
-      settle: {
-        stable: settled.stable,
-        passes: settled.passes,
-        elapsedMs: settled.elapsedMs,
-        budgetMs: settled.budgetMs,
-        quietRequiredMs: settled.quietRequiredMs,
-        widened: settled.widened,
-      },
+      // The FIRST window's report; an accepted escalation's window rides in
+      // escalatedSettle (see QaActResult) instead of shadowing this one.
+      settle: settleReportOf(settled),
+      ...(escalatedSettle === null ? {} : { proofEscalated: true as const, escalatedSettle }),
       // A confirmed/unknown receipt still describes a dispatch, but an unstable
       // proof window means the CONSEQUENCE is unproven: `outcome` stays honest
       // about the dispatch ('ok'/'unknown') while `proven: false` + the code
@@ -372,18 +440,34 @@ export class QaSession {
    * the requested budget to its own maximum, so the fuller view is still
    * honestly marked truncated when the page exceeds that.
    *
-   * Accepts the escalated observation as the action's proof ONLY when its
-   * window settled and the view stably EXTENDS the settled one (see
-   * scrollProofExtends); the recording adapter is then notified so it re-binds
-   * the proof. An unsettled window, a changed page, or a missing pre-action
-   * target all keep the settled observation — at most one escalation per
-   * action, no loop, fail closed.
+   * Accepts the escalated observation as the action's proof ONLY when
+   *
+   *  1. its window settled (stable),
+   *  2. the escalated view stably EXTENDS the settled one (see
+   *     scrollProofExtends — the page is still the exact state the settle
+   *     window proved), AND
+   *  3. the escalated view returns the action target (matched by the
+   *     pre-action predicate) with inViewport === true — a fuller view that
+   *     still does not place the target in the viewport is a useless
+   *     escalation and is refused.
+   *
+   * The escalated read is taken SIDE-EFFECT-FREE (see #observeEscalated): it
+   * never widens the session policy, never flips the widen gate, and never
+   * replaces the session baseline, whether it is accepted or refused. On
+   * acceptance the recording adapter is notified with the EXACT recorded
+   * action id (carried on the receipt by the recording adapter) so it can
+   * re-bind exactly this action's proof — a mismatch is refused by the
+   * recorder and never silently re-bound. An unsettled window, a changed
+   * page, a still-off-viewport target, or a missing pre-action target all
+   * keep the settled observation — at most one escalation per action, no
+   * loop, fail closed.
    */
   async #escalateScrollProof(
     action: QaAction,
     baselineObservation: QaObservation | null,
     settledObservation: QaObservation,
-  ): Promise<QaObservation | null> {
+    actionId: string | null,
+  ): Promise<{ observation: QaObservation; settle: QaSettleReport } | null> {
     if (this.#adapter.kind !== 'browser') return null;
     if (action.kind !== 'scroll' || !('ref' in action)) return null;
     // The ref is the pre-action identity inside the baseline observation only
@@ -397,12 +481,17 @@ export class QaSession {
     );
     if (alreadyInViewport) return null;
     try {
-      const escalated = await this.observeSettled({ maxNodes: QA_ESCALATED_NODE_BUDGET });
-      if (!escalated.stable || !scrollProofExtends(settledObservation, escalated.observation)) return null;
+      const escalated = await this.#observeEscalated({ maxNodes: QA_ESCALATED_NODE_BUDGET });
+      const targetInViewport = escalated.observation.nodes.some(
+        (candidate) => matchesNode(candidate, target) && candidate.inViewport === true,
+      );
+      if (!escalated.stable || !scrollProofExtends(settledObservation, escalated.observation) || !targetInViewport) {
+        return null;
+      }
       try {
-        this.#adapter.noteEscalatedScrollProof?.(this.#ownerId);
+        this.#adapter.noteEscalatedScrollProof?.(this.#ownerId, actionId);
       } catch { /* observational only */ }
-      return escalated.observation;
+      return { observation: escalated.observation, settle: settleReportOf(escalated) };
     } catch {
       // No settled fuller view is available: keep the settled observation.
       return null;

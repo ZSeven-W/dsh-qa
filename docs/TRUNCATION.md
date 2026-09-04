@@ -96,6 +96,38 @@ Evidence of presence is sound; absence of evidence is not evidence of absence.
    `VALUE_SECURE` / `VALUE_TRUNCATED`) is deterministic and never resolves by
    waiting either.
 
+## Record-time scroll-proof escalation (Explore recording only)
+
+Explore cannot re-observe a recorded trajectory, so the recording session
+takes the ONE bounded escalation at RECORD time instead: a browser
+`scroll`-by-ref whose settled post-action proof observation is truncated AND
+still lacks the action target in the viewport gets one more SETTLED read at
+`QA_ESCALATED_NODE_BUDGET`. That fuller view is accepted as the action's
+proof observation exactly when
+
+1. the escalated window settled (`stable`), AND
+2. the escalated view EXTENDS the settled one (same page URL/title and every
+   settled node unchanged at the front in the same order — the page is still
+   the exact state the settle window proved), AND
+3. the escalated view returns the target node (matched by the pre-action
+   predicate) with `inViewport: true`.
+
+Anything else — an unsettled window, a page that changed between the reads,
+or a fuller view that still does not place the target in the viewport — keeps
+the settled observation (fail closed). The escalation is at most ONCE per
+action, never loops, and is browser-only and recording-only (replay and plain
+adapters never escalate). It is SIDE-EFFECT-FREE: the escalated read never
+widens the settle budget, never flips the once-per-session widen gate, never
+re-persists the session policy, and never replaces the session baseline — the
+next action still compares against the action's own settled observation.
+An accepted escalation is visible on the `qa_act` result as
+`proofEscalated: true` plus the escalated window's report under
+`escalatedSettle` (the action's own window stays under `settle`). The
+recorder re-binds the proof by the EXACT recorded action id carried on the
+receipt: a null or non-matching id (e.g. a concurrent act settled in between)
+is refused and recorded as a recording issue, never silently re-bound to the
+wrong action.
+
 ## Budget
 
 `QA_ESCALATED_NODE_BUDGET` is a named constant in src/replay/assertions.ts.

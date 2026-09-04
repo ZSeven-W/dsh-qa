@@ -55,10 +55,11 @@ interface MutableTrajectory {
   settlingActionId: string | null;
   /**
    * The action whose proof settle window closed most recently (set by every
-   * settle() that bound an action). The scroll-proof escalation re-binds that
-   * action's proof to the escalated observation via bindEscalatedScrollProof,
-   * which the session core calls synchronously right after the escalation
-   * window, so a standalone later settle can never shadow it.
+   * settle() that bound an action). bindEscalatedScrollProof re-binds ONLY an
+   * action whose passed action id equals this: an escalation notification for
+   * any other action (e.g. one a concurrent act on the same owner settled in
+   * between) is refused and recorded as a recording issue instead of silently
+   * re-binding the wrong action.
    */
   lastSettledActionId: string | null;
   /** The session's RESOLVED settle policy (recorded at start; see noteSettlePolicy). */
@@ -350,29 +351,55 @@ export class QaTrajectoryRecorder {
   }
 
   /**
-   * Re-bind the most recently settled action's proof observation to the last
-   * recorded observation. The session core calls this exactly once per action
+   * Re-bind EXACTLY the named action's proof observation to the last recorded
+   * observation. The session core calls this exactly once per action
    * (synchronously inside act) when it accepted the ONE bounded
-   * budget-escalated observation as the scroll-by-ref proof: the escalated
+   * budget-escalated observation as the scroll-by-ref proof, passing the
+   * exact action id this recorder stamped onto the receipt: the escalated
    * window's observations are already recorded, and the last of them is the
    * settled fuller view. The recorded observation keeps whatever truncated
    * flag the driver reported — nothing here claims or alters any budget.
+   *
+   * The re-bind is fail-closed: a null id, an unknown id, an action without a
+   * recorded receipt, or an action that is NOT the most recently settled one
+   * (a concurrent act on the same owner settled in between) is refused and
+   * recorded as a recording issue instead of silently re-binding the wrong
+   * action.
    */
-  bindEscalatedScrollProof(ownerId: string): void {
+  bindEscalatedScrollProof(ownerId: string, actionId: string | null): void {
     const trajectory = this.#trajectories.get(ownerId);
     if (trajectory === undefined) return;
-    const actionId = trajectory.lastSettledActionId;
-    if (actionId === null) return;
-    try {
-      const action = trajectory.actionById.get(actionId);
-      if (action !== undefined && trajectory.lastObservationId !== null) {
-        action.afterObservationId = trajectory.lastObservationId;
-      }
-    } catch (error) {
-      const issue = 'scroll-proof escalation recording failed: ' + safeReason(error);
+    const refuse = (issue: string): void => {
       trajectory.recordingIssues.push(issue);
-      const action = trajectory.actionById.get(actionId);
-      if (action !== undefined) action.recordingIssue = issue;
+      const recorded = actionId === null ? undefined : trajectory.actionById.get(actionId);
+      if (recorded !== undefined) recorded.recordingIssue = issue;
+      this.#recordingError(trajectory, 'observation', issue, actionId);
+    };
+    if (actionId === null) {
+      refuse('scroll-proof escalation could not be bound: the session core did not pass the recorded action id');
+      return;
+    }
+    const action = trajectory.actionById.get(actionId);
+    if (action === undefined) {
+      refuse('scroll-proof escalation could not be bound: unknown action id "' + actionId + '"');
+      return;
+    }
+    if (action.receipt === null) {
+      refuse('scroll-proof escalation could not be bound: action "' + actionId + '" has no recorded receipt');
+      return;
+    }
+    if (trajectory.lastSettledActionId !== actionId) {
+      refuse('scroll-proof escalation could not be bound: action "' + actionId + '" is not the most recently settled action');
+      return;
+    }
+    if (trajectory.lastObservationId === null) {
+      refuse('scroll-proof escalation could not be bound: no observation has been recorded yet');
+      return;
+    }
+    try {
+      action.afterObservationId = trajectory.lastObservationId;
+    } catch (error) {
+      refuse('scroll-proof escalation recording failed: ' + safeReason(error));
     }
   }
 
@@ -669,8 +696,13 @@ export class RecordingQaDriverAdapter implements QaDriverAdapter {
     const actionId = this.#safeValue(() => this.#recorder.action(ownerId, action), null);
     try {
       const receipt = await this.#delegate.act(ownerId, action, approval);
+      // The RECORDED receipt keeps the delegate's shape (no internal identity
+      // leaks into the trajectory); the receipt returned to the session
+      // carries the recorder's exact action id so the scroll-proof escalation
+      // can pass it back through noteEscalatedScrollProof and the recorder
+      // re-binds exactly THIS action, never whatever settled most recently.
       this.#safe(() => this.#recorder.receipt(ownerId, actionId, receipt));
-      return receipt;
+      return actionId === null ? receipt : { ...receipt, actionId };
     } catch (error) {
       this.#safe(() => this.#recorder.actionFailed(ownerId, actionId, error));
       throw error;
@@ -689,13 +721,13 @@ export class RecordingQaDriverAdapter implements QaDriverAdapter {
   }
 
   /**
-   * Passive: re-binds the last settled action's proof to the escalated
-   * observation the session core just accepted (see QaSession.act). Its
-   * presence on this adapter is the capability gate the session core checks
-   * before taking the ONE bounded scroll-proof escalation.
+   * Passive: re-binds EXACTLY the named recorded action's proof to the
+   * escalated observation the session core just accepted (see QaSession.act).
+   * Its presence on this adapter is the capability gate the session core
+   * checks before taking the ONE bounded scroll-proof escalation.
    */
-  noteEscalatedScrollProof(ownerId: string): void {
-    this.#safe(() => this.#recorder.bindEscalatedScrollProof(ownerId));
+  noteEscalatedScrollProof(ownerId: string, actionId: string | null): void {
+    this.#safe(() => this.#recorder.bindEscalatedScrollProof(ownerId, actionId));
   }
 
   /** Passive: persists the session's resolved settle policy for meta.settle export. */
