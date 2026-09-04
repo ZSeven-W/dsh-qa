@@ -7,6 +7,7 @@ import type {
   QaEvidenceOptions,
   QaObservation,
   QaObserveOptions,
+  QaSemanticNode,
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
@@ -15,6 +16,11 @@ import type {
   QaVisualCapture,
   QaVisualObserveOptions,
 } from './adapter.ts';
+// The ONE bounded node-budget escalation the live assertion path already takes
+// (decideAssertion) is reused here for the Explore recorder's scroll proof.
+// Direct module import: the replay barrel re-exports the runner, which imports
+// this module, so importing the barrel would create a cycle.
+import { matchesNode, QA_ESCALATED_NODE_BUDGET } from '../replay/assertions.ts';
 import {
   normalizeObservableValue,
   observeUntilStable,
@@ -109,6 +115,54 @@ function actionEcho(action: QaAction, before: QaObservation | null): QaEchoMask 
     // unique-target rule.
     value: value === '' ? null : value,
   };
+}
+
+/** Field-level equivalence of two semantic nodes, ignoring per-observation refs. */
+function scrollProofNodeEquivalent(left: QaSemanticNode, right: QaSemanticNode): boolean {
+  return left.role === right.role
+    && left.name === right.name
+    && left.tag === right.tag
+    && left.interactive === right.interactive
+    && left.editable === right.editable
+    && left.disabled === right.disabled
+    && (left.href ?? null) === (right.href ?? null)
+    && (left.inViewport ?? null) === (right.inViewport ?? null)
+    && (left.secure ?? null) === (right.secure ?? null)
+    && (left.value ?? null) === (right.value ?? null)
+    && (left.valueWithheld ?? false) === (right.valueWithheld ?? false)
+    && (left.valueTruncated ?? false) === (right.valueTruncated ?? false);
+}
+
+/**
+ * Whether an escalated (higher node budget) observation is acceptable as the
+ * proof observation of a settled post-scroll view — the "stable-equivalent"
+ * decision.
+ *
+ * The escalated read is taken AFTER the settle window closed, so it is only
+ * sound evidence for the action when the page is still in the exact state that
+ * window proved. The browser driver emits semantic nodes in composed-tree DOM
+ * order, so a view with a larger budget is a strict superset window of the
+ * same page state. The escalated view therefore must EXTEND the settled one:
+ * identical page URL and title, and every node the settled view returned must
+ * appear unchanged (same role/name/tag/interactive/editable/disabled/href/
+ * inViewport/secure/value/flags — per-observation refs excluded) in the same
+ * order at the front of the escalated node list. Anything else means the page
+ * changed between the two reads, and the proof stays the settled observation
+ * (fail closed). The escalated observation's own truncated flag is kept
+ * exactly as the driver reported it: a still-truncated fuller view that now
+ * RETURNS the target in the viewport is sound evidence of presence, exactly
+ * like any other returned node.
+ */
+function scrollProofExtends(settled: QaObservation, escalated: QaObservation): boolean {
+  if (settled.page.url !== escalated.page.url) return false;
+  if (settled.page.title !== escalated.page.title) return false;
+  if (escalated.nodes.length < settled.nodes.length) return false;
+  for (let index = 0; index < settled.nodes.length; index += 1) {
+    const left = settled.nodes[index];
+    const right = escalated.nodes[index];
+    if (left === undefined || right === undefined || !scrollProofNodeEquivalent(left, right)) return false;
+  }
+  return true;
 }
 
 /**
@@ -271,9 +325,24 @@ export class QaSession {
       ...(echo === null ? {} : { echo }),
     });
     const outcome: QaActOutcome = receipt.status === 'confirmed' ? 'ok' : 'unknown';
+    // A scroll-by-ref whose settled proof view is TRUNCATED and still lacks the
+    // target in the viewport gets ONE bounded budget escalation (recording
+    // adapters only, see #escalateScrollProof): a target deep in DOM order is
+    // simply outside the default node-budget window, and without the fuller
+    // view export could never evaluate the node-in-viewport proof. At most one
+    // escalation per action; a refused one keeps the settled observation.
+    let proofObservation = settled.observation;
+    if (
+      settled.stable
+      && proofObservation.truncated
+      && typeof this.#adapter.noteEscalatedScrollProof === 'function'
+    ) {
+      proofObservation = await this.#escalateScrollProof(action, baselineObservation, proofObservation)
+        ?? proofObservation;
+    }
     return {
       receipt,
-      observation: settled.observation,
+      observation: proofObservation,
       outcome,
       evidence: [receipt],
       settle: {
@@ -290,6 +359,54 @@ export class QaSession {
       // tell the caller nothing in the view can be attributed to the action.
       ...(settled.stable ? {} : { proven: false as const, code: QA_INCONCLUSIVE_UNSTABLE }),
     };
+  }
+
+  /**
+   * ONE bounded node-budget escalation for a browser scroll-by-ref whose
+   * settled proof view is truncated and still lacks the action target in the
+   * viewport. Live evidence (Wikipedia History_of_China navbox): the target is
+   * deep in composed-tree DOM order, so the default-budget window never
+   * returns it even though the scroll placed it in the viewport — the exact
+   * gap the live assertion path already closes with its own bounded
+   * re-observation (replay/assertions.ts decideAssertion). The driver clamps
+   * the requested budget to its own maximum, so the fuller view is still
+   * honestly marked truncated when the page exceeds that.
+   *
+   * Accepts the escalated observation as the action's proof ONLY when its
+   * window settled and the view stably EXTENDS the settled one (see
+   * scrollProofExtends); the recording adapter is then notified so it re-binds
+   * the proof. An unsettled window, a changed page, or a missing pre-action
+   * target all keep the settled observation — at most one escalation per
+   * action, no loop, fail closed.
+   */
+  async #escalateScrollProof(
+    action: QaAction,
+    baselineObservation: QaObservation | null,
+    settledObservation: QaObservation,
+  ): Promise<QaObservation | null> {
+    if (this.#adapter.kind !== 'browser') return null;
+    if (action.kind !== 'scroll' || !('ref' in action)) return null;
+    // The ref is the pre-action identity inside the baseline observation only
+    // (the driver re-mints refs per observation), so the target's semantic
+    // predicate is recovered there and matched by predicate afterwards.
+    const targetNode = baselineObservation?.nodes.find((candidate) => candidate.ref === action.ref);
+    if (targetNode === undefined) return null;
+    const target = { role: targetNode.role, name: targetNode.name, tag: targetNode.tag };
+    const alreadyInViewport = settledObservation.nodes.some(
+      (candidate) => matchesNode(candidate, target) && candidate.inViewport === true,
+    );
+    if (alreadyInViewport) return null;
+    try {
+      const escalated = await this.observeSettled({ maxNodes: QA_ESCALATED_NODE_BUDGET });
+      if (!escalated.stable || !scrollProofExtends(settledObservation, escalated.observation)) return null;
+      try {
+        this.#adapter.noteEscalatedScrollProof?.(this.#ownerId);
+      } catch { /* observational only */ }
+      return escalated.observation;
+    } catch {
+      // No settled fuller view is available: keep the settled observation.
+      return null;
+    }
   }
 
   async evidence(options?: QaEvidenceOptions): Promise<QaEvidence> {

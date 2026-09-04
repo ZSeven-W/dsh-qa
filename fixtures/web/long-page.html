@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa long page fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 6px 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <!--
+      QA-BL-045 reproduction (History_of_China navbox defect). The page carries
+      120 links BEFORE the unique "Deep Target" link in DOM order, so the driver
+      default observation window (60 nodes, composed-tree DOM order) NEVER
+      returns the target. 28 of those links are visibility-hidden: the driver
+      skips elements without boxes, so the page stays inside the driver's
+      clamped 100-node budget that the ONE bounded escalation at
+      QA_ESCALATED_NODE_BUDGET can actually observe (the browser driver clamps
+      maxNodes to 1..100). The target sits at emitted position ~95: beyond the
+      default 60-node window, inside the escalated 100-node window. The 12
+      visible related links AFTER the target push the total emitted count past
+      100, so even the escalated view is honestly marked truncated.
+    -->
+    <h1>Long page fixture</h1>
+    <ul id="fillers">
+      <li><a href="#filler-01">Filler 01</a></li>
+      <li><a href="#filler-02">Filler 02</a></li>
+      <li><a href="#filler-03">Filler 03</a></li>
+      <li><a href="#filler-04">Filler 04</a></li>
+      <li><a href="#filler-05">Filler 05</a></li>
+      <li><a href="#filler-06">Filler 06</a></li>
+      <li><a href="#filler-07">Filler 07</a></li>
+      <li><a href="#filler-08">Filler 08</a></li>
+      <li><a href="#filler-09">Filler 09</a></li>
+      <li><a href="#filler-10">Filler 10</a></li>
+      <li><a href="#filler-11">Filler 11</a></li>
+      <li><a href="#filler-12">Filler 12</a></li>
+      <li><a href="#filler-13">Filler 13</a></li>
+      <li><a href="#filler-14">Filler 14</a></li>
+      <li><a href="#filler-15">Filler 15</a></li>
+      <li><a href="#filler-16">Filler 16</a></li>
+      <li><a href="#filler-17">Filler 17</a></li>
+      <li><a href="#filler-18">Filler 18</a></li>
+      <li><a href="#filler-19">Filler 19</a></li>
+      <li><a href="#filler-20">Filler 20</a></li>
+      <li><a href="#filler-21">Filler 21</a></li>
+      <li><a href="#filler-22">Filler 22</a></li>
+      <li><a href="#filler-23">Filler 23</a></li>
+      <li><a href="#filler-24">Filler 24</a></li>
+      <li><a href="#filler-25">Filler 25</a></li>
+      <li><a href="#filler-26">Filler 26</a></li>
+      <li><a href="#filler-27">Filler 27</a></li>
+      <li><a href="#filler-28">Filler 28</a></li>
+      <li><a href="#filler-29">Filler 29</a></li>
+      <li><a href="#filler-30">Filler 30</a></li>
+      <li><a href="#filler-31">Filler 31</a></li>
+      <li><a href="#filler-32">Filler 32</a></li>
+      <li><a href="#filler-33">Filler 33</a></li>
+      <li><a href="#filler-34">Filler 34</a></li>
+      <li><a href="#filler-35">Filler 35</a></li>
+      <li><a href="#filler-36">Filler 36</a></li>
+      <li><a href="#filler-37">Filler 37</a></li>
+      <li><a href="#filler-38">Filler 38</a></li>
+      <li><a href="#filler-39">Filler 39</a></li>
+      <li><a href="#filler-40">Filler 40</a></li>
+      <li><a href="#filler-41">Filler 41</a></li>
+      <li><a href="#filler-42">Filler 42</a></li>
+      <li><a href="#filler-43">Filler 43</a></li>
+      <li><a href="#filler-44">Filler 44</a></li>
+      <li><a href="#filler-45">Filler 45</a></li>
+      <li><a href="#filler-46">Filler 46</a></li>
+      <li><a href="#filler-47">Filler 47</a></li>
+      <li><a href="#filler-48">Filler 48</a></li>
+      <li><a href="#filler-49">Filler 49</a></li>
+      <li><a href="#filler-50">Filler 50</a></li>
+      <li><a href="#filler-51">Filler 51</a></li>
+      <li><a href="#filler-52">Filler 52</a></li>
+      <li><a href="#filler-53">Filler 53</a></li>
+      <li><a href="#filler-54">Filler 54</a></li>
+      <li><a href="#filler-55">Filler 55</a></li>
+      <li><a href="#filler-56">Filler 56</a></li>
+      <li><a href="#filler-57">Filler 57</a></li>
+      <li><a href="#filler-58">Filler 58</a></li>
+      <li><a href="#filler-59">Filler 59</a></li>
+      <li><a href="#filler-60">Filler 60</a></li>
+      <li><a href="#filler-61">Filler 61</a></li>
+      <li><a href="#filler-62">Filler 62</a></li>
+      <li><a href="#filler-63">Filler 63</a></li>
+      <li><a href="#filler-64">Filler 64</a></li>
+      <li><a href="#filler-65">Filler 65</a></li>
+      <li><a href="#filler-66">Filler 66</a></li>
+      <li><a href="#filler-67">Filler 67</a></li>
+      <li><a href="#filler-68">Filler 68</a></li>
+      <li><a href="#filler-69">Filler 69</a></li>
+      <li><a href="#filler-70">Filler 70</a></li>
+      <li><a href="#filler-71">Filler 71</a></li>
+      <li><a href="#filler-72">Filler 72</a></li>
+      <li><a href="#filler-73">Filler 73</a></li>
+      <li><a href="#filler-74">Filler 74</a></li>
+      <li><a href="#filler-75">Filler 75</a></li>
+      <li><a href="#filler-76">Filler 76</a></li>
+      <li><a href="#filler-77">Filler 77</a></li>
+      <li><a href="#filler-78">Filler 78</a></li>
+      <li><a href="#filler-79">Filler 79</a></li>
+      <li><a href="#filler-80">Filler 80</a></li>
+      <li><a href="#filler-81">Filler 81</a></li>
+      <li><a href="#filler-82">Filler 82</a></li>
+      <li><a href="#filler-83">Filler 83</a></li>
+      <li><a href="#filler-84">Filler 84</a></li>
+      <li><a href="#filler-85">Filler 85</a></li>
+      <li><a href="#filler-86">Filler 86</a></li>
+      <li><a href="#filler-87">Filler 87</a></li>
+      <li><a href="#filler-88">Filler 88</a></li>
+      <li><a href="#filler-89">Filler 89</a></li>
+      <li><a href="#filler-90">Filler 90</a></li>
+      <li><a href="#filler-91">Filler 91</a></li>
+      <li><a href="#filler-92">Filler 92</a></li>
+      <li hidden><a href="#hidden-01">Hidden 01</a></li>
+      <li hidden><a href="#hidden-02">Hidden 02</a></li>
+      <li hidden><a href="#hidden-03">Hidden 03</a></li>
+      <li hidden><a href="#hidden-04">Hidden 04</a></li>
+      <li hidden><a href="#hidden-05">Hidden 05</a></li>
+      <li hidden><a href="#hidden-06">Hidden 06</a></li>
+      <li hidden><a href="#hidden-07">Hidden 07</a></li>
+      <li hidden><a href="#hidden-08">Hidden 08</a></li>
+      <li hidden><a href="#hidden-09">Hidden 09</a></li>
+      <li hidden><a href="#hidden-10">Hidden 10</a></li>
+      <li hidden><a href="#hidden-11">Hidden 11</a></li>
+      <li hidden><a href="#hidden-12">Hidden 12</a></li>
+      <li hidden><a href="#hidden-13">Hidden 13</a></li>
+      <li hidden><a href="#hidden-14">Hidden 14</a></li>
+      <li hidden><a href="#hidden-15">Hidden 15</a></li>
+      <li hidden><a href="#hidden-16">Hidden 16</a></li>
+      <li hidden><a href="#hidden-17">Hidden 17</a></li>
+      <li hidden><a href="#hidden-18">Hidden 18</a></li>
+      <li hidden><a href="#hidden-19">Hidden 19</a></li>
+      <li hidden><a href="#hidden-20">Hidden 20</a></li>
+      <li hidden><a href="#hidden-21">Hidden 21</a></li>
+      <li hidden><a href="#hidden-22">Hidden 22</a></li>
+      <li hidden><a href="#hidden-23">Hidden 23</a></li>
+      <li hidden><a href="#hidden-24">Hidden 24</a></li>
+      <li hidden><a href="#hidden-25">Hidden 25</a></li>
+      <li hidden><a href="#hidden-26">Hidden 26</a></li>
+      <li hidden><a href="#hidden-27">Hidden 27</a></li>
+      <li hidden><a href="#hidden-28">Hidden 28</a></li>
+    </ul>
+    <section id="deep">
+      <h2>Deep section</h2>
+      <p>The unique scroll target below is preceded by 120 links in document order.</p>
+      <a id="deep-target" href="#deep-target">Deep Target</a>
+    </section>
+    <ul id="related">
+      <li><a href="#related-01">Related 01</a></li>
+      <li><a href="#related-02">Related 02</a></li>
+      <li><a href="#related-03">Related 03</a></li>
+      <li><a href="#related-04">Related 04</a></li>
+      <li><a href="#related-05">Related 05</a></li>
+      <li><a href="#related-06">Related 06</a></li>
+      <li><a href="#related-07">Related 07</a></li>
+      <li><a href="#related-08">Related 08</a></li>
+      <li><a href="#related-09">Related 09</a></li>
+      <li><a href="#related-10">Related 10</a></li>
+      <li><a href="#related-11">Related 11</a></li>
+      <li><a href="#related-12">Related 12</a></li>
+    </ul>
+    <div id="result" role="status" aria-live="polite">IDLE</div>
+  </main>
+</body>
+</html>

@@ -53,6 +53,14 @@ interface MutableTrajectory {
    * exporter judges — never the first, racing one.
    */
   settlingActionId: string | null;
+  /**
+   * The action whose proof settle window closed most recently (set by every
+   * settle() that bound an action). The scroll-proof escalation re-binds that
+   * action's proof to the escalated observation via bindEscalatedScrollProof,
+   * which the session core calls synchronously right after the escalation
+   * window, so a standalone later settle can never shadow it.
+   */
+  lastSettledActionId: string | null;
   /** The session's RESOLVED settle policy (recorded at start; see noteSettlePolicy). */
   settlePolicy: QaSettlePolicy | null;
 }
@@ -152,6 +160,7 @@ export class QaTrajectoryRecorder {
         lastObservationId: null,
         pendingActionId: null,
         settlingActionId: null,
+        lastSettledActionId: null,
         settlePolicy: null,
       };
       this.#trajectories.set(ownerId, trajectory);
@@ -305,6 +314,9 @@ export class QaTrajectoryRecorder {
     if (trajectory === undefined) return;
     const actionId = trajectory.settlingActionId;
     trajectory.settlingActionId = null;
+    // A standalone settle (no action) never shadows the most recently proven
+    // action: the scroll-proof escalation re-binds exactly that action.
+    if (actionId !== null) trajectory.lastSettledActionId = actionId;
     try {
       const safeReport = cloneRedacted(report).value;
       if (actionId !== null) {
@@ -334,6 +346,33 @@ export class QaTrajectoryRecorder {
         if (action !== undefined) action.recordingIssue = issue;
       }
       this.#recordingError(trajectory, 'settle', issue, actionId);
+    }
+  }
+
+  /**
+   * Re-bind the most recently settled action's proof observation to the last
+   * recorded observation. The session core calls this exactly once per action
+   * (synchronously inside act) when it accepted the ONE bounded
+   * budget-escalated observation as the scroll-by-ref proof: the escalated
+   * window's observations are already recorded, and the last of them is the
+   * settled fuller view. The recorded observation keeps whatever truncated
+   * flag the driver reported — nothing here claims or alters any budget.
+   */
+  bindEscalatedScrollProof(ownerId: string): void {
+    const trajectory = this.#trajectories.get(ownerId);
+    if (trajectory === undefined) return;
+    const actionId = trajectory.lastSettledActionId;
+    if (actionId === null) return;
+    try {
+      const action = trajectory.actionById.get(actionId);
+      if (action !== undefined && trajectory.lastObservationId !== null) {
+        action.afterObservationId = trajectory.lastObservationId;
+      }
+    } catch (error) {
+      const issue = 'scroll-proof escalation recording failed: ' + safeReason(error);
+      trajectory.recordingIssues.push(issue);
+      const action = trajectory.actionById.get(actionId);
+      if (action !== undefined) action.recordingIssue = issue;
     }
   }
 
@@ -586,6 +625,7 @@ export class QaTrajectoryRecorder {
       lastObservationId: null,
       pendingActionId: null,
       settlingActionId: null,
+      lastSettledActionId: null,
       settlePolicy: null,
     };
     this.#recordingError(trajectory, 'start', issue, null);
@@ -646,6 +686,16 @@ export class RecordingQaDriverAdapter implements QaDriverAdapter {
   /** Passive: binds the SETTLED observation as the pending action's proof. */
   noteSettle(ownerId: string, report: QaSettleReport): void {
     this.#safe(() => this.#recorder.settle(ownerId, report));
+  }
+
+  /**
+   * Passive: re-binds the last settled action's proof to the escalated
+   * observation the session core just accepted (see QaSession.act). Its
+   * presence on this adapter is the capability gate the session core checks
+   * before taking the ONE bounded scroll-proof escalation.
+   */
+  noteEscalatedScrollProof(ownerId: string): void {
+    this.#safe(() => this.#recorder.bindEscalatedScrollProof(ownerId));
   }
 
   /** Passive: persists the session's resolved settle policy for meta.settle export. */

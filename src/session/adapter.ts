@@ -350,6 +350,18 @@ export interface QaDriverAdapter {
    * change driver behavior.
    */
   noteSettlePolicy?(ownerId: string, policy: QaSettlePolicy): void;
+  /**
+   * Optional PASSIVE notification, implemented only by the Explore recording
+   * adapter. The session core calls it exactly once when it accepted the ONE
+   * bounded budget-escalated observation taken after a scroll-by-ref (see
+   * QaSession.act) as that action's proof observation: the recorder re-binds
+   * the action's proof to the fuller observation so export can evaluate the
+   * node-in-viewport proof against it. Its PRESENCE is also the capability
+   * gate — the session core never escalates through an adapter that does not
+   * implement it, so Replay's plain adapters (and therefore replay behaviour)
+   * are untouched. It must never throw and can never change driver behavior.
+   */
+  noteEscalatedScrollProof?(ownerId: string): void;
   stop(ownerId: string): Promise<QaStopResult>;
   dispose?(): Promise<void>;
 }

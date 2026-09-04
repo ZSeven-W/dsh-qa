@@ -592,6 +592,32 @@ function synthesizeScrollAssertion(target: QaNodePredicate): QaAssertion {
 }
 
 /**
+ * Scroll-specific ASSERTION_NOT_PROVABLE detail for a scroll-by-target step
+ * whose synthesized node-in-viewport proof failed against the recorded
+ * post-action observation. It names the ACTUAL cause — the target was not
+ * returned by that observation (and whether the view was truncated, so it may
+ * simply have fallen outside the returned window), or it was returned but not
+ * in the viewport — never the click/fill wording about "semantic state change
+ * or URL change", which is meaningless for a scroll (a scroll by design
+ * changes no semantic state and no URL).
+ */
+function scrollProofFailureDetail(target: QaNodePredicate, after: QaObservation): string {
+  const name = predicateName(target);
+  const returned = after.nodes.some((node) => matchesPredicate(node, target));
+  if (returned) {
+    return 'The settled post-action observation returned the scroll target "' + name
+      + '" but did not place it in the viewport, so the scroll outcome is unproven.';
+  }
+  if (after.truncated) {
+    return 'The settled post-action observation was truncated at the driver node budget and did not return the '
+      + 'scroll target "' + name + '", so the target may have fallen outside the returned window and the scroll '
+      + 'outcome is unproven.';
+  }
+  return 'The settled post-action observation was complete but did not return the scroll target "' + name
+    + '", so the scroll outcome is unproven.';
+}
+
+/**
  * Normalize line terminators out of a display-only intent string. The intent
  * is prose for the scenario file and the report; the semantic target Replay
  * matches against is stored separately in `action`/`assert`, so flattening
@@ -898,12 +924,18 @@ function buildScenario(
       continue;
     }
     if (synthesized.assertion === null || !evaluateAssertion(synthesized.assertion.assertion, after).passed) {
+      // A scroll-by-target step whose node-in-viewport proof failed must say
+      // WHY (target outside the window, or returned but not in the viewport):
+      // the click/fill "no semantic state change or URL change" wording would
+      // be wrong for a scroll, which by design changes neither.
       excluded.push(exclusion(
         recorded,
         'ASSERTION_NOT_PROVABLE',
-        receipt?.status === 'unknown'
-          ? 'Unknown receipt had no semantic state change in the settled observation.'
-          : 'The settled observation had no semantic state change or URL change proving the action outcome.',
+        stepAction.kind === 'scroll' && candidate.target !== null
+          ? scrollProofFailureDetail(candidate.target, after)
+          : receipt?.status === 'unknown'
+            ? 'Unknown receipt had no semantic state change in the settled observation.'
+            : 'The settled observation had no semantic state change or URL change proving the action outcome.',
       ));
       continue;
     }
