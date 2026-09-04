@@ -269,18 +269,28 @@ export interface QaViewCompleteness {
   /** Whether the FINAL deciding view was still truncated at its node budget. */
   truncated: boolean;
   /**
-   * Node budget requested for the deciding observation; null means the driver
-   * default applied. Each driver clamps the request to its own maximum, so the
-   * observation's own `truncated` flag — not this number — is the ground truth.
+   * Node budget the DECIDING observation actually applied, reported from the
+   * driver's own limits (after its clamp); null means the driver did not
+   * report one. Never a requested budget: a 500-node request that the browser
+   * clamped to 100 reports 100, and the observation's own `truncated` flag —
+   * not this number — is the ground truth for completeness.
    */
   nodeBudget: number | null;
+  /**
+   * ADDITIVE: every reason the deciding view is partial, in the DRIVER's
+   * vocabulary (iframe-not-traversed, scan-window-exceeded,
+   * node-budget-exceeded, byte-budget-exceeded, ...). Absent when the driver
+   * reported none — the QA layer never invents reasons, and the remedies
+   * differ per reason (a budget raise cannot fix an iframe).
+   */
+  truncationReasons?: string[];
   /** Whether one bounded budget escalation was performed before deciding. */
   escalated: boolean;
   /** Whether this outcome depends on the view being complete (unproven if it is not). */
   outcomeDependsOnCompleteView: boolean;
   /** Present exactly when the outcome could not be proven from an incomplete view. */
   reason?: QaInconclusiveReason;
-  /** Deterministic, human-readable explanation naming the budget. */
+  /** Deterministic, human-readable explanation naming the applied budget and the reasons. */
   detail: string;
 }
 

@@ -142,10 +142,16 @@ async function resolveActionWithBudget(
   }
   if (missing(view)) {
     if (view.truncated) {
+      // Same honesty rule as the completeness block: name the budget the
+      // driver APPLIED (its own clamp), never the requested constant.
+      const applied = escalated
+        ? view.maxNodes === undefined
+          ? 'the escalated budget (the driver did not report the budget it applied)'
+          : 'the applied ' + String(view.maxNodes) + '-node escalated budget'
+        : 'the driver-default budget';
       throw new Error(
-        'no observable node matches the action target, and the view was still truncated at the '
-        + (escalated ? String(QA_ESCALATED_NODE_BUDGET) + '-node escalated' : 'driver-default')
-        + ' budget (' + QA_INCONCLUSIVE_TRUNCATED
+        'no observable node matches the action target, and the view was still truncated at '
+        + applied + ' (' + QA_INCONCLUSIVE_TRUNCATED
         + '): the target may exist outside the returned window rather than be missing from the page',
       );
     }

@@ -82,6 +82,12 @@ function toObservedValueNode(node: QaSemanticNode): QaObservedNode & {
  * cannot guarantee a complete view — which is exactly why a still-truncated
  * view fails CLOSED instead of being retried. It happens at most ONCE per
  * decision: no loop, no unbounded growth, no second escalation.
+ *
+ * REPORTING HONESTY (QA-BL-043): this constant is a REQUEST. Every completeness
+ * block reports the budget the deciding observation ACTUALLY applied
+ * (QaObservation.maxNodes, the driver's own clamp) — a browser clamps this
+ * request to 100 and the report must say 100 (and, when that equals the prior
+ * applied budget, that no wider view exists from this driver), never 500.
  */
 export const QA_ESCALATED_NODE_BUDGET = 500;
 
@@ -226,21 +232,103 @@ function budgetLabel(nodeBudget: number | null): string {
   return nodeBudget === null ? 'driver-default' : String(nodeBudget) + '-node';
 }
 
+/** Everything the completeness detail needs, in one honest context. */
+interface CompletenessContext {
+  kind: QaAssertionKind;
+  deciding: AssertionEval;
+  truncated: boolean;
+  /** Budget the DECIDING observation actually applied (driver-reported). */
+  nodeBudget: number | null;
+  /** Budget the FIRST observation actually applied (driver-reported). */
+  priorBudget: number | null;
+  /** Driver-named reasons the deciding view is partial (absent = not reported). */
+  truncationReasons: readonly string[] | undefined;
+  escalated: boolean;
+  escalationFailed: boolean;
+}
+
+function hasReason(reasons: readonly string[] | undefined, reason: string): boolean {
+  return reasons !== undefined && reasons.includes(reason);
+}
+
+/**
+ * Names the bounded re-observation by what the driver APPLIED, never by the
+ * requested constant. A driver that clamps the 500 request back to the
+ * budget it already used widened nothing, and the detail must say so.
+ */
+function escalationClause(context: CompletenessContext): string {
+  if (context.escalationFailed) {
+    return 'the bounded escalation to the ' + String(QA_ESCALATED_NODE_BUDGET)
+      + '-node budget could not be observed, so the outcome was decided against the truncated view; ';
+  }
+  if (!context.escalated) return '';
+  const applied = context.nodeBudget;
+  const prior = context.priorBudget;
+  if (applied !== null && prior !== null && applied === prior) {
+    return 'one bounded re-observation was taken at the driver maximum of ' + String(applied)
+      + ' nodes — the same budget the prior observation applied, so no wider view exists from this driver; ';
+  }
+  if (applied !== null && prior !== null) {
+    return 'one bounded re-observation was taken, and the driver applied ' + String(applied)
+      + ' nodes instead of the prior ' + String(prior) + '; ';
+  }
+  if (applied !== null) {
+    return 'one bounded re-observation was taken, and the driver applied ' + String(applied) + ' nodes; ';
+  }
+  return 'one bounded re-observation was taken, and the driver did not report the budget it applied; ';
+}
+
+/**
+ * The recovery advice for an unprovable truncated view, chosen by WHY the
+ * view is partial: a budget raise cannot fix an iframe or a scan window, and
+ * after an escalation the driver already applied the widest budget it accepts.
+ */
+function truncationAdvice(context: CompletenessContext): string {
+  if (hasReason(context.truncationReasons, 'iframe-not-traversed')) {
+    return 'the driver reported iframe-not-traversed: part of the page lives in an iframe the driver does not traverse, '
+      + 'so a node budget cannot help — narrow the page to the top-level document, '
+      + 'or assert only against nodes the driver can return,';
+  }
+  if (hasReason(context.truncationReasons, 'scan-window-exceeded')) {
+    return 'the driver reported scan-window-exceeded: the page has more selector matches than the driver\'s fixed scan window, '
+      + 'so raising the node budget cannot help — narrow the page or scroll the target into a smaller view,';
+  }
+  if (context.escalated && context.nodeBudget !== null && context.priorBudget !== null
+    && context.nodeBudget === context.priorBudget) {
+    return 'the re-observation applied the same ' + String(context.nodeBudget)
+      + '-node budget the driver already allowed (its maximum), so raising qa_observe max_nodes cannot help — '
+      + 'narrow the page or region, or scroll the target into a smaller view,';
+  }
+  if (context.escalated) {
+    return 'the driver already applied the widest node budget it accepts and the view is still truncated, '
+      + 'so raising qa_observe max_nodes cannot help — narrow the page or region, '
+      + 'or scroll the target into a smaller view,';
+  }
+  return 'raise the observation node budget (qa_observe max_nodes) or narrow the page,';
+}
+
 function completenessDetail(
   kind: QaAssertionKind,
   deciding: AssertionEval,
   truncated: boolean,
   nodeBudget: number | null,
+  priorBudget: number | null,
+  truncationReasons: readonly string[] | undefined,
   escalated: boolean,
   escalationFailed: boolean,
 ): string {
+  const context: CompletenessContext = {
+    kind,
+    deciding,
+    truncated,
+    nodeBudget,
+    priorBudget,
+    truncationReasons,
+    escalated,
+    escalationFailed,
+  };
   const budget = budgetLabel(nodeBudget);
-  const escalation = escalationFailed
-    ? 'the bounded escalation to the ' + String(QA_ESCALATED_NODE_BUDGET)
-      + '-node budget could not be observed, so the outcome was decided against the truncated view; '
-    : escalated
-      ? 'one bounded re-observation at the ' + String(QA_ESCALATED_NODE_BUDGET) + '-node budget was taken; '
-      : '';
+  const escalation = escalationClause(context);
   if (!readsNodes(kind)) {
     return 'the observation was truncated at its ' + budget
       + ' budget, but this assertion reads the page URL only and does not depend on node completeness.';
@@ -249,8 +337,7 @@ function completenessDetail(
     return escalation
       + 'the view was STILL truncated at its ' + budget + ' budget, so "' + kind
       + '" cannot be proven from it: a matching node may exist outside the returned window. '
-      + 'This is not "not present" — raise the observation node budget (qa_observe max_nodes) '
-      + 'or narrow the page, then re-run.';
+      + 'This is not "not present" — ' + truncationAdvice(context) + ' then re-run.';
   }
   if (truncated) {
     return escalation
@@ -293,7 +380,6 @@ export async function decideAssertion(
 
   let deciding = observation;
   let evaluation = first;
-  let nodeBudget: number | null = null;
   let escalated = false;
   let escalationFailed = false;
   if (needsFullerView(assertion.kind, first)) {
@@ -301,7 +387,6 @@ export async function decideAssertion(
       const fuller = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
       deciding = fuller;
       evaluation = evaluateAssertion(assertion, fuller);
-      nodeBudget = QA_ESCALATED_NODE_BUDGET;
       escalated = true;
     } catch {
       // No fuller view is available: decide against what we have, fail closed.
@@ -309,17 +394,25 @@ export async function decideAssertion(
     }
   }
 
+  // The budget the DECIDING observation actually applied (the driver's own
+  // clamp, reported in its limits) — never the requested constant.
+  const nodeBudget: number | null = deciding.maxNodes ?? null;
+  const priorBudget: number | null = observation.maxNodes ?? null;
+
   const completeness: QaViewCompleteness = {
     truncated: deciding.truncated,
     nodeBudget,
     escalated,
     outcomeDependsOnCompleteView: evaluation.inconclusive,
+    ...(deciding.truncationReasons === undefined ? {} : { truncationReasons: deciding.truncationReasons }),
     ...(evaluation.inconclusive ? { reason: QA_INCONCLUSIVE_TRUNCATED } : {}),
     detail: completenessDetail(
       assertion.kind,
       evaluation,
       deciding.truncated,
       nodeBudget,
+      priorBudget,
+      deciding.truncationReasons,
       escalated,
       escalationFailed,
     ),

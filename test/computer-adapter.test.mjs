@@ -40,6 +40,7 @@ function fakeDriver(overrides = {}) {
         ],
         truncated: false,
         limits: { maxDepth: 4, maxNodes: 200, ttlMs: 15000 },
+        ...(overrides.observe ?? {}),
       }
     },
     async act(action, context) {
@@ -80,6 +81,27 @@ function receipt(overrides) {
     ...overrides,
   }
 }
+
+test('observe projects the APPLIED limits and never invents truncation reasons', async () => {
+  const { driver } = fakeDriver()
+  const adapter = new ComputerAdapter(driver)
+  await adapter.start('a', { bundleId: APP.bundleId })
+
+  const obs = await adapter.observe('a', { maxNodes: 500 })
+  assert.equal(obs.truncated, false)
+  assert.equal(obs.maxNodes, 200, 'the budget the driver APPLIED travels through the observation, never the requested 500')
+  assert.equal(obs.truncationReasons, undefined, 'the computer driver reports no reason vocabulary; none is invented')
+
+  const { driver: driver2 } = fakeDriver({
+    observe: { truncated: true, limits: { maxDepth: 3, maxNodes: 120, ttlMs: 9000 } },
+  })
+  const adapter2 = new ComputerAdapter(driver2)
+  await adapter2.start('a', { bundleId: APP.bundleId })
+  const truncatedObs = await adapter2.observe('a', { maxNodes: 500 })
+  assert.equal(truncatedObs.truncated, true)
+  assert.equal(truncatedObs.maxNodes, 120, 'a clamped applied budget is reported, not the 500 request')
+  assert.equal(truncatedObs.truncationReasons, undefined, 'no reason vocabulary is fabricated for the computer driver')
+})
 
 test('projects observation, asserts identity, and maps a type action verbatim', async () => {
   const { driver, calls } = fakeDriver()

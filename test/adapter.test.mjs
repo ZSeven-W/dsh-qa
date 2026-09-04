@@ -63,6 +63,8 @@ test('BrowserAdapter maps driver results and never retries a risk rejection', as
 
   const obs = await adapter.observe('a', { maxNodes: 5 })
   assert.equal(obs.nodes[0].name, 'Publish release')
+  assert.equal(obs.maxNodes, 60, 'the budget the driver APPLIED travels through, never the requested 5')
+  assert.equal(obs.truncationReasons, undefined, 'an unreported reason list is never invented')
 
   const receipt = await adapter.act('a', { kind: 'click', ref: 'br_1' })
   assert.equal(receipt.status, 'rejected')
@@ -79,6 +81,33 @@ test('BrowserAdapter maps driver results and never retries a risk rejection', as
 
   await adapter.dispose()
   assert.ok(calls.some((c) => c[0] === 'dispose'))
+})
+
+test('BrowserAdapter carries the APPLIED budget and the driver-named truncation reasons', async () => {
+  const driver = {
+    kind: 'browser',
+    contractVersion: 7,
+    async start() { return { ownerId: 'a', state: 'running', headless: true, browser: { channel: 'chrome', version: 'fixture' }, page: { url: 'about:blank', title: '' }, isolation: 'ephemeral-user-data', navigationPolicy: { mode: 'unrestricted', allowedOrigins: [] } } },
+    async observe() {
+      return {
+        ownerId: 'a', epoch: 1, fingerprint: 'fp', expiresAt: 'x',
+        page: { url: 'about:blank', title: '', viewport: { width: 1, height: 1 } },
+        nodes: [{ ref: 'br_1', role: 'button', name: 'Publish release', tag: 'button', interactive: true, editable: false, disabled: false }],
+        truncated: true,
+        truncationReasons: ['node-budget-exceeded', 'iframe-not-traversed'],
+        limits: { maxNodes: 100, maxBytes: 4096 },
+      }
+    },
+    async act() { throw new Error('not exercised') },
+    async evidence() { return { ownerId: 'a', page: { url: 'about:blank', title: '' }, console: [], network: [], bounded: true, limits: { console: 1, network: 1 }, dropped: { console: 0, network: 0 } } },
+    async stop() { return { ownerId: 'a', stopped: true, reason: 'requested' } },
+    async dispose() {},
+  }
+  const adapter = new BrowserAdapter(driver)
+  const obs = await adapter.observe('a', { maxNodes: 500 })
+  assert.equal(obs.truncated, true)
+  assert.equal(obs.maxNodes, 100, 'the budget the driver APPLIED travels through, never the requested 500')
+  assert.deepEqual(obs.truncationReasons, ['node-budget-exceeded', 'iframe-not-traversed'], 'every driver-named reason is carried verbatim')
 })
 
 test('BrowserAdapter passes scroll/select/hover through and rejects computer verbs', async () => {

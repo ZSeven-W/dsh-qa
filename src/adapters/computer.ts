@@ -355,6 +355,10 @@ export class ComputerAdapter implements QaDriverAdapter {
       page: { url: observation.app.bundleId, title: observation.window.title ?? '' },
       nodes: observation.targets.map((target) => this.#projectNode(target)),
       truncated: observation.truncated,
+      // The budget the driver ACTUALLY applied (its own 1..500 clamp). The
+      // computer driver reports no truncation-reason vocabulary, so no
+      // truncationReasons field is synthesized here.
+      maxNodes: observation.limits.maxNodes,
       observationId: observation.observationId,
       fingerprint: observation.fingerprint,
       app: {

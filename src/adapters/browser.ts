@@ -62,6 +62,12 @@ export class BrowserAdapter implements QaDriverAdapter {
       page: observation.page,
       nodes: observation.nodes,
       truncated: observation.truncated,
+      // The budget the driver ACTUALLY applied (its own 1..100 clamp), so
+      // completeness reporting never confuses the 500-node request with fact.
+      maxNodes: observation.limits.maxNodes,
+      // Driver-named reasons travel verbatim (a driver that reports none
+      // leaves the field absent; the QA layer never invents reasons).
+      ...(observation.truncationReasons === undefined ? {} : { truncationReasons: observation.truncationReasons }),
     };
   }
 

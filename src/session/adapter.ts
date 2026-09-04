@@ -104,6 +104,21 @@ export interface QaObservation {
   page: QaPageRef;
   nodes: QaSemanticNode[];
   truncated: boolean;
+  /**
+   * The node budget the DRIVER actually applied (its own clamp), read from the
+   * driver's limits report. Absent when the driver does not report limits.
+   * This is the only honest number to report as "the" budget of the view: a
+   * requested budget (e.g. the 500-node escalation) is a request, never a fact.
+   */
+  maxNodes?: number;
+  /**
+   * Names every reason the view is partial, in the DRIVER's own vocabulary
+   * (browser: scan-window-exceeded | node-budget-exceeded |
+   * byte-budget-exceeded | iframe-not-traversed). Present only when the driver
+   * reported reasons; an absent field means "not reported", never "no
+   * reasons". Never synthesized by the QA layer.
+   */
+  truncationReasons?: string[];
   /** Computer-only: opaque observation id required for visual capture. */
   observationId?: string;
   fingerprint?: string;

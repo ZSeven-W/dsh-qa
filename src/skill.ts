@@ -83,6 +83,14 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   budget and then fails closed with \`completeness.reason: "INCONCLUSIVE_TRUNCATED"\` rather than
   reporting a false "gone". Read \`completeness\` before believing any negative result: "we did not
   see it" is not "it is not there". A found node is sound evidence of presence either way.
+  \`completeness.nodeBudget\` is the budget the DRIVER actually applied (each driver clamps the
+  request to its own maximum: browser 100, computer 500 — a browser run never reports 500), and
+  \`completeness.truncationReasons\` names WHY the view is partial: \`iframe-not-traversed\` means
+  part of the page lives in an iframe the driver does not traverse (a budget cannot help),
+  \`scan-window-exceeded\` means the fixed scan window was hit (a budget cannot help), and
+  \`node-budget-exceeded\` names the node budget. When the re-observation applied the SAME budget
+  as before (already at the driver maximum), raising \`qa_observe max_nodes\` cannot help — narrow
+  the page or region, or scroll the target into a smaller view.
 - The moment a problem appears, call \`qa_evidence\` before navigating away or changing state.
   Missing permissions, truncation, and driver rejection are boundaries, never green results.
 

@@ -50,9 +50,11 @@ function escapeLoneSurrogates(text: string): string {
  * from "we could not see the whole page".
  */
 function completenessLine(completeness: QaViewCompleteness): string {
+  const reasons = completeness.truncationReasons;
   return (completeness.reason === undefined ? '' : completeness.reason + ' — ')
     + 'view truncated: ' + String(completeness.truncated)
-    + ', node budget: ' + (completeness.nodeBudget === null ? 'driver default' : String(completeness.nodeBudget))
+    + ', applied node budget: ' + (completeness.nodeBudget === null ? 'not reported by the driver' : String(completeness.nodeBudget))
+    + ', truncation reasons: ' + (reasons === undefined || reasons.length === 0 ? 'not reported by the driver' : reasons.join(', '))
     + ', budget escalated: ' + String(completeness.escalated)
     + ', outcome depends on a complete view: ' + String(completeness.outcomeDependsOnCompleteView)
     + '. ' + completeness.detail;

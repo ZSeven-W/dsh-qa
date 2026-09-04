@@ -16,8 +16,9 @@ import {
   validateScenario,
   QA_ESCALATED_NODE_BUDGET,
 } from '../src/replay/index.ts'
-import { QaSession } from '../src/session/index.ts'
+import { QaSession, QaSessionManager } from '../src/session/index.ts'
 import { writeReports } from '../src/reporters/index.ts'
+import { createQaTools, QaToolHost } from '../src/tools.ts'
 import { QA_INCONCLUSIVE_TRUNCATED } from '../src/contracts.ts'
 
 // Truncation soundness suite.
@@ -101,10 +102,15 @@ function budgetAdapter(options = {}) {
       const budget = Math.min(requested ?? defaultBudget, driverMax)
       const all = build()
       const nodes = all.slice(0, budget)
+      const truncated = all.length > nodes.length
       return {
         page: { url: LAUNCH, title: 'budget fixture' },
         nodes,
-        truncated: all.length > nodes.length,
+        truncated,
+        // What the driver ACTUALLY applied (its own clamp), plus the reason it
+        // names — exactly the shape the real browser driver reports.
+        maxNodes: budget,
+        ...(truncated ? { truncationReasons: ['node-budget-exceeded'] } : {}),
       }
     },
     async act(_owner, action) {
@@ -120,8 +126,10 @@ function budgetAdapter(options = {}) {
   }
 }
 
-function view(nodes, truncated) {
-  return { page: { url: LAUNCH, title: 'budget fixture' }, nodes, truncated }
+function view(nodes, truncated, extras = {}) {
+  // extras carries what the DRIVER reports back: the budget it actually
+  // applied (its own clamp) and the reasons it names for a partial view.
+  return { page: { url: LAUNCH, title: 'budget fixture' }, nodes, truncated, ...extras }
 }
 
 function scenario(steps, assertions) {
@@ -241,39 +249,51 @@ function escalator(fuller) {
 
 test('an absent-claim escalates once and then fails correctly when the node exists', async () => {
   const deep = node('n-deep', 'button', 'Deep control', 'button', { inViewport: true })
-  const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div'), deep], false))
-  const decision = await decideAssertion({ kind: 'node-absent', expected: DEEP }, view([node('a', 'status', 'IDLE', 'div')], true), reobserve)
+  const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div'), deep], false, { maxNodes: 100 }))
+  const decision = await decideAssertion(
+    { kind: 'node-absent', expected: DEEP },
+    view([node('a', 'status', 'IDLE', 'div')], true, { maxNodes: 60 }),
+    reobserve,
+  )
 
   assert.deepEqual(calls, [QA_ESCALATED_NODE_BUDGET], 'exactly ONE bounded escalation')
   assert.equal(decision.passed, false, 'the node exists: absence must fail, never pass')
   assert.deepEqual(decision.observed, { role: 'button', name: 'Deep control', tag: 'button' })
   assert.equal(decision.completeness.escalated, true)
   assert.equal(decision.completeness.truncated, false)
-  assert.equal(decision.completeness.nodeBudget, QA_ESCALATED_NODE_BUDGET)
+  assert.equal(decision.completeness.nodeBudget, 100, 'the budget the driver APPLIED is reported, never the requested 500')
+  assert.match(decision.completeness.detail, /applied 100 nodes instead of the prior 60/, 'a wider applied budget names both numbers')
   assert.equal(decision.completeness.reason, undefined, 'a decided outcome is not inconclusive')
 })
 
 test('a genuinely absent node passes once the escalated view is complete', async () => {
-  const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div')], false))
-  const decision = await decideAssertion({ kind: 'node-absent', expected: DEEP }, view([], true), reobserve)
+  const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div')], false, { maxNodes: 100 }))
+  const decision = await decideAssertion({ kind: 'node-absent', expected: DEEP }, view([], true, { maxNodes: 60 }), reobserve)
 
   assert.deepEqual(calls, [QA_ESCALATED_NODE_BUDGET])
   assert.equal(decision.passed, true)
   assert.equal(decision.observed, null)
   assert.equal(decision.completeness.escalated, true)
   assert.equal(decision.completeness.truncated, false)
+  assert.equal(decision.completeness.nodeBudget, 100, 'the applied budget is reported, never the requested 500')
   assert.equal(decision.completeness.outcomeDependsOnCompleteView, false)
 })
 
 test('a still-truncated view fails closed with a distinct, budget-naming reason', async () => {
-  const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div')], true))
+  // The agent was already at the driver maximum (100): the escalation requests
+  // 500, the driver clamps to 100, and the completeness block must say so.
+  const fuller = view([node('a', 'status', 'IDLE', 'div')], true, { maxNodes: 100, truncationReasons: ['node-budget-exceeded'] })
+  const { calls, reobserve } = escalator(fuller)
   for (const kind of ['node-absent', 'node-present', 'node-in-viewport']) {
-    const decision = await decideAssertion({ kind, expected: DEEP }, view([], true), reobserve)
+    const decision = await decideAssertion({ kind, expected: DEEP }, view([], true, { maxNodes: 100, truncationReasons: ['node-budget-exceeded'] }), reobserve)
     assert.equal(decision.passed, false, kind + ' must never pass from an incomplete view')
     assert.equal(decision.completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
     assert.equal(decision.completeness.truncated, true)
     assert.equal(decision.completeness.outcomeDependsOnCompleteView, true)
-    assert.match(decision.completeness.detail, new RegExp(String(QA_ESCALATED_NODE_BUDGET)))
+    assert.equal(decision.completeness.nodeBudget, 100, 'the applied budget is reported, never the requested 500')
+    assert.deepEqual(decision.completeness.truncationReasons, ['node-budget-exceeded'], 'the driver-reported reasons travel in the completeness block')
+    assert.match(decision.completeness.detail, /no wider view exists from this driver/, 'a same-budget re-read is reported for what it is')
+    assert.ok(!decision.completeness.detail.includes(String(QA_ESCALATED_NODE_BUDGET)), 'the requested constant never masquerades as the applied budget')
     assert.match(decision.completeness.detail, /cannot be proven/)
   }
   assert.equal(calls.length, 3, 'one escalation per decision, never a loop')
@@ -311,6 +331,109 @@ test('an escalation that cannot be observed still fails closed, exactly once', a
   assert.equal(decision.completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
   assert.equal(decision.completeness.escalated, false)
   assert.match(decision.completeness.detail, /could not be observed/)
+})
+
+// ---------------------------------------------------------------------------
+// 2b. QA-BL-043 / QA-BL-044: the completeness block reports what the driver
+//     APPLIED, never the requested constant, and names which truncation hit.
+// ---------------------------------------------------------------------------
+
+test('QA-BL-043: a same-budget escalation reports the driver maximum and never the requested 500', async () => {
+  // The agent was already at the driver maximum (100): the escalation requests
+  // 500, the driver clamps to 100, and the completeness block must say so.
+  const fuller = view([node('a', 'status', 'IDLE', 'div')], true, { maxNodes: 100, truncationReasons: ['node-budget-exceeded'] })
+  const { calls, reobserve } = escalator(fuller)
+  const decision = await decideAssertion(
+    { kind: 'node-absent', expected: DEEP },
+    view([], true, { maxNodes: 100, truncationReasons: ['node-budget-exceeded'] }),
+    reobserve,
+  )
+  assert.deepEqual(calls, [QA_ESCALATED_NODE_BUDGET], 'the escalation still REQUESTS the bounded constant')
+  assert.equal(decision.completeness.nodeBudget, 100, 'the APPLIED budget is reported')
+  assert.match(decision.completeness.detail, /driver maximum of 100 nodes/)
+  assert.match(decision.completeness.detail, /no wider view exists from this driver/)
+  assert.ok(!decision.completeness.detail.includes('500'), 'the requested 500 must never appear as if applied')
+  assert.doesNotMatch(decision.completeness.detail, /raise the observation node budget/, 'the advice must not tell the agent to raise past the driver maximum')
+  assert.match(decision.completeness.detail, /narrow the page or region, or scroll the target into a smaller view/)
+})
+
+test('QA-BL-043: a wider applied budget names both numbers in the detail', async () => {
+  const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div')], false, { maxNodes: 100 }))
+  const decision = await decideAssertion({ kind: 'node-absent', expected: DEEP }, view([], true, { maxNodes: 60 }), reobserve)
+  assert.equal(decision.passed, true)
+  assert.equal(decision.completeness.nodeBudget, 100, 'the APPLIED budget is reported')
+  assert.match(decision.completeness.detail, /applied 100 nodes instead of the prior 60/, 'the detail names the applied and the prior budget')
+  assert.equal(decision.completeness.truncationReasons, undefined, 'a complete deciding view carries no reasons')
+})
+
+test('QA-BL-044: iframe-not-traversed picks reason-specific advice (a budget cannot help)', async () => {
+  const fuller = view([node('a', 'status', 'IDLE', 'div')], true, { maxNodes: 100, truncationReasons: ['iframe-not-traversed'] })
+  const { calls, reobserve } = escalator(fuller)
+  const decision = await decideAssertion(
+    { kind: 'node-absent', expected: DEEP },
+    view([], true, { maxNodes: 100, truncationReasons: ['iframe-not-traversed'] }),
+    reobserve,
+  )
+  assert.equal(decision.completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
+  assert.match(decision.completeness.detail, /iframe-not-traversed/, 'the reason is named in the detail')
+  assert.match(decision.completeness.detail, /does not traverse/)
+  assert.match(decision.completeness.detail, /node budget cannot help/)
+  assert.doesNotMatch(decision.completeness.detail, /raise the observation node budget/)
+})
+
+test('QA-BL-044: scan-window-exceeded names the scan window, not the node budget', async () => {
+  const fuller = view([node('a', 'status', 'IDLE', 'div')], true, { maxNodes: 100, truncationReasons: ['scan-window-exceeded'] })
+  const { calls, reobserve } = escalator(fuller)
+  const decision = await decideAssertion(
+    { kind: 'node-absent', expected: DEEP },
+    view([], true, { maxNodes: 100, truncationReasons: ['scan-window-exceeded'] }),
+    reobserve,
+  )
+  assert.match(decision.completeness.detail, /scan-window-exceeded/, 'the reason is named in the detail')
+  assert.match(decision.completeness.detail, /fixed scan window/)
+  assert.match(decision.completeness.detail, /raising the node budget cannot help/)
+  assert.doesNotMatch(decision.completeness.detail, /raise the observation node budget/)
+})
+
+test('QA-BL-044: the qa_assert tool result carries truncationReasons and the applied budget', async () => {
+  const owner = 'truncation-tool'
+  const adapter = {
+    kind: 'browser',
+    async start() { return { page: { url: LAUNCH, title: 'iframe fixture' }, headless: true } },
+    async observe() {
+      return {
+        page: { url: LAUNCH, title: 'iframe fixture' },
+        nodes: [node('n-status', 'status', 'IDLE', 'div')],
+        truncated: true,
+        maxNodes: 100,
+        truncationReasons: ['iframe-not-traversed'],
+      }
+    },
+    async act() { return { status: 'confirmed', dispatched: true } },
+    async evidence() { return { console: [], network: [], bounded: true, dropped: { console: 0, network: 0 } } },
+    async stop() { return { stopped: true, reason: 'requested' } },
+  }
+  const recorder = new QaTrajectoryRecorder()
+  const manager = new QaSessionManager(new RecordingQaDriverAdapter(adapter, recorder), { settle: SETTLE })
+  const host = new QaToolHost({ settle: SETTLE })
+  host.managerFor = async () => manager
+  host.managerForOwner = async () => manager
+  const tools = createQaTools(host)
+  try {
+    await tools.qaSessionStart.execute({ owner, driver: 'browser', url: LAUNCH }, {})
+    const result = await tools.qaAssert.execute(
+      { owner, kind: 'node-absent', expected: { role: 'button', name: 'Lives in an iframe' } },
+      { agent: { id: 'truncation-tool-agent' } },
+    )
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(result.passed, false)
+    assert.equal(result.completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
+    assert.equal(result.completeness.nodeBudget, 100, 'the tool result reports the APPLIED budget')
+    assert.deepEqual(result.completeness.truncationReasons, ['iframe-not-traversed'], 'the tool result names WHY the view is partial')
+    assert.match(result.completeness.detail, /iframe-not-traversed/)
+  } finally {
+    await host.dispose()
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -421,13 +544,15 @@ test('report.json, report.md and report.jsonl all explain a truncation-affected 
     const completeness = json.assertions[0].completeness
     assert.equal(completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
     assert.equal(completeness.truncated, true)
-    assert.equal(completeness.nodeBudget, QA_ESCALATED_NODE_BUDGET)
+    assert.equal(completeness.nodeBudget, 100, 'the budget the driver APPLIED (its 100-node clamp), never the requested 500')
+    assert.deepEqual(completeness.truncationReasons, ['node-budget-exceeded'], 'the driver-named reason travels in report.json')
     assert.equal(completeness.escalated, true)
 
     const md = await readFile(paths.markdown, 'utf8')
     assert.match(md, /view completeness:/)
     assert.match(md, new RegExp(QA_INCONCLUSIVE_TRUNCATED))
-    assert.match(md, /node budget: 500/)
+    assert.match(md, /applied node budget: 100/)
+    assert.match(md, /truncation reasons: node-budget-exceeded/, 'report.md names WHICH truncation applied')
 
     const jsonl = JSON.parse((await readFile(paths.jsonl, 'utf8')).trim())
     assert.equal(jsonl.assertions[0].completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
