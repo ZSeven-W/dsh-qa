@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa proven scoped scroll proof fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 18px 0; }
+  </style>
+</head>
+<body>
+  <!--
+    QA-BL-062 proven-resolution fixture: the page stays UNDER the driver's
+    clamped 100-node whole-page budget, so replay can PROVE the container
+    unique in a COMPLETE whole-page view and the scoped scroll proof earns a
+    PASS end to end. The scroll target ("Deep Target") sits at emitted
+    position 61 — beyond the default 60-node settle window (so the record-time
+    escalation runs and roots the identity-anchored SCOPED read), but inside
+    the 100-node escalation (so replay's whole-page view COMPLETES). The
+    container (region "Scroll zone", position 3) sits inside an emitted
+    ancestor (region "Scroll shelf", position 2), so export records the
+    ancestor PATH — the stronger locator replay matches by. Emitted totals:
+    h1 (1) + shelf (2) + zone (3) + h2 (4) + 56 inner links (5..60) + target
+    (61) + 14 tail links (62..75) + status (76) = 76 < 100.
+  -->
+  <h1>Proven scoped scroll proof fixture</h1>
+  <section id="scroll-shelf" role="region" aria-label="Scroll shelf">
+    <section id="scroll-zone" role="region" aria-label="Scroll zone">
+      <h2>Scroll zone</h2>
+      <ul>
+        <li><a href="#inner-01">Inner 01</a></li>
+        <li><a href="#inner-02">Inner 02</a></li>
+        <li><a href="#inner-03">Inner 03</a></li>
+        <li><a href="#inner-04">Inner 04</a></li>
+        <li><a href="#inner-05">Inner 05</a></li>
+        <li><a href="#inner-06">Inner 06</a></li>
+        <li><a href="#inner-07">Inner 07</a></li>
+        <li><a href="#inner-08">Inner 08</a></li>
+        <li><a href="#inner-09">Inner 09</a></li>
+        <li><a href="#inner-10">Inner 10</a></li>
+        <li><a href="#inner-11">Inner 11</a></li>
+        <li><a href="#inner-12">Inner 12</a></li>
+        <li><a href="#inner-13">Inner 13</a></li>
+        <li><a href="#inner-14">Inner 14</a></li>
+        <li><a href="#inner-15">Inner 15</a></li>
+        <li><a href="#inner-16">Inner 16</a></li>
+        <li><a href="#inner-17">Inner 17</a></li>
+        <li><a href="#inner-18">Inner 18</a></li>
+        <li><a href="#inner-19">Inner 19</a></li>
+        <li><a href="#inner-20">Inner 20</a></li>
+        <li><a href="#inner-21">Inner 21</a></li>
+        <li><a href="#inner-22">Inner 22</a></li>
+        <li><a href="#inner-23">Inner 23</a></li>
+        <li><a href="#inner-24">Inner 24</a></li>
+        <li><a href="#inner-25">Inner 25</a></li>
+        <li><a href="#inner-26">Inner 26</a></li>
+        <li><a href="#inner-27">Inner 27</a></li>
+        <li><a href="#inner-28">Inner 28</a></li>
+        <li><a href="#inner-29">Inner 29</a></li>
+        <li><a href="#inner-30">Inner 30</a></li>
+        <li><a href="#inner-31">Inner 31</a></li>
+        <li><a href="#inner-32">Inner 32</a></li>
+        <li><a href="#inner-33">Inner 33</a></li>
+        <li><a href="#inner-34">Inner 34</a></li>
+        <li><a href="#inner-35">Inner 35</a></li>
+        <li><a href="#inner-36">Inner 36</a></li>
+        <li><a href="#inner-37">Inner 37</a></li>
+        <li><a href="#inner-38">Inner 38</a></li>
+        <li><a href="#inner-39">Inner 39</a></li>
+        <li><a href="#inner-40">Inner 40</a></li>
+        <li><a href="#inner-41">Inner 41</a></li>
+        <li><a href="#inner-42">Inner 42</a></li>
+        <li><a href="#inner-43">Inner 43</a></li>
+        <li><a href="#inner-44">Inner 44</a></li>
+        <li><a href="#inner-45">Inner 45</a></li>
+        <li><a href="#inner-46">Inner 46</a></li>
+        <li><a href="#inner-47">Inner 47</a></li>
+        <li><a href="#inner-48">Inner 48</a></li>
+        <li><a href="#inner-49">Inner 49</a></li>
+        <li><a href="#inner-50">Inner 50</a></li>
+        <li><a href="#inner-51">Inner 51</a></li>
+        <li><a href="#inner-52">Inner 52</a></li>
+        <li><a href="#inner-53">Inner 53</a></li>
+        <li><a href="#inner-54">Inner 54</a></li>
+        <li><a href="#inner-55">Inner 55</a></li>
+        <li><a href="#inner-56">Inner 56</a></li>
+      </ul>
+      <a id="deep-target" href="#deep-target">Deep Target</a>
+    </section>
+    <ul id="tail-links">
+      <li><a href="#tail-01">Tail 01</a></li>
+      <li><a href="#tail-02">Tail 02</a></li>
+      <li><a href="#tail-03">Tail 03</a></li>
+      <li><a href="#tail-04">Tail 04</a></li>
+      <li><a href="#tail-05">Tail 05</a></li>
+      <li><a href="#tail-06">Tail 06</a></li>
+      <li><a href="#tail-07">Tail 07</a></li>
+      <li><a href="#tail-08">Tail 08</a></li>
+      <li><a href="#tail-09">Tail 09</a></li>
+      <li><a href="#tail-10">Tail 10</a></li>
+      <li><a href="#tail-11">Tail 11</a></li>
+      <li><a href="#tail-12">Tail 12</a></li>
+      <li><a href="#tail-13">Tail 13</a></li>
+      <li><a href="#tail-14">Tail 14</a></li>
+    </ul>
+  </section>
+  <div id="result" role="status" aria-live="polite">IDLE</div>
+</body>
+</html>

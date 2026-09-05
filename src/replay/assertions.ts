@@ -671,6 +671,21 @@ export interface QaRetriedDecision extends QaAssertionDecision {
   elapsedMs: number;
   /** The widening this retry performed (once), or null when none happened. */
   widened: QaSettleWidened | null;
+  /**
+   * ADDITIVE (QA-BL-062): how the scoped container was resolved for this
+   * decision. 'provisional' means exactly one predicate/path match in a
+   * still-truncated whole-page view — uniqueness unproven, the decision
+   * carries reason INCONCLUSIVE_SCOPE and can never report passed:true.
+   * Present exactly when the assertion carried a container scope.
+   */
+  scopeResolution?: 'proven' | 'provisional';
+  /**
+   * ADDITIVE (QA-BL-062): escalationRefused-style disclosure recorded when
+   * the replayed scoped scroll's identity anchor REFUSED the proof (a lost
+   * binding or a mismatch) — the decision is then INCONCLUSIVE_SCOPE and the
+   * reason names the anchor truth. Never a predicate reselect.
+   */
+  scopeRefusal?: { code?: string; reason: string };
 }
 
 /**

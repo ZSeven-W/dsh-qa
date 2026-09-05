@@ -118,15 +118,22 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   REFUSES the call with its driver code (\`REF_UNKNOWN\` / \`REF_EXPIRED\` / \`TARGET_CHANGED\` /
   ...) — never a whole-page fallback and never a "not found". The computer driver does not
   support scoping and refuses \`within_ref\`. A scoped proof is exported as a scoped assertion
-  (\`scope: { role, name }\`, an empty name kept literally) ONLY when the container predicate
-  (role+name, plus tag when needed) is unique in a COMPLETE recorded baseline observation —
-  otherwise the step is excluded with \`SCOPE_NOT_DURABLE\`, never silently exported as a
-  whole-page proof. Replay re-derives the container in the whole-page view (UNIQUE predicate,
-  \`TARGET_NOT_UNIQUE\` when ambiguous; one match in a truncated view is not proven unique and
-  escalates once, a still-truncated view refuses with \`INCONCLUSIVE_TRUNCATED\` naming the
+  (\`scope: { role, name, tag?, path? }\`, an empty name kept literally, and \`path\` the
+  container's semantic ancestor chain from record-time ancestry when one was recorded) DURABLY
+  ONLY when the container predicate (role+name, plus tag when needed) is unique in a COMPLETE
+  recorded baseline observation that is NOT the container's own subtree — otherwise the step is
+  excluded with \`SCOPE_NOT_DURABLE\`, never silently exported as a whole-page proof. The ONE
+  exception is the identity-anchored scoped scroll proof (the recorded action's proof observation
+  carries the driver's truthful identity anchor): it is exported explicitly PROVISIONAL (the step
+  intent says so, and \`path\` is recorded when available). Replay re-derives the container in the
+  whole-page view (UNIQUE predicate, plus the recorded path when present — \`TARGET_NOT_UNIQUE\`
+  when ambiguous; one match in a still-truncated view resolves PROVISIONALLY for the scroll proof
+  or a path-carrying scope, every other scope refuses with \`INCONCLUSIVE_TRUNCATED\` naming the
   scope) and decides inside the container; the completeness block names the scope, so "absent
   from this container" is never read as "absent from the whole page" — and absence passes only
-  with verified coverage (\`coverage.verified: true\`).
+  with verified coverage (\`coverage.verified: true\`). A PROVISIONAL resolution means
+  \`scopeResolution: "provisional"\` + \`reason: "INCONCLUSIVE_SCOPE"\` on the step — never a pass —
+  and the run aggregates to status \`inconclusive\` unless something definitely failed.
   A browser scroll-by-ref whose settled proof view is truncated and still lacks the target in
   the viewport is re-read ONCE at record time, preferring an identity-anchored SCOPED read
   rooted at the target's nearest container-role ancestor (walked on the target's \`parentRef\`
@@ -182,10 +189,18 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 - Inspect \`excludedActions\`. An exclusion is not a pass. If every action is unproven,
   \`qa_record_export\` returns \`NO_PROVEN_STEPS\` and writes no file.
 - Run \`qa_replay_run\` on the exact exported file without hand editing it. Browser Replay is the
-  supported v0.1 closed loop; only a \`pass\` report closes Explore→Replay. A failed run carries a
-  machine \`failure.code\` for recognized non-results — \`INCONCLUSIVE_UNSTABLE\` (a view that never
-  settled) and \`TARGET_NOT_UNIQUE\` (an ambiguous action target) — so you never have to parse prose
-  to tell them from an ordinary assertion failure.
+  supported v0.1 closed loop, and the run status is THREE-state (QA-BL-062): \`pass\` closes
+  Explore→Replay only when every required step and final assertion is fully proven;
+  \`inconclusive\` means at least one result is provisional (a scoped container resolved
+  provisionally — \`scopeResolution: "provisional"\` and \`reason: "INCONCLUSIVE_SCOPE"\` on the step,
+  inherited by the copied final assertion) and nothing definitely failed; \`fail\` is everything
+  else. A provisional scroll proof is still EXECUTED (the replayed scroll runs and is verified
+  through the driver's identity anchor — a lost binding or mismatch is disclosed as
+  \`scopeRefusal\`, never a predicate reselect), but PASS is reserved for proven resolution. A
+  failed run carries a machine \`failure.code\` for recognized non-results —
+  \`INCONCLUSIVE_UNSTABLE\` (a view that never settled) and \`TARGET_NOT_UNIQUE\` (an ambiguous
+  action target) — so you never have to parse prose to tell them from an ordinary assertion
+  failure.
 - \`qa_session_stop\` releases the owner scope. Stop on success and failure; the trajectory remains
   exportable until another session starts for that owner or the plugin disposes.
 

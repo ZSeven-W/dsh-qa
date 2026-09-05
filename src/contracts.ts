@@ -140,6 +140,18 @@ export interface QaScenarioAssertionScope {
   role: string;
   name: string;
   tag?: string;
+  /**
+   * ADDITIVE (QA-BL-062): the container's semantic ancestor PATH from
+   * record-time ancestry — the parentRef chain of an observation that
+   * contained the container as a NON-root node (typically the whole-page
+   * baseline), outermost first. A stronger replay locator: a container
+   * candidate matches only when its own parentRef chain yields the same
+   * { role, name } sequence (relationships compared, never refs). NEVER
+   * manufactured from a scoped root's parentRef:null — that means "no
+   * emitted ancestor in this scoped view", not "document top". Omitted when
+   * no recorded observation has real ancestry for the container.
+   */
+  path?: { role: string; name: string }[];
 }
 
 /**
@@ -232,7 +244,16 @@ export interface QaScenario {
   advisory?: QaVisualAssertion[];
 }
 
-export type QaRunStatus = 'pass' | 'fail' | 'blocked';
+/**
+ * Three-state run status (QA-BL-062, Codex consult #2 decision (b)): 'pass'
+ * requires every required step AND final assertion to be fully proven;
+ * 'inconclusive' means at least one result is PROVISIONAL (scopeResolution:
+ * 'provisional' / INCONCLUSIVE_SCOPE) while nothing definitely failed; 'fail'
+ * is everything else that is not 'blocked'. PASS is reserved for proven
+ * resolution: a provisionally resolved container can never produce a green,
+ * because replay may have selected the wrong counterpart.
+ */
+export type QaRunStatus = 'pass' | 'inconclusive' | 'fail' | 'blocked';
 
 export interface QaObservedNode {
   role: string;
@@ -271,7 +292,8 @@ export const QA_INCONCLUSIVE_UNSTABLE = 'INCONCLUSIVE_UNSTABLE';
 export type QaInconclusiveCode =
   | typeof QA_INCONCLUSIVE_TRUNCATED
   | typeof QA_INCONCLUSIVE_UNSTABLE
-  | typeof QA_COVERAGE_UNVERIFIED;
+  | typeof QA_COVERAGE_UNVERIFIED
+  | typeof QA_INCONCLUSIVE_SCOPE;
 
 /**
  * Stable reason code for a REPLAY action target that matches more than one
@@ -282,6 +304,18 @@ export type QaInconclusiveCode =
  * node-value assertion into a false green. Same vocabulary as export.
  */
 export const QA_TARGET_NOT_UNIQUE = 'TARGET_NOT_UNIQUE';
+
+/**
+ * Stable reason code recorded when a SCOPED step's container was resolved
+ * PROVISIONALLY (exactly one predicate/path match in a still-truncated
+ * whole-page view): the uniqueness of the container is unproven, so the
+ * step's assertion can never earn a pass — the result carries
+ * scopeResolution: 'provisional' and this code instead (QA-BL-062). It is
+ * NOT a run failure: nothing definitely failed, so the run aggregates to
+ * 'inconclusive' when at least one required result carries it. The copied
+ * final assertion inherits the same marking.
+ */
+export const QA_INCONCLUSIVE_SCOPE = 'INCONCLUSIVE_SCOPE';
 
 /**
  * Stable reason code recorded when an otherwise-passing `node-absent` could
@@ -421,7 +455,8 @@ export interface QaViewCompleteness {
 export interface QaStepResult {
   index: number;
   intent: string;
-  status: 'pass' | 'fail';
+  /** Three-state (QA-BL-062): 'inconclusive' when the result is provisional (INCONCLUSIVE_SCOPE), never passed. */
+  status: 'pass' | 'inconclusive' | 'fail';
   action: QaScenarioAction;
   receipt: QaActionReceipt | null;
   /** Session-core outcome for the act: 'ok' | 'unknown' | 'failed'. */
@@ -433,6 +468,24 @@ export interface QaStepResult {
   expected: unknown;
   /** Completeness of the deciding view; present only when truncation touched the decision. */
   completeness?: QaViewCompleteness;
+  /**
+   * ADDITIVE (QA-BL-062): how the scoped container was resolved for this
+   * step. 'proven' = exactly one predicate/path match in a COMPLETE
+   * whole-page view (uniqueness proven). 'provisional' = exactly one match
+   * in a still-truncated whole-page view (uniqueness unproven) — the step
+   * then carries reason INCONCLUSIVE_SCOPE and can never be passed:true.
+   * Present exactly when the step's assertion carried a container scope.
+   */
+  scopeResolution?: 'proven' | 'provisional';
+  /**
+   * ADDITIVE (QA-BL-062): escalationRefused-style disclosure recorded on the
+   * step when the replayed scoped scroll's identity anchor REFUSED the proof
+   * (a lost binding, connected:false, contained:false, a null anchor ref, an
+   * off-viewport anchored node, or an anchor bound to a DIFFERENT node than
+   * the asserted target). The step is then INCONCLUSIVE_SCOPE and the reason
+   * names the anchor truth — never a predicate reselect.
+   */
+  scopeRefusal?: { code?: string; reason: string };
   /**
    * Stable machine code when the assertion was refused for a structural reason
    * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED, ...)
@@ -468,6 +521,18 @@ export interface QaAssertionResult {
   scope?: QaScenarioAssertionScope;
   /** Completeness of the deciding view; present only when truncation touched the decision or the view was scoped. */
   completeness?: QaViewCompleteness;
+  /**
+   * ADDITIVE (QA-BL-062): how the scoped container was resolved for this
+   * assertion. A final assertion copied from a provisionally resolved scoped
+   * scroll-proof step INHERITS the step's 'provisional' marking (and its
+   * INCONCLUSIVE_SCOPE reason) — it can never report passed:true.
+   */
+  scopeResolution?: 'proven' | 'provisional';
+  /**
+   * ADDITIVE (QA-BL-062): the identity-anchor refusal disclosure inherited
+   * from the step this final assertion copies (see QaStepResult.scopeRefusal).
+   */
+  scopeRefusal?: { code?: string; reason: string };
   /**
    * Stable machine code when the assertion was refused for a structural reason
    * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED, ...)

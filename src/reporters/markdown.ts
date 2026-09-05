@@ -1,4 +1,5 @@
 import { projectRedactedJsonValue, projectArtifactPath, redactText, type RedactionRoots } from '../redaction/index.ts';
+import { QA_INCONCLUSIVE_SCOPE } from '../contracts.ts';
 import type { QaEvidenceCollectionFailure, QaRunReport, QaViewCompleteness } from '../contracts.ts';
 
 // Backtick character for inline code spans (built from a code point so the
@@ -195,18 +196,29 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
   lines.push('## Steps');
   if (report.steps.length === 0) lines.push('- (none)');
   for (const step of report.steps) {
-    const mark = step.status === 'pass' ? 'PASS' : 'FAIL';
+    // QA-BL-062 three-state: INCONCLUSIVE_SCOPE is a provisional non-result,
+    // neither a pass nor an ordinary failure.
+    const mark = step.status === 'pass' ? 'PASS' : step.status === 'inconclusive' ? 'INCONCLUSIVE' : 'FAIL';
     lines.push('- [' + mark + '] step ' + String(step.index) + ': ' + mdInline(step.intent));
     lines.push('  - action: ' + mdCode(inline(step.action, roots)));
     lines.push('  - receipt: ' + mdInline(step.receipt === null ? 'none' : step.receipt.status));
     lines.push('  - outcome: ' + mdInline(step.outcome));
-    lines.push('  - assertion: ' + mdInline(step.assertion.kind) + ' -> ' + (step.assertionPassed ? 'PASS' : 'FAIL'));
+    lines.push(
+      '  - assertion: ' + mdInline(step.assertion.kind) + ' -> '
+      + (step.assertionPassed ? 'PASS' : step.reason === QA_INCONCLUSIVE_SCOPE ? 'INCONCLUSIVE' : 'FAIL'),
+    );
     lines.push('  - observed: ' + mdCode(inline(step.observed, roots)));
     if (step.attempts !== undefined) {
       lines.push('  - assertion retries: ' + String(step.attempts) + ' attempt(s) over ' + String(step.elapsedMs ?? 0) + 'ms');
     }
     if (step.reason !== undefined) {
       lines.push('  - reason: ' + mdInline(step.reason));
+    }
+    if (step.scopeResolution !== undefined) {
+      lines.push('  - scope resolution: ' + mdInline(step.scopeResolution));
+    }
+    if (step.scopeRefusal !== undefined) {
+      lines.push('  - scope refusal: ' + mdInline(step.scopeRefusal.reason));
     }
     if (step.completeness !== undefined) {
       lines.push('  - view completeness: ' + mdInline(completenessLine(step.completeness)));
@@ -217,8 +229,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
   if (report.assertions.length === 0) lines.push('- (none)');
   for (const assertion of report.assertions) {
     lines.push(
-      '- ' + mdInline(assertion.kind) + ' -> ' + (assertion.passed ? 'PASS' : 'FAIL') +
-      ' (observed: ' + mdCode(inline(assertion.observed, roots)) + ')',
+      '- ' + mdInline(assertion.kind) + ' -> '
+      + (assertion.passed ? 'PASS' : assertion.reason === QA_INCONCLUSIVE_SCOPE ? 'INCONCLUSIVE' : 'FAIL')
+      + ' (observed: ' + mdCode(inline(assertion.observed, roots)) + ')',
     );
     if (assertion.attempts !== undefined) {
       lines.push('  - assertion retries: ' + String(assertion.attempts) + ' attempt(s) over ' + String(assertion.elapsedMs ?? 0) + 'ms');
@@ -228,6 +241,12 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     }
     if (assertion.scope !== undefined) {
       lines.push('  - assertion scope: ' + mdInline(assertion.scope.role + ' "' + assertion.scope.name + '"'));
+    }
+    if (assertion.scopeResolution !== undefined) {
+      lines.push('  - scope resolution: ' + mdInline(assertion.scopeResolution));
+    }
+    if (assertion.scopeRefusal !== undefined) {
+      lines.push('  - scope refusal: ' + mdInline(assertion.scopeRefusal.reason));
     }
     if (assertion.completeness !== undefined) {
       lines.push('  - view completeness: ' + mdInline(completenessLine(assertion.completeness)));

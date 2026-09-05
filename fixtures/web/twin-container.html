@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa twin-container fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 18px 0; }
+  </style>
+</head>
+<body>
+  <!--
+    QA-BL-062 twin trap: TWO same-identity containers (region "Twin zone"),
+    each holding a same-identity target (link "Twin Target"), both nested in
+    the SAME emitted ancestor (region "Twin shelf") so their ancestor PATHS are
+    byte-identical. The FIRST twin sits inside the whole-page windows; the
+    SECOND sits beyond the clamped 100-node window, so no whole-page view can
+    ever see it. Explore scrolls the FIRST twin's target and the record-time
+    identity anchor accepts the scoped escalation; replay resolves the
+    container PROVISIONALLY (one path match in a still-truncated view) and must
+    report INCONCLUSIVE_SCOPE — never PASS — because the unseen twin could be
+    the recorded counterpart. Emitted totals: h1 (1) + shelf (2) + twin1 (3) +
+    h2 (4) + 58 inner links (5..62) + twin1 target (63) + 20 shelf links
+    (64..83) + 40 more shelf links (84..123) + twin2 (124) + h2 (125) + twin2
+    target (126) + status (127) = 127 > 100.
+  -->
+  <h1>Twin-container fixture</h1>
+  <section id="twin-shelf" role="region" aria-label="Twin shelf">
+    <section id="twin-one" role="region" aria-label="Twin zone">
+      <h2>Twin zone</h2>
+      <ul>
+        <li><a href="#one-01">One 01</a></li>
+        <li><a href="#one-02">One 02</a></li>
+        <li><a href="#one-03">One 03</a></li>
+        <li><a href="#one-04">One 04</a></li>
+        <li><a href="#one-05">One 05</a></li>
+        <li><a href="#one-06">One 06</a></li>
+        <li><a href="#one-07">One 07</a></li>
+        <li><a href="#one-08">One 08</a></li>
+        <li><a href="#one-09">One 09</a></li>
+        <li><a href="#one-10">One 10</a></li>
+        <li><a href="#one-11">One 11</a></li>
+        <li><a href="#one-12">One 12</a></li>
+        <li><a href="#one-13">One 13</a></li>
+        <li><a href="#one-14">One 14</a></li>
+        <li><a href="#one-15">One 15</a></li>
+        <li><a href="#one-16">One 16</a></li>
+        <li><a href="#one-17">One 17</a></li>
+        <li><a href="#one-18">One 18</a></li>
+        <li><a href="#one-19">One 19</a></li>
+        <li><a href="#one-20">One 20</a></li>
+        <li><a href="#one-21">One 21</a></li>
+        <li><a href="#one-22">One 22</a></li>
+        <li><a href="#one-23">One 23</a></li>
+        <li><a href="#one-24">One 24</a></li>
+        <li><a href="#one-25">One 25</a></li>
+        <li><a href="#one-26">One 26</a></li>
+        <li><a href="#one-27">One 27</a></li>
+        <li><a href="#one-28">One 28</a></li>
+        <li><a href="#one-29">One 29</a></li>
+        <li><a href="#one-30">One 30</a></li>
+        <li><a href="#one-31">One 31</a></li>
+        <li><a href="#one-32">One 32</a></li>
+        <li><a href="#one-33">One 33</a></li>
+        <li><a href="#one-34">One 34</a></li>
+        <li><a href="#one-35">One 35</a></li>
+        <li><a href="#one-36">One 36</a></li>
+        <li><a href="#one-37">One 37</a></li>
+        <li><a href="#one-38">One 38</a></li>
+        <li><a href="#one-39">One 39</a></li>
+        <li><a href="#one-40">One 40</a></li>
+        <li><a href="#one-41">One 41</a></li>
+        <li><a href="#one-42">One 42</a></li>
+        <li><a href="#one-43">One 43</a></li>
+        <li><a href="#one-44">One 44</a></li>
+        <li><a href="#one-45">One 45</a></li>
+        <li><a href="#one-46">One 46</a></li>
+        <li><a href="#one-47">One 47</a></li>
+        <li><a href="#one-48">One 48</a></li>
+        <li><a href="#one-49">One 49</a></li>
+        <li><a href="#one-50">One 50</a></li>
+        <li><a href="#one-51">One 51</a></li>
+        <li><a href="#one-52">One 52</a></li>
+        <li><a href="#one-53">One 53</a></li>
+        <li><a href="#one-54">One 54</a></li>
+        <li><a href="#one-55">One 55</a></li>
+        <li><a href="#one-56">One 56</a></li>
+        <li><a href="#one-57">One 57</a></li>
+        <li><a href="#one-58">One 58</a></li>
+      </ul>
+      <a id="twin-one-target" href="#twin-one-target">Twin Target</a>
+    </section>
+    <ul id="shelf-links-a">
+      <li><a href="#shelf-01">Shelf 01</a></li>
+      <li><a href="#shelf-02">Shelf 02</a></li>
+      <li><a href="#shelf-03">Shelf 03</a></li>
+      <li><a href="#shelf-04">Shelf 04</a></li>
+      <li><a href="#shelf-05">Shelf 05</a></li>
+      <li><a href="#shelf-06">Shelf 06</a></li>
+      <li><a href="#shelf-07">Shelf 07</a></li>
+      <li><a href="#shelf-08">Shelf 08</a></li>
+      <li><a href="#shelf-09">Shelf 09</a></li>
+      <li><a href="#shelf-10">Shelf 10</a></li>
+      <li><a href="#shelf-11">Shelf 11</a></li>
+      <li><a href="#shelf-12">Shelf 12</a></li>
+      <li><a href="#shelf-13">Shelf 13</a></li>
+      <li><a href="#shelf-14">Shelf 14</a></li>
+      <li><a href="#shelf-15">Shelf 15</a></li>
+      <li><a href="#shelf-16">Shelf 16</a></li>
+      <li><a href="#shelf-17">Shelf 17</a></li>
+      <li><a href="#shelf-18">Shelf 18</a></li>
+      <li><a href="#shelf-19">Shelf 19</a></li>
+      <li><a href="#shelf-20">Shelf 20</a></li>
+    </ul>
+    <ul id="shelf-links-b">
+      <li><a href="#shelf-21">Shelf 21</a></li>
+      <li><a href="#shelf-22">Shelf 22</a></li>
+      <li><a href="#shelf-23">Shelf 23</a></li>
+      <li><a href="#shelf-24">Shelf 24</a></li>
+      <li><a href="#shelf-25">Shelf 25</a></li>
+      <li><a href="#shelf-26">Shelf 26</a></li>
+      <li><a href="#shelf-27">Shelf 27</a></li>
+      <li><a href="#shelf-28">Shelf 28</a></li>
+      <li><a href="#shelf-29">Shelf 29</a></li>
+      <li><a href="#shelf-30">Shelf 30</a></li>
+      <li><a href="#shelf-31">Shelf 31</a></li>
+      <li><a href="#shelf-32">Shelf 32</a></li>
+      <li><a href="#shelf-33">Shelf 33</a></li>
+      <li><a href="#shelf-34">Shelf 34</a></li>
+      <li><a href="#shelf-35">Shelf 35</a></li>
+      <li><a href="#shelf-36">Shelf 36</a></li>
+      <li><a href="#shelf-37">Shelf 37</a></li>
+      <li><a href="#shelf-38">Shelf 38</a></li>
+      <li><a href="#shelf-39">Shelf 39</a></li>
+      <li><a href="#shelf-40">Shelf 40</a></li>
+    </ul>
+    <section id="twin-two" role="region" aria-label="Twin zone">
+      <h2>Twin zone</h2>
+      <a id="twin-two-target" href="#twin-two-target">Twin Target</a>
+    </section>
+  </section>
+  <div id="result" role="status" aria-live="polite">IDLE</div>
+</body>
+</html>

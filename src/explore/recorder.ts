@@ -592,13 +592,41 @@ export class QaTrajectoryRecorder {
       nodes: observation.nodes.map((node) => ({
         ...node,
         ref: this.#refAlias(trajectory, node.ref),
+        // QA-BL-062: parentRef names another node of the SAME observation, so
+        // it must be aliased through the SAME deterministic map — otherwise
+        // the recorded parentRef chains point at raw driver refs while node
+        // refs are aliased, and the exporter's ancestry walk (scope.path)
+        // could never resolve a single hop. Aliasing both sides keeps the
+        // RELATIONSHIPS intact and still hides session-local identity.
+        ...(node.parentRef === null || node.parentRef === undefined
+          ? {}
+          : { parentRef: this.#refAlias(trajectory, node.parentRef) }),
       })),
-      // A scoped observation's root ref is a driver ref like every node ref:
-      // alias it so no session-local identity ever enters the trajectory.
+      // A scoped observation's root refs are driver refs like every node ref:
+      // alias them so no session-local identity ever enters the trajectory.
       // role/name/tag pass through and are what export records as the scope.
       ...(observation.scope === undefined
         ? {}
-        : { scope: { ...observation.scope, ref: this.#refAlias(trajectory, observation.scope.ref) } }),
+        : {
+            scope: {
+              ...observation.scope,
+              ref: this.#refAlias(trajectory, observation.scope.ref),
+              ...(typeof observation.scope.rootRef === 'string' && observation.scope.rootRef !== ''
+                ? { rootRef: this.#refAlias(trajectory, observation.scope.rootRef) }
+                : {}),
+            },
+          }),
+      // The identity anchor's ref names the anchored node of the SAME
+      // observation: alias it too (export reads only its truth, never the raw
+      // ref, but the trajectory must not leak session-local identity).
+      ...(observation.anchor === undefined
+        ? {}
+        : {
+            anchor: {
+              ...observation.anchor,
+              ...(observation.anchor.ref === null ? {} : { ref: this.#refAlias(trajectory, observation.anchor.ref) }),
+            },
+          }),
     };
   }
 

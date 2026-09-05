@@ -251,7 +251,15 @@ test('B3: the NEAREST container-role ancestor wins, skipping non-container ances
     'the escalation roots at the NEAREST container-role ancestor (navigation), never a farther region or a non-container',
   )
   assert.equal(exported.ok, true, JSON.stringify(exported))
-  assert.deepEqual(exported.scenario.steps[0].assert.scope, { role: 'navigation', name: 'Primary nav' })
+  // CHANGED (QA-BL-062): the exported scope now also records the container's
+  // semantic ancestor PATH from record-time ancestry (the stronger replay
+  // locator) — outermost first: the navigation container's emitted ancestor
+  // chain is the 'Deep zone' region. Compare relationships, never refs.
+  assert.deepEqual(exported.scenario.steps[0].assert.scope, {
+    role: 'navigation',
+    name: 'Primary nav',
+    path: [{ role: 'region', name: 'Deep zone' }],
+  })
 })
 
 test('B3: no container-role ancestor on the parentRef chain -> the WHOLE-PAGE escalation (unchanged)', async () => {

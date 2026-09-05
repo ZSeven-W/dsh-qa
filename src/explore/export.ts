@@ -564,29 +564,142 @@ function proofWasTruncated(before: QaObservation | null, after: QaObservation): 
   return before?.truncated === true || after.truncated === true;
 }
 
+/** One { role, name } hop of a recorded semantic ancestor path (QA-BL-062). */
+interface ScopePathItem {
+  role: string;
+  name: string;
+}
+
+/**
+ * The semantic ancestor path of `node` inside `view`: every EMITTED ancestor
+ * on its parentRef chain (composed-tree ancestry, driver contract v9),
+ * outermost first. Null when the node has NO emitted ancestor in this view —
+ * a parentRef:null root means "no emitted ancestor here", never "document
+ * top", so a path is NEVER manufactured from it — or when any hop does not
+ * resolve inside the SAME observation (fail closed: a partial chain is not
+ * faithful ancestry).
+ */
+function ancestorPathOf(view: QaObservation, node: QaSemanticNode): ScopePathItem[] | null {
+  const byRef = new Map(view.nodes.map((candidate) => [candidate.ref, candidate]));
+  const chain: ScopePathItem[] = [];
+  let current = node;
+  for (let hops = 0; hops <= view.nodes.length; hops += 1) {
+    const parentRef = typeof current.parentRef === 'string' && current.parentRef !== '' ? current.parentRef : null;
+    if (parentRef === null) {
+      return chain.length === 0 ? null : chain.reverse();
+    }
+    const parent = byRef.get(parentRef);
+    if (parent === undefined) return null;
+    chain.push({ role: clean(parent.role), name: clean(parent.name) });
+    current = parent;
+  }
+  return null;
+}
+
+/**
+ * The recorded ancestor path of a scoped container, searched over EVERY
+ * recorded observation (the action's baseline first, then chronological
+ * order): the FIRST observation that contains the container as a NON-root
+ * node with a fully resolvable parentRef chain supplies the path. A scoped
+ * observation whose root IS the container can never contribute (its
+ * parentRef:null does not mean document top), and a chain that does not
+ * resolve is skipped. Null when no recorded observation has real ancestry
+ * for the container — the export then omits scope.path.
+ */
+function recordedContainerPath(
+  observations: Readonly<Record<string, QaObservation>>,
+  baseline: QaObservation | null,
+  role: string,
+  name: string,
+  tag: string,
+): ScopePathItem[] | null {
+  const seen = new Set<QaObservation>();
+  const sources = [baseline, ...Object.values(observations)];
+  for (const observation of sources) {
+    if (observation === null || seen.has(observation)) continue;
+    seen.add(observation);
+    for (const node of observation.nodes) {
+      if (node.role !== role || node.name !== name) continue;
+      if (tag !== '' && node.tag !== tag) continue;
+      const path = ancestorPathOf(observation, node);
+      if (path !== null) return path;
+    }
+  }
+  return null;
+}
+
+/**
+ * True when the recorded action is an IDENTITY-ANCHORED scoped scroll proof:
+ * a scroll-by-ref whose recorded proof observation is a SCOPED view carrying
+ * the driver's truthful identity anchor. hub-107's recording is the
+ * re-bind: the recording adapter re-bound the action's proof to the escalated
+ * scoped read ONLY on anchor acceptance (a refused anchor keeps the settled
+ * whole-page observation), so an anchor-truthful scoped proof observation IS
+ * the acceptance marker. anchor.contained is null for whole-page reads, which
+ * makes the check exact.
+ */
+function anchoredScrollProof(recorded: QaRecordedAction, proof: QaObservation | null): boolean {
+  if (proof === null || proof.scope === undefined) return false;
+  if (recorded.action.kind !== 'scroll' || !('ref' in recorded.action)) return false;
+  const anchor = proof.anchor;
+  return anchor !== undefined && anchor.connected === true && anchor.contained === true && anchor.ref !== null;
+}
+
+/** The ancestor path for a proof observation's scope, or null when none applies. */
+function scopePathFor(
+  trajectory: QaTrajectorySnapshot,
+  proof: QaObservation | null,
+  baseline: QaObservation | null,
+): ScopePathItem[] | null {
+  if (proof === null || proof.scope === undefined) return null;
+  const echo = proof.scope;
+  return recordedContainerPath(
+    trajectory.observations,
+    baseline,
+    clean(echo.role),
+    clean(echo.name),
+    clean(echo.tag),
+  );
+}
+
 /**
  * The durability verdict for a scoped proof observation's container
  * (QA-BL-054).
  *
- * A scoped proof is exported WITH its scope only when the container predicate
- * is PROVEN durable: role+name (plus tag when needed to disambiguate) must
- * match EXACTLY ONE node in the recorded BASELINE observation (the action's
- * pre-action view), and that baseline must be complete (truncated:false). An
- * empty accessible NAME is a legitimate predicate value and is kept LITERALLY
- * (`name: ''`) — unnamed containers are the common case. Anything else makes
- * the step EXCLUDED with SCOPE_NOT_DURABLE: a scoped proof is never silently
- * exported as if it were a whole-page proof.
+ * A scoped proof is exported as DURABLE only when the container predicate is
+ * PROVEN unique: role+name (plus tag when needed to disambiguate) must match
+ * EXACTLY ONE node in the recorded BASELINE observation, that baseline must
+ * be complete (truncated:false), and the baseline must NOT be the container's
+ * OWN scoped subtree — a scoped baseline whose root is the container proves
+ * nothing, because the container is trivially its own root there (the
+ * scoped-complete-baseline trick QA-BL-062 closes). An empty accessible NAME
+ * is a legitimate predicate value and is kept LITERALLY (`name: ''`).
+ *
+ * QA-BL-062: when uniqueness is UNPROVEN and the recorded action is an
+ * identity-anchored scroll proof (see anchoredScrollProof), the scope is
+ * exported EXPLICITLY PROVISIONAL instead — the assertion carries the scope
+ * (with the recorded ancestor path when available) and the step intent
+ * carries the provisional weakness, so replay reports INCONCLUSIVE_SCOPE
+ * unless it proves the container unique at replay time. Every other scoped
+ * assertion with unproven uniqueness is EXCLUDED with SCOPE_NOT_DURABLE — a
+ * scoped proof is never silently exported as if it were a whole-page proof.
  *
  * Null means the proof is whole-page (no scope to carry) — only then is the
  * assertion exported unscoped.
  */
 type ProofScopeVerdict =
-  | { durable: true; scope: QaScenarioAssertionScope }
-  | { durable: false; detail: string };
+  | { durable: true; scope: QaScenarioAssertionScope; weakness: null }
+  | {
+      durable: false;
+      detail: string;
+      provisional: { scope: QaScenarioAssertionScope; weakness: string } | null;
+    };
 
 function proofScope(
   proof: QaObservation | null,
   baseline: QaObservation | null,
+  anchored: boolean,
+  path: ScopePathItem[] | null,
 ): ProofScopeVerdict | null {
   if (proof === null || proof.scope === undefined) return null;
   const echo = proof.scope;
@@ -596,38 +709,68 @@ function proofScope(
     return {
       durable: false,
       detail: 'the scoped proof\'s container has no role, so the scope cannot be recorded durably.',
+      provisional: null,
     };
   }
   const tag = clean(echo.tag);
   const describe = 'the container role "' + role + '" named "' + name + '"'
     + (tag === '' ? '' : ' (tag "' + tag + '")');
-  if (baseline === null || baseline.truncated) {
+  // The tag stays a DISAMBIGUATOR (role+name, plus tag when needed): it rides
+  // on the exported scope only when role+name alone was ambiguous in the
+  // baseline and the tag resolved it to exactly one node. Unproven exports
+  // never add it (no disambiguation was established).
+  const scopeValue = (withTag: boolean): QaScenarioAssertionScope => ({
+    role,
+    name,
+    ...(withTag ? { tag } : {}),
+    ...(path === null ? {} : { path }),
+  });
+  const provisionalWeakness = (why: string): string =>
+    'the scope is PROVISIONAL: ' + why
+    + ' The step is an identity-anchored scroll proof, so the scope is exported explicitly provisional;'
+    + ' replay reports INCONCLUSIVE_SCOPE (scopeResolution provisional) unless it proves the container unique at replay time.';
+  const unproven = (why: string): ProofScopeVerdict => {
+    if (!anchored) {
+      return {
+        durable: false,
+        detail: why + ' — uniqueness is unproven, so the scope is never silently dropped.',
+        provisional: null,
+      };
+    }
     return {
       durable: false,
-      detail: baseline === null
-        ? 'no recorded baseline observation precedes the scoped proof, so the uniqueness of '
-          + describe + ' cannot be proven — the scope is never silently dropped.'
-        : 'the recorded baseline observation was truncated at the driver node budget, so '
-          + describe + ' may have a twin outside the returned window: uniqueness is unproven — '
-          + 'the scope is never silently dropped.',
+      detail: why + ' — uniqueness is unproven.',
+      provisional: { scope: scopeValue(false), weakness: provisionalWeakness(why) },
     };
+  };
+  if (baseline === null || baseline.truncated) {
+    return unproven(baseline === null
+      ? 'no recorded baseline observation precedes the scoped proof, so the uniqueness of ' + describe + ' cannot be proven'
+      : 'the recorded baseline observation was truncated at the driver node budget, so ' + describe + ' may have a twin outside the returned window');
+  }
+  // QA-BL-062: the scoped-complete-baseline trick. A scoped baseline whose
+  // root IS the container proves nothing about whole-page uniqueness (it was
+  // disclosed only via scopedPrecedingViewWeakness before, which a replay
+  // could still green).
+  const baselineIsOwnSubtree = baseline.scope !== undefined
+    && baseline.scope.role === role
+    && baseline.scope.name === name;
+  if (baselineIsOwnSubtree) {
+    return unproven(
+      'the recorded baseline IS ' + describe + '\'s own scoped subtree, where the container is trivially its own root — that view proves nothing about uniqueness',
+    );
   }
   const byRoleName = baseline.nodes.filter((node) => node.role === role && node.name === name);
-  if (byRoleName.length === 1) return { durable: true, scope: { role, name } };
+  if (byRoleName.length === 1) return { durable: true, scope: scopeValue(false), weakness: null };
   // role+name is ambiguous: the driver's scope-echo tag may disambiguate the
   // predicate (role+name, plus tag when needed).
   if (byRoleName.length > 1 && tag !== '') {
     const byRoleNameTag = baseline.nodes.filter(
       (node) => node.role === role && node.name === name && node.tag === tag,
     );
-    if (byRoleNameTag.length === 1) return { durable: true, scope: { role, name, tag } };
+    if (byRoleNameTag.length === 1) return { durable: true, scope: scopeValue(true), weakness: null };
   }
-  return {
-    durable: false,
-    detail: describe + ' matches ' + String(byRoleName.length)
-      + ' nodes in the recorded baseline observation, so its uniqueness is not proven — '
-      + 'the scope is never silently dropped.',
-  };
+  return unproven(describe + ' matches ' + String(byRoleName.length) + ' nodes in the recorded baseline observation');
 }
 
 /**
@@ -637,20 +780,29 @@ function proofScope(
  * decides the assertion against that scoped view. `page-url` is deliberately
  * NOT scoped — the URL travels on every observation whatever the scope did.
  *
- * QA-BL-054: when the scope is not proven durable against the recorded
- * baseline (see proofScope), the caller EXCLUDES the step with
- * SCOPE_NOT_DURABLE — the scope is never silently dropped.
+ * QA-BL-054 / QA-BL-062: when the scope is not proven durable against the
+ * recorded baseline (see proofScope) and the step is not an identity-anchored
+ * scroll proof, the caller EXCLUDES the step with SCOPE_NOT_DURABLE; an
+ * identity-anchored scroll proof is exported PROVISIONAL with the recorded
+ * ancestor path when available and the weakness named for the step intent.
  */
 function withProofScope(
   assertion: QaAssertion,
   proof: QaObservation | null,
   baseline: QaObservation | null,
-): { assertion: QaAssertion; notDurable: string | null } {
-  if (assertion.kind === 'page-url') return { assertion, notDurable: null };
-  const verdict = proofScope(proof, baseline);
-  if (verdict === null) return { assertion, notDurable: null };
-  if (!verdict.durable) return { assertion, notDurable: verdict.detail };
-  return { assertion: { ...assertion, scope: verdict.scope }, notDurable: null };
+  anchored: boolean,
+  path: ScopePathItem[] | null,
+): { assertion: QaAssertion; notDurable: string | null; weakness: string | null } {
+  if (assertion.kind === 'page-url') return { assertion, notDurable: null, weakness: null };
+  const verdict = proofScope(proof, baseline, anchored, path);
+  if (verdict === null) return { assertion, notDurable: null, weakness: null };
+  if (verdict.durable) return { assertion: { ...assertion, scope: verdict.scope }, notDurable: null, weakness: null };
+  if (verdict.provisional === null) return { assertion, notDurable: verdict.detail, weakness: null };
+  return {
+    assertion: { ...assertion, scope: verdict.provisional.scope },
+    notDurable: null,
+    weakness: verdict.provisional.weakness,
+  };
 }
 
 /**
@@ -981,10 +1133,13 @@ function buildScenario(
         continue;
       }
       const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
-      const scopedStep = withProofScope(resolved.assert, candidate.after, candidate.before);
+      const anchored = anchoredScrollProof(recorded, candidate.after);
+      const scopePath = scopePathFor(trajectory, candidate.after, candidate.before);
+      const scopedStep = withProofScope(resolved.assert, candidate.after, candidate.before, anchored, scopePath);
       if (scopedStep.notDurable !== null) {
-        // QA-BL-054: a scoped proof whose container is not proven durable is
-        // EXCLUDED, never silently exported as an unscoped assertion.
+        // QA-BL-054: a scoped proof whose container is not proven durable (and
+        // is not an identity-anchored scroll proof) is EXCLUDED, never
+        // silently exported as an unscoped assertion.
         excluded.push(exclusion(recorded, QA_SCOPE_NOT_DURABLE, scopedStep.notDurable));
         continue;
       }
@@ -999,6 +1154,7 @@ function buildScenario(
               ? [TRUNCATED_PROOF_WEAKNESS]
               : []),
             ...(scopedBeforeWeakness === null ? [] : [scopedBeforeWeakness]),
+            ...(scopedStep.weakness === null ? [] : [scopedStep.weakness]),
           ],
         )),
         action: resolved.action,
@@ -1063,10 +1219,13 @@ function buildScenario(
     // truncationWeakensProof). A scoped preceding observation is recorded too:
     // the target's whole-page uniqueness was never verified at export.
     const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
-    const scopedStep = withProofScope(synthesized.assertion.assertion, after, candidate.before);
+    const anchored = anchoredScrollProof(recorded, after);
+    const scopePath = scopePathFor(trajectory, after, candidate.before);
+    const scopedStep = withProofScope(synthesized.assertion.assertion, after, candidate.before, anchored, scopePath);
     if (scopedStep.notDurable !== null) {
-      // QA-BL-054: a scoped proof whose container is not proven durable is
-      // EXCLUDED, never silently exported as an unscoped assertion.
+      // QA-BL-054: a scoped proof whose container is not proven durable (and
+      // is not an identity-anchored scroll proof) is EXCLUDED, never
+      // silently exported as an unscoped assertion.
       excluded.push(exclusion(recorded, QA_SCOPE_NOT_DURABLE, scopedStep.notDurable));
       continue;
     }
@@ -1076,6 +1235,7 @@ function buildScenario(
         ? [TRUNCATED_PROOF_WEAKNESS]
         : []),
       ...(scopedBeforeWeakness === null ? [] : [scopedBeforeWeakness]),
+      ...(scopedStep.weakness === null ? [] : [scopedStep.weakness]),
     ]));
     steps.push({
       index: steps.length + 1,

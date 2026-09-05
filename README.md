@@ -166,34 +166,43 @@ fallback, never a "not found". The computer driver does not support scoping and
 refuses `within_ref`.
 
 Scoped observations flow into Replay: a scenario assertion may carry
-`scope: { role, name, tag? }` (an empty name kept literally); the runner
-resolves that container in the whole-page view by UNIQUE predicate
-(`TARGET_NOT_UNIQUE` when ambiguous, never a guess), and one match in a
-TRUNCATED whole-page view is not proven uniqueness — it escalates the budget
-once and refuses a still-truncated view with `INCONCLUSIVE_TRUNCATED` naming
-the scope. The one exception is the exported scoped SCROLL-proof step: a
-scroll-by-target whose assertion is a scoped `node-in-viewport` resolves and
-decides inside the container under a provisional gate, because the whole page
-can never complete when the target sits beyond the driver's clamped node
-budget — and the record side established the proof through the driver's
-identity anchor (the escalation scopes to the target's nearest
-container-role `parentRef` ancestor and accepts only an anchor that reports
-the original acted element connected, contained, and in the viewport). It
-then observes within the container and decides the assertion
-against that scoped view. The `completeness` block names the scope when the
-deciding view was scoped, so "absent from this container" is never read as
-"absent from the whole page" — and absence passes only with verified
-coverage. Export records a scoped proof as a scoped assertion
-ONLY when the container predicate is unique in a COMPLETE recorded baseline
-observation; otherwise the step is excluded with `SCOPE_NOT_DURABLE` — never
-silently exported as a whole-page proof. See `docs/TRUNCATION.md`.
+`scope: { role, name, tag?, path? }` (an empty name kept literally; `path`
+is the container's semantic ancestor chain from record-time ancestry,
+outermost first, recorded when available — a stronger replay locator). The
+runner resolves that container in the whole-page view by UNIQUE predicate
+plus the recorded path when present (`TARGET_NOT_UNIQUE` when ambiguous,
+never a guess). One match in a TRUNCATED whole-page view is not proven
+uniqueness: a non-scroll-proof scope without a path escalates the budget once
+and refuses a still-truncated view with `INCONCLUSIVE_TRUNCATED` naming the
+scope, while a scoped SCROLL-proof step — or any scope carrying a recorded
+path — resolves PROVISIONALLY. A provisional resolution means the step
+carries `scopeResolution: 'provisional'` and `reason: INCONCLUSIVE_SCOPE`,
+**never a pass**: the container may be the wrong one (a twin outside the
+window), so PASS is reserved for proven resolution. The replayed scroll is
+still executed and is verified through the driver's identity anchor
+(`anchorLastAction` on the verifying read): the anchor must report the
+original acted element connected, contained in the container, and in the
+viewport, AND bound to the SAME node ref as the asserted target — a lost
+binding or mismatch is disclosed as `scopeRefusal` on the step, never a
+predicate reselect. Run status is now THREE-state: `pass` only when every
+required step and final assertion is fully proven; `inconclusive` when at
+least one result is provisional and nothing definitely failed; `fail`
+otherwise. The `completeness` block names the scope when the deciding view
+was scoped, so "absent from this container" is never read as "absent from the
+whole page" — and absence passes only with verified coverage. Export records
+a scoped proof as a scoped assertion DURABLY only when the container
+predicate is unique in a COMPLETE recorded baseline observation that is NOT
+the container's own subtree; the identity-anchored scroll proof is exported
+explicitly PROVISIONAL (the step intent says so) when uniqueness is unproven,
+and every other scoped assertion is excluded with `SCOPE_NOT_DURABLE` —
+never silently exported as a whole-page proof. See `docs/TRUNCATION.md`.
 
 ## Visual assertions (advisory)
 
 `qa_assert kind:"visual"` captures the current screen and asks the host vision
 model one question. The verdict is **advisory**: it is recorded in the report and
 excluded from the determinism comparison by schema, and it never changes a run's
-pass/fail.
+three-state status (pass / inconclusive / fail).
 
 Two rules come from live use against `deepseek-v4-flash-vision-exp`:
 

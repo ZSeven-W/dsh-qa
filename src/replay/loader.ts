@@ -99,7 +99,8 @@ const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'int
 const TARGET_FIELDS = ['launch', 'loginState'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description', 'scope'] as const;
-const ASSERTION_SCOPE_FIELDS = ['role', 'name', 'tag'] as const;
+const ASSERTION_SCOPE_FIELDS = ['role', 'name', 'tag', 'path'] as const;
+const ASSERTION_SCOPE_PATH_ITEM_FIELDS = ['role', 'name'] as const;
 const NODE_VALUE_EXPECTATION_FIELDS = ['role', 'name', 'tag', 'value'] as const;
 const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
 const PREDICATE_FIELDS = ['role', 'name', 'tag'] as const;
@@ -308,6 +309,28 @@ function validateScrollAmount(value: unknown, position: string): 'page' | number
   fail(position, 'expected "page" or a finite non-negative number');
 }
 
+/**
+ * Validates the recorded ancestor PATH of a scoped container (QA-BL-062),
+ * fail-closed like every other schema field: a non-empty array of { role,
+ * name } items, outermost ancestor first. The role must be a non-empty
+ * string; the name may be the EMPTY STRING (an unnamed ancestor is an
+ * exact-match predicate value). Unknown fields on an item are rejected, so a
+ * fabricated or partially hand-edited path can never reach the runner.
+ */
+function validateScopePath(value: unknown, position: string): { role: string; name: string }[] {
+  const items = expectArray(value, position);
+  if (items.length === 0) fail(position, 'expected at least one path item (an empty path proves nothing)');
+  return items.map((item, index) => {
+    const itemPosition = position + '[' + index + ']';
+    const obj = expectObject(item, itemPosition);
+    assertKnownFields(obj, ASSERTION_SCOPE_PATH_ITEM_FIELDS, itemPosition);
+    return {
+      role: expectNonEmptyString(obj.role, itemPosition + '.role'),
+      name: expectString(obj.name, itemPosition + '.name'),
+    };
+  });
+}
+
 function validateAssertionScope(value: unknown, position: string): QaScenarioAssertionScope {
   const obj = expectObject(value, position);
   assertKnownFields(obj, ASSERTION_SCOPE_FIELDS, position);
@@ -322,6 +345,10 @@ function validateAssertionScope(value: unknown, position: string): QaScenarioAss
   const out: QaScenarioAssertionScope = { role, name };
   if (obj.tag !== undefined) {
     out.tag = expectNonEmptyString(obj.tag, position + '.tag');
+  }
+  // QA-BL-062: an optional ancestor PATH, validated fail-closed when present.
+  if (obj.path !== undefined) {
+    out.path = validateScopePath(obj.path, position + '.path');
   }
   return out;
 }
