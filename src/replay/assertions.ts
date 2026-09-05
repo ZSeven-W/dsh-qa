@@ -232,7 +232,7 @@ function readsNodes(kind: QaAssertionKind): boolean {
  * and a caller can only have scoped to a node it observed, so the root is
  * selectable); undefined when the view is whole-page or the root is absent.
  */
-function scopeRootRef(observation: QaObservation): string | undefined {
+export function scopeRootRef(observation: QaObservation): string | undefined {
   const scope = observation.scope;
   if (scope === undefined) return undefined;
   const root = observation.nodes.find(

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa scoped deep target fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 6px 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <!--
+      QA-BL-050 reproduction. Whole-page windows can NEVER reach the unique
+      "Deep Target" link: 40 outer filler links precede the container, then the
+      container itself + its heading + 58 inner filler links precede the
+      target, so the target sits at emitted position 102 — beyond the driver's
+      clamped 100-node maximum, where the ONE whole-page budget escalation
+      (QA_ESCALATED_NODE_BUDGET, clamped to 100) can never return it no matter
+      the requested budget. The container (section role="region" with the
+      accessible name "Deep zone") sits at emitted position 42, INSIDE the
+      default 60-node window, so the record-time escalation can root a scoped
+      read at it. The container subtree holds exactly 61 emitted nodes
+      (region + heading + 58 inner links + target): it fits the subtree's
+      100-node budget completely, so the scoped proof view reports
+      truncated: false and the node-in-viewport proof is decided inside the
+      container. Emitted totals: h1 (1) + 40 outer links (2..41) + region (42)
+      + h2 (43) + 58 inner links (44..101) + target (102) + 12 related links
+      (103..114) + status (115).
+    -->
+    <h1>Scoped deep target fixture</h1>
+    <ul id="outer-fillers">
+      <li><a href="#outer-01">Outer 01</a></li>
+      <li><a href="#outer-02">Outer 02</a></li>
+      <li><a href="#outer-03">Outer 03</a></li>
+      <li><a href="#outer-04">Outer 04</a></li>
+      <li><a href="#outer-05">Outer 05</a></li>
+      <li><a href="#outer-06">Outer 06</a></li>
+      <li><a href="#outer-07">Outer 07</a></li>
+      <li><a href="#outer-08">Outer 08</a></li>
+      <li><a href="#outer-09">Outer 09</a></li>
+      <li><a href="#outer-10">Outer 10</a></li>
+      <li><a href="#outer-11">Outer 11</a></li>
+      <li><a href="#outer-12">Outer 12</a></li>
+      <li><a href="#outer-13">Outer 13</a></li>
+      <li><a href="#outer-14">Outer 14</a></li>
+      <li><a href="#outer-15">Outer 15</a></li>
+      <li><a href="#outer-16">Outer 16</a></li>
+      <li><a href="#outer-17">Outer 17</a></li>
+      <li><a href="#outer-18">Outer 18</a></li>
+      <li><a href="#outer-19">Outer 19</a></li>
+      <li><a href="#outer-20">Outer 20</a></li>
+      <li><a href="#outer-21">Outer 21</a></li>
+      <li><a href="#outer-22">Outer 22</a></li>
+      <li><a href="#outer-23">Outer 23</a></li>
+      <li><a href="#outer-24">Outer 24</a></li>
+      <li><a href="#outer-25">Outer 25</a></li>
+      <li><a href="#outer-26">Outer 26</a></li>
+      <li><a href="#outer-27">Outer 27</a></li>
+      <li><a href="#outer-28">Outer 28</a></li>
+      <li><a href="#outer-29">Outer 29</a></li>
+      <li><a href="#outer-30">Outer 30</a></li>
+      <li><a href="#outer-31">Outer 31</a></li>
+      <li><a href="#outer-32">Outer 32</a></li>
+      <li><a href="#outer-33">Outer 33</a></li>
+      <li><a href="#outer-34">Outer 34</a></li>
+      <li><a href="#outer-35">Outer 35</a></li>
+      <li><a href="#outer-36">Outer 36</a></li>
+      <li><a href="#outer-37">Outer 37</a></li>
+      <li><a href="#outer-38">Outer 38</a></li>
+      <li><a href="#outer-39">Outer 39</a></li>
+      <li><a href="#outer-40">Outer 40</a></li>
+    </ul>
+    <section id="deep-zone" role="region" aria-label="Deep zone">
+      <h2>Deep zone</h2>
+      <ul id="inner-fillers">
+        <li><a href="#inner-01">Inner 01</a></li>
+        <li><a href="#inner-02">Inner 02</a></li>
+        <li><a href="#inner-03">Inner 03</a></li>
+        <li><a href="#inner-04">Inner 04</a></li>
+        <li><a href="#inner-05">Inner 05</a></li>
+        <li><a href="#inner-06">Inner 06</a></li>
+        <li><a href="#inner-07">Inner 07</a></li>
+        <li><a href="#inner-08">Inner 08</a></li>
+        <li><a href="#inner-09">Inner 09</a></li>
+        <li><a href="#inner-10">Inner 10</a></li>
+        <li><a href="#inner-11">Inner 11</a></li>
+        <li><a href="#inner-12">Inner 12</a></li>
+        <li><a href="#inner-13">Inner 13</a></li>
+        <li><a href="#inner-14">Inner 14</a></li>
+        <li><a href="#inner-15">Inner 15</a></li>
+        <li><a href="#inner-16">Inner 16</a></li>
+        <li><a href="#inner-17">Inner 17</a></li>
+        <li><a href="#inner-18">Inner 18</a></li>
+        <li><a href="#inner-19">Inner 19</a></li>
+        <li><a href="#inner-20">Inner 20</a></li>
+        <li><a href="#inner-21">Inner 21</a></li>
+        <li><a href="#inner-22">Inner 22</a></li>
+        <li><a href="#inner-23">Inner 23</a></li>
+        <li><a href="#inner-24">Inner 24</a></li>
+        <li><a href="#inner-25">Inner 25</a></li>
+        <li><a href="#inner-26">Inner 26</a></li>
+        <li><a href="#inner-27">Inner 27</a></li>
+        <li><a href="#inner-28">Inner 28</a></li>
+        <li><a href="#inner-29">Inner 29</a></li>
+        <li><a href="#inner-30">Inner 30</a></li>
+        <li><a href="#inner-31">Inner 31</a></li>
+        <li><a href="#inner-32">Inner 32</a></li>
+        <li><a href="#inner-33">Inner 33</a></li>
+        <li><a href="#inner-34">Inner 34</a></li>
+        <li><a href="#inner-35">Inner 35</a></li>
+        <li><a href="#inner-36">Inner 36</a></li>
+        <li><a href="#inner-37">Inner 37</a></li>
+        <li><a href="#inner-38">Inner 38</a></li>
+        <li><a href="#inner-39">Inner 39</a></li>
+        <li><a href="#inner-40">Inner 40</a></li>
+        <li><a href="#inner-41">Inner 41</a></li>
+        <li><a href="#inner-42">Inner 42</a></li>
+        <li><a href="#inner-43">Inner 43</a></li>
+        <li><a href="#inner-44">Inner 44</a></li>
+        <li><a href="#inner-45">Inner 45</a></li>
+        <li><a href="#inner-46">Inner 46</a></li>
+        <li><a href="#inner-47">Inner 47</a></li>
+        <li><a href="#inner-48">Inner 48</a></li>
+        <li><a href="#inner-49">Inner 49</a></li>
+        <li><a href="#inner-50">Inner 50</a></li>
+        <li><a href="#inner-51">Inner 51</a></li>
+        <li><a href="#inner-52">Inner 52</a></li>
+        <li><a href="#inner-53">Inner 53</a></li>
+        <li><a href="#inner-54">Inner 54</a></li>
+        <li><a href="#inner-55">Inner 55</a></li>
+        <li><a href="#inner-56">Inner 56</a></li>
+        <li><a href="#inner-57">Inner 57</a></li>
+        <li><a href="#inner-58">Inner 58</a></li>
+      </ul>
+      <a id="deep-target" href="#deep-target">Deep Target</a>
+    </section>
+    <ul id="related">
+      <li><a href="#related-01">Related 01</a></li>
+      <li><a href="#related-02">Related 02</a></li>
+      <li><a href="#related-03">Related 03</a></li>
+      <li><a href="#related-04">Related 04</a></li>
+      <li><a href="#related-05">Related 05</a></li>
+      <li><a href="#related-06">Related 06</a></li>
+      <li><a href="#related-07">Related 07</a></li>
+      <li><a href="#related-08">Related 08</a></li>
+      <li><a href="#related-09">Related 09</a></li>
+      <li><a href="#related-10">Related 10</a></li>
+      <li><a href="#related-11">Related 11</a></li>
+      <li><a href="#related-12">Related 12</a></li>
+    </ul>
+    <div id="result" role="status" aria-live="polite">IDLE</div>
+  </main>
+</body>
+</html>

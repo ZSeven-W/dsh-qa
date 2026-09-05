@@ -160,15 +160,64 @@ Explore cannot re-observe a recorded trajectory, so the recording session
 takes the ONE bounded escalation at RECORD time instead: a browser
 `scroll`-by-ref whose settled post-action proof observation is truncated AND
 still lacks the action target in the viewport gets one more SETTLED read at
-`QA_ESCALATED_NODE_BUDGET`. That fuller view is accepted as the action's
-proof observation exactly when
+`QA_ESCALATED_NODE_BUDGET`.
 
-1. the escalated window settled (`stable`), AND
-2. the escalated view EXTENDS the settled one (same page URL/title and every
-   settled node unchanged at the front in the same order — the page is still
-   the exact state the settle window proved), AND
-3. the escalated view returns the target node (matched by the pre-action
-   predicate) with `inViewport: true`.
+**Scoped preference (QA-BL-050).** The browser driver clamps `maxNodes` to
+100 and emits nodes in composed-tree DOM order, so a target beyond the 100th
+visible semantic node is unreachable by ANY whole-page budget — the escalated
+read must be SCOPED to prove it. When the recorded baseline yields a
+container, the escalation roots the read at the scroll target's nearest
+suitable container (the driver's node shape exposes NO ancestry, so the rule
+works from what the recording DID capture):
+
+1. the nearest PRECEDING container-role node in the baseline view's DOM
+   order (roles: region/main/navigation/list/table/form/group/
+   complementary/article/section), else
+2. the baseline's own scope root when the baseline was scoped (a scoped
+   observation returns exactly that root's subtree, so the root contains the
+   target), else
+3. no container: the escalation falls back to today's whole-page read.
+
+The baseline container ref can never scope the read itself — the driver
+resolves a `within` ref only against its LATEST observation — so the
+container's role+name+tag identity is re-keyed into the settled view and that
+node's fresh ref is passed as `withinRef` (each escalated settle poll then
+re-keys to the re-collected scope root, exactly like a settled scoped read).
+A container that is not in the settled view means no usable within ref exists
+and the whole-page read runs instead. A scoped read that refuses or fails
+acceptance consumes the ONE escalation: the settled observation is kept and
+NO whole-page re-read follows (at most one escalation per action, scoped OR
+whole-page, never both).
+
+**Scoped acceptance rule.** `scrollProofExtends` is a prefix-extension
+check and does not apply across scopes: a scoped view is a DIFFERENT WINDOW
+onto the page (another root, subtree-relative budgets, its own node order),
+never a prefix of the whole-page view. The scoped escalated view is accepted
+as the proof exactly when, in addition to the window settling (`stable`)
+and the target being returned with `inViewport: true`,
+
+1. it carries the driver's `scope` echo, AND
+2. it is CONSISTENT with the settled view: identical page URL and title, and
+   every node the two windows SHARE — a scoped node whose role+name+tag
+   identity also appears in the settled view — field-equivalent in both
+   windows (`inViewport` included; when the settled view returns several
+   same-identity nodes, the scoped node must match EVERY one). A scoped node
+   with no identity match in the settled view is expected (the settled window
+   is truncated) and does not fail; at least one node is always shared (the
+   container itself). Any drift on a shared node fails closed.
+
+The whole-page fallback keeps its unchanged rule: the escalated view must
+EXTEND the settled one (same page URL/title and every settled node unchanged
+at the front in the same order — the page is still the exact state the settle
+window proved).
+
+The recorded proof observation keeps its own honest `truncated` flag and
+its `scope`, and export carries the scope onto the synthesized assertion
+(`withProofScope`), so a scoped proof is never exported as a whole-page
+proof. Replay resolves a scoped step's action target INSIDE the same
+container (settled, with one in-scope escalation when the scoped view is
+still truncated), so such scenarios replay even though the target is
+unreachable whole-page.
 
 Anything else — an unsettled window, a page that changed between the reads,
 or a fuller view that still does not place the target in the viewport — keeps

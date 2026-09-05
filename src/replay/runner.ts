@@ -25,6 +25,7 @@ import { evaluateVisualQuestion, persistCaptureFile, type QaVisualServices } fro
 import {
   decideAssertionWithRetry,
   matchesNode,
+  scopeRootRef,
   sessionReobserve,
   QA_ESCALATED_NODE_BUDGET,
   type QaAssertionDecision,
@@ -276,6 +277,61 @@ function resolveAction(action: QaScenarioAction, observation: QaObservation): Qa
     return { kind: 'select', ref: resolveRef(action.target, observation), option: action.option };
   }
   return { kind: 'hover', ref: resolveRef(action.target, observation) };
+}
+
+/**
+ * Resolve a step's action, honoring the assertion's container scope (browser
+ * driver contract v8). A scoped assertion names the container the recorded
+ * proof was taken in, so the action's target is resolved INSIDE that
+ * container — the same window the recording used — instead of only in the
+ * whole-page view: a target that sits beyond the driver's clamped 100-node
+ * whole-page window (reachable only by scoping) is still dispatchable. The
+ * container itself is resolved from the whole-page view exactly like the
+ * assertion path (unique predicate, one bounded escalation, fail-closed
+ * refusals). A target missing from a still-truncated scoped view escalates
+ * WITHIN the same scope (one bounded re-read), never by widening to the whole
+ * page; a target missing from a complete scoped view fails closed naming the
+ * target. The whole-page observation stays the returned observation for the
+ * next step (the scoped reads consumed the session's latest observation; the
+ * post-action settle refreshes it regardless). Steps whose assertion carries
+ * no scope resolve exactly as before.
+ */
+async function resolveStepAction(
+  action: QaScenarioAction,
+  assert: QaScenario['steps'][number]['assert'],
+  wholePage: QaObservation,
+  session: QaSession,
+  reobserve: QaReobserve,
+): Promise<{ resolved: QaAction; observation: QaObservation }> {
+  if (assert.scope === undefined) {
+    return resolveActionWithBudget(action, wholePage, reobserve);
+  }
+  const scopedView = await observeScopeView(assert.scope, wholePage, session, reobserve);
+  const target = targetOf(action);
+  let view = scopedView;
+  if (target !== null && !view.nodes.some((node) => matchesNode(node, target)) && view.truncated) {
+    const withinRef = scopeRootRef(view);
+    if (withinRef === undefined) {
+      // The scoped view cannot be re-chained (its root is not among the
+      // returned nodes): fail closed like the assertion path.
+      throw new Error(
+        'no observable node matches the action target inside the scoped container, and the scoped view '
+        + 'cannot be re-chained (its root is not among the returned nodes) (' + QA_INCONCLUSIVE_TRUNCATED + ')',
+      );
+    }
+    view = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef });
+  }
+  if (target !== null && !view.nodes.some((node) => matchesNode(node, target))) {
+    if (view.truncated) {
+      throw new Error(
+        'no observable node matches the action target inside the scoped container, and the scoped view was still '
+        + 'truncated at the applied budget (' + QA_INCONCLUSIVE_TRUNCATED
+        + '): the target may exist outside the returned subtree window rather than be missing from the page',
+      );
+    }
+    throw new Error('no observable node matches the action target inside the scoped container');
+  }
+  return { resolved: resolveAction(action, view), observation: wholePage };
 }
 
 interface StepBase {
@@ -535,7 +591,10 @@ export async function runScenario(
 
       let resolved: QaAction;
       try {
-        const resolution = await resolveActionWithBudget(step.action, current, reobserve);
+        // A step whose assertion carries a container scope resolves its action
+        // target INSIDE that container (see resolveStepAction), so a target
+        // beyond the whole-page node-budget window stays reachable.
+        const resolution = await resolveStepAction(step.action, step.assert, current, session, reobserve);
         resolved = resolution.resolved;
         current = resolution.observation;
       } catch (error) {
