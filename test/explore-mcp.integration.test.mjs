@@ -82,6 +82,25 @@ test('MCP surface executes the same Explore→Export→Replay closed loop', { ti
     assert.equal(exported.ok, true, JSON.stringify(exported))
     assert.equal(exported.scenario.steps.length, 2)
     assert.deepEqual(loadScenarioFromPath(scenarioPath), exported.scenario)
+
+    // Scoped observation over the real MCP surface (driver contract v8): the
+    // within ref is plumbed through qa_observe, the result echoes the scope
+    // root, and a driver refusal surfaces as itself with its code — never a
+    // whole-page fallback, never a "not found".
+    const post = await call('qa_observe', { owner })
+    const scopeTarget = post.nodes[0]
+    assert.ok(scopeTarget)
+    const scoped = await call('qa_observe', { owner, within_ref: scopeTarget.ref })
+    // qa_observe settles (several polls); the scope echo carries the ref of
+    // the LAST poll's resolution, while role/name/tag always name the root.
+    assert.ok(typeof scoped.scope.ref === 'string' && scoped.scope.ref.length > 0, JSON.stringify(scoped))
+    assert.equal(scoped.scope.role, scopeTarget.role)
+    assert.equal(scoped.scope.name, scopeTarget.name)
+    assert.equal(scoped.scope.tag, scopeTarget.tag)
+    assert.ok(scoped.nodes.length > 0)
+    const refused = await call('qa_observe', { owner, within_ref: 'br_bogus_ref' })
+    assert.equal(refused.ok, false, JSON.stringify(refused))
+    assert.equal(refused.code, 'REF_UNKNOWN', 'the driver refusal code must surface to the agent')
     await call('qa_session_stop', { owner })
 
     const replay = await call('qa_replay_run', {

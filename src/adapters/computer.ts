@@ -121,6 +121,17 @@ export class ComputerAdapter implements QaDriverAdapter {
   }
 
   async observe(ownerId: string, options?: QaObserveOptions): Promise<QaObservation> {
+    // Scoped observation is a browser-only capability (browser driver contract
+    // v8). A withinRef here is REFUSED — never silently ignored, and never
+    // mapped onto some other computer-driver mechanism: a silent drop would
+    // make the caller believe the returned view is the scoped container when
+    // it is the whole accessibility tree.
+    if (options?.withinRef !== undefined) {
+      throw new Error(
+        'the computer driver does not support scoped observation (withinRef); '
+        + 'observe the whole accessibility tree or narrow it with maxDepth instead',
+      );
+    }
     const binding = this.#binding;
     const request: ComputerObserveRequest = {
       ...(binding !== null && (binding.bundleId !== undefined || binding.pid !== undefined)

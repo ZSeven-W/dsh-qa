@@ -100,10 +100,34 @@ export interface QaComputerEvidence {
   receiptsCountersUnavailableReason?: string;
 }
 
+/**
+ * Browser-only (driver contract v8): the root of a scoped observation, as the
+ * driver observed it at resolution time. `ref` is the caller-passed within
+ * ref (the driver echoes it back). Absent for whole-page observations and for
+ * drivers that do not report a scope; when present, the observation's
+ * truncation, budgets, and the iframe marker are SUBTREE-relative, so absence
+ * inside a complete scoped view is provable.
+ */
+export interface QaObservationScope {
+  ref: string;
+  role: string;
+  name: string;
+  tag: string;
+}
 export interface QaObservation {
   page: QaPageRef;
   nodes: QaSemanticNode[];
   truncated: boolean;
+  /**
+   * Browser-only (driver contract v8): the scope root of a scoped observation
+   * (see QaObservationScope). Honest-optional exactly like maxNodes /
+   * truncationReasons: absent means the view was NOT scoped (a whole-page
+   * observation, or a driver that reports no scope). When present, every
+   * budget, the byte ceiling, the scan window, and the iframe marker are
+   * subtree-relative, while each node's inViewport keeps whole-page
+   * viewport-intersection meaning.
+   */
+  scope?: QaObservationScope;
   /**
    * The node budget the DRIVER actually applied (its own clamp), read from the
    * driver's limits report. Absent when the driver does not report limits.
@@ -187,6 +211,19 @@ export interface QaObserveOptions {
   maxDepth?: number;
   /** Computer-only: observation ref lifetime in ms (clamped 1000..30000). */
   ttlMs?: number;
+  /**
+   * Browser-only (driver contract v8): restrict the observation to the
+   * composed subtree rooted at this element. The value is an opaque ref from
+   * the caller's CURRENT (latest, unexpired) observation; the driver resolves
+   * it exactly as actions do and REJECTS an unknown, expired, consumed,
+   * non-element, or detached ref — it never silently falls back to a
+   * whole-page view. Budgets, the byte ceiling, the scan window, and the
+   * iframe marker become subtree-relative, so a subtree that fits reports
+   * truncated:false and node-absent becomes provable inside that container.
+   * The computer driver does not support scoping: a withinRef there is
+   * REFUSED with a clear error, never silently ignored.
+   */
+  withinRef?: string;
 }
 
 export interface QaEvidenceOptions {

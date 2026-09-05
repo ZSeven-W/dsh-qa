@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Scoped observe fixture</title>
+  <!--
+    Static page pinning the scoped-observation contract (driver contract v8),
+    shaped like the sibling driver's observe-scoped fixture.
+    Whole-page emission order (controls are 240x24 blocks, body margin 0):
+      h1          0            (1)
+      anchor-prev 1            (1)
+      main        2            (1, role=region aria-label "Scope anchor region")
+      probes      3..100       (98 visible buttons)
+      container   101          (role=region aria-label "Deep container")
+      scoped-0    102
+      scoped-1    103
+      deep target 104          (a[href], aria-label "Deep scoped target")
+      shadow      105..106     (2 open-shadow-root buttons)
+      scoped-2..27 107..132
+    The container is the 102nd whole-page match: beyond every shipped budget
+    (default 60, ceiling 100). The main-scoped projection emits main + 98
+    probes + container as exactly its first 100 nodes, which is how a caller
+    reaches the container. The container subtree (32 matches) fits maxNodes 40
+    with truncated:false, so absence inside it is provable.
+  -->
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    h1 { margin: 0; height: 40px; line-height: 40px; font-size: 24px; }
+    .box { display: block; width: 240px; height: 24px; margin: 0; padding: 0; box-sizing: border-box; }
+    .link { display: block; width: 240px; height: 24px; margin: 0; padding: 0; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <h1>Scoped observe fixture</h1>
+  <button class="box">anchor-prev</button>
+  <main id="scope-anchor" role="region" aria-label="Scope anchor region">
+    <div id="probes"></div>
+    <div id="container" role="region" aria-label="Deep container">
+      <button class="box">scoped-0</button>
+      <button class="box">scoped-1</button>
+      <a class="link" href="https://example.com/scoped/page?q=1#deep" aria-label="Deep scoped target">jump</a>
+      <div id="scoped-host"></div>
+    </div>
+    <iframe src="about:blank" title="outside-frame"></iframe>
+  </main>
+  <script>
+    // 98 visible probe buttons: the padding that pushes the container beyond
+    // the 100-node whole-page window without adding any emitted node inside
+    // the container's own subtree.
+    const probes = document.getElementById('probes')
+    for (let i = 0; i < 98; i += 1) {
+      const probe = document.createElement('button')
+      probe.className = 'box'
+      probe.textContent = 'probe-' + i
+      probes.appendChild(probe)
+    }
+    // Container content: 2 lead buttons, the deep uniquely-named target, an
+    // open shadow root, and the rest of the rows (32 subtree matches total).
+    const container = document.getElementById('container')
+    for (let i = 2; i < 28; i += 1) {
+      const row = document.createElement('button')
+      row.className = 'box'
+      row.textContent = 'scoped-' + i
+      container.appendChild(row)
+    }
+    const host = document.getElementById('scoped-host')
+    const shadowRoot = host.attachShadow({ mode: 'open' })
+    shadowRoot.innerHTML = Array.from({ length: 2 }, (_, i) =>
+      '<button id="shadow-deep-' + i + '" style="display:block;width:240px;height:24px;margin:0;padding:0;box-sizing:border-box">shadow-deep-' + i + '</button>'
+    ).join('')
+  </script>
+</body>
+</html>

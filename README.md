@@ -10,7 +10,7 @@ deterministic **Replay** scenario that runs on every release.
 - **Replay mode** — declarative `QaScenario` files (lossless JSON) executed
   deterministically with per-step re-observe assertions, producing redacted
   JSON / Markdown / JSONL reports.
-- **Drivers** — `@zseven-w/dsh-browser` (BU, contract v7) and
+- **Drivers** — `@zseven-w/dsh-browser` (BU, contract v8) and
   `@zseven-w/dsh-computer` (CU, contract v4). Driver safety semantics are
   inherited, never loosened: `EXTERNAL_COMMIT_TARGET` refused, secure fields
   permanently refused, approval gates passed through, `unknown` receipts require
@@ -128,6 +128,31 @@ sound evidence of presence. Whenever truncation touched a decision, the
 The replay runner resolves action targets the same way, and the exporter records
 a truncated proof observation as a `Weak proof:` note in the step intent. Full
 rationale: `docs/TRUNCATION.md`.
+
+## Scoped observation (browser driver contract v8)
+
+The browser clamp stays at 100 nodes while real pages exceed it, so `qa_observe`
+accepts `within_ref` — an opaque ref from the caller's CURRENT observation — and
+observes only the composed subtree rooted at that element. Budgets, the byte
+ceiling, the scan window, and the iframe marker become **subtree-relative**: a
+container whose subtree fits reports `truncated: false` with no
+`truncationReasons`, which makes `node-absent` **provable inside that container**
+and a deep target unreachable in the whole-page window reachable. The
+observation's `scope` field (`{ ref, role, name, tag }`) echoes the root the
+driver observed; whole-page observations carry none. An unknown, expired,
+consumed, non-element, or detached ref refuses the call with its driver code
+(`REF_UNKNOWN` / `REF_EXPIRED` / `TARGET_CHANGED` / …) — never a whole-page
+fallback, never a "not found". The computer driver does not support scoping and
+refuses `within_ref`.
+
+Scoped observations flow into Replay: a scenario assertion may carry
+`scope: { role, name }`; the runner resolves that container in the whole-page
+view by UNIQUE predicate (`TARGET_NOT_UNIQUE` when ambiguous, never a guess),
+observes within it, and decides the assertion against that scoped view. The
+`completeness` block names the scope when the deciding view was scoped, so
+"absent from this container" is never read as "absent from the whole page",
+and export records a scoped proof as a scoped assertion — never as if it were a
+whole-page proof. See `docs/TRUNCATION.md`.
 
 ## Visual assertions (advisory)
 

@@ -52,6 +52,9 @@ function escapeLoneSurrogates(text: string): string {
 function completenessLine(completeness: QaViewCompleteness): string {
   const reasons = completeness.truncationReasons;
   return (completeness.reason === undefined ? '' : completeness.reason + ' — ')
+    + (completeness.scope === undefined
+      ? ''
+      : 'scope: ' + completeness.scope.role + ' "' + completeness.scope.name + '", ')
     + 'view truncated: ' + String(completeness.truncated)
     + ', applied node budget: ' + (completeness.nodeBudget === null ? 'not reported by the driver' : String(completeness.nodeBudget))
     + ', truncation reasons: ' + (reasons === undefined || reasons.length === 0 ? 'not reported by the driver' : reasons.join(', '))
@@ -216,6 +219,9 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     }
     if (assertion.reason !== undefined) {
       lines.push('  - reason: ' + mdInline(assertion.reason));
+    }
+    if (assertion.scope !== undefined) {
+      lines.push('  - assertion scope: ' + mdInline(assertion.scope.role + ' "' + assertion.scope.name + '"'));
     }
     if (assertion.completeness !== undefined) {
       lines.push('  - view completeness: ' + mdInline(completenessLine(assertion.completeness)));

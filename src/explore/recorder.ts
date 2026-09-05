@@ -593,6 +593,12 @@ export class QaTrajectoryRecorder {
         ...node,
         ref: this.#refAlias(trajectory, node.ref),
       })),
+      // A scoped observation's root ref is a driver ref like every node ref:
+      // alias it so no session-local identity ever enters the trajectory.
+      // role/name/tag pass through and are what export records as the scope.
+      ...(observation.scope === undefined
+        ? {}
+        : { scope: { ...observation.scope, ref: this.#refAlias(trajectory, observation.scope.ref) } }),
     };
   }
 

@@ -165,7 +165,11 @@ function guard(handler) {
       return await handler(args);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return textResult({ ok: false, error: message });
+      // A driver-issued refusal (the browser driver's DriverIssue) carries a
+      // structured code (REF_INVALID / REF_EXPIRED / TARGET_CHANGED / ...):
+      // surface it as itself, never degraded into a "not found".
+      const code = error instanceof Error && typeof error.code === 'string' ? error.code : undefined;
+      return textResult({ ok: false, ...(code === undefined ? {} : { code }), error: message });
     }
   };
 }
@@ -217,6 +221,7 @@ server.tool(
     max_nodes: z.number().int().optional(),
     max_depth: z.number().int().optional(),
     ttl_ms: z.number().int().optional(),
+    within_ref: z.string().optional(),
   },
   guard(async (args) => {
     const owner = ownerFrom(args);
@@ -227,6 +232,7 @@ server.tool(
       ...(args.max_nodes === undefined ? {} : { maxNodes: args.max_nodes }),
       ...(args.max_depth === undefined ? {} : { maxDepth: args.max_depth }),
       ...(args.ttl_ms === undefined ? {} : { ttlMs: args.ttl_ms }),
+      ...(args.within_ref === undefined ? {} : { withinRef: args.within_ref }),
     });
     return textResult({
       ...settled.observation,

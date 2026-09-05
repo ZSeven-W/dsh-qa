@@ -6,6 +6,7 @@ import type {
   QaNodePredicate,
   QaScenario,
   QaScenarioAction,
+  QaScenarioAssertionScope,
   QaSettleOverride,
   QaStep,
 } from '../contracts.ts';
@@ -563,6 +564,41 @@ function proofWasTruncated(before: QaObservation | null, after: QaObservation): 
   return before?.truncated === true || after.truncated === true;
 }
 
+/** The scope of a proof observation, as a scenario assertion scope. */
+function proofScope(observation: QaObservation | null): QaScenarioAssertionScope | null {
+  if (observation === null || observation.scope === undefined) return null;
+  const role = clean(observation.scope.role);
+  const name = clean(observation.scope.name);
+  if (role === '' || name === '') return null;
+  return { role, name };
+}
+
+/**
+ * Attach the proof observation's scope to a synthesized assertion, so a scoped
+ * proof is never exported as if it were a whole-page proof (browser driver
+ * contract v8): Replay then re-derives the container, observes within it, and
+ * decides the assertion against that scoped view. `page-url` is deliberately
+ * NOT scoped — the URL travels on every observation whatever the scope did.
+ */
+function withProofScope(assertion: QaAssertion, proof: QaObservation | null): QaAssertion {
+  if (assertion.kind === 'page-url') return assertion;
+  const scope = proofScope(proof);
+  return scope === null ? assertion : { ...assertion, scope };
+}
+
+/**
+ * Weakness recorded when the action's PRECEDING observation was scoped: the
+ * target predicate and its uniqueness were verified inside the container only,
+ * while Replay resolves the action target in the whole-page view.
+ */
+function scopedPrecedingViewWeakness(before: QaObservation | null): string | null {
+  const scope = proofScope(before);
+  if (scope === null) return null;
+  return 'the action\'s preceding observation was scoped to the ' + scope.role + ' named "'
+    + scope.name + '", so the action target\'s whole-page uniqueness was not verified at export '
+    + '(Replay resolves the target in the whole-page view) — verify manually.';
+}
+
 /**
  * Whether a truncated proof observation can actually WEAKEN this assertion.
  * Truncation weakens a delta-derived presence claim — the "apparently new node"
@@ -875,18 +911,22 @@ function buildScenario(
         ));
         continue;
       }
+      const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
       steps.push({
         index: steps.length + 1,
         intent: normalizeIntent(intentWithWeaknesses(
           resolved.intent,
-          candidate.after !== null
-            && proofWasTruncated(candidate.before, candidate.after)
-            && truncationWeakensProof(resolved.assert)
-            ? [TRUNCATED_PROOF_WEAKNESS]
-            : [],
+          [
+            ...(candidate.after !== null
+              && proofWasTruncated(candidate.before, candidate.after)
+              && truncationWeakensProof(resolved.assert)
+              ? [TRUNCATED_PROOF_WEAKNESS]
+              : []),
+            ...(scopedBeforeWeakness === null ? [] : [scopedBeforeWeakness]),
+          ],
         )),
         action: resolved.action,
-        assert: resolved.assert,
+        assert: withProofScope(resolved.assert, candidate.after),
       });
       continue;
     }
@@ -944,18 +984,23 @@ function buildScenario(
     // the assertion looks unrelated to the action. A proof observation that was
     // truncated at the node budget is recorded the same honest way — but only
     // when truncation can actually weaken the assertion kind (see
-    // truncationWeakensProof).
+    // truncationWeakensProof). A scoped preceding observation is recorded too:
+    // the target's whole-page uniqueness was never verified at export.
+    const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
     const intent = normalizeIntent(intentWithWeaknesses(intentFor(stepAction), [
       ...(synthesized.assertion.weakness === null ? [] : [synthesized.assertion.weakness]),
       ...(proofWasTruncated(candidate.before, after) && truncationWeakensProof(synthesized.assertion.assertion)
         ? [TRUNCATED_PROOF_WEAKNESS]
         : []),
+      ...(scopedBeforeWeakness === null ? [] : [scopedBeforeWeakness]),
     ]));
     steps.push({
       index: steps.length + 1,
       intent,
       action: stepAction,
-      assert: synthesized.assertion.assertion,
+      // A scoped proof observation exports as a scoped assertion — never as if
+      // it were a whole-page proof (browser driver contract v8).
+      assert: withProofScope(synthesized.assertion.assertion, after),
     });
   }
 

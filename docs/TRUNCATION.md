@@ -96,6 +96,64 @@ Evidence of presence is sound; absence of evidence is not evidence of absence.
    `VALUE_SECURE` / `VALUE_TRUNCATED`) is deterministic and never resolves by
    waiting either.
 
+## Scoped observation changes what truncation means (browser driver contract v8)
+
+Since contract v8 the browser driver can root an observation at ONE element
+(`observe(owner, { within })`); dsh-qa exposes it as `qa_observe within_ref`
+(`QaObserveOptions.withinRef`). The ref comes from the caller's CURRENT
+(latest, unexpired) observation and is resolved exactly like an action ref —
+an unknown, expired, consumed, non-element, or detached ref REFUSES the call
+(`REF_INVALID` / `REF_UNKNOWN` / `OBSERVATION_REQUIRED` / `REF_EXPIRED` /
+`PAGE_CHANGED` / `TARGET_UNBINDABLE` / `TARGET_CHANGED` /
+`WITHIN_NOT_ELEMENT`), never falling back to a whole-page view.
+
+Inside a scoped observation, **`maxNodes`, the 48 KiB byte ceiling, the scan
+window, and the iframe marker are all subtree-relative**. A subtree that fits
+reports `truncated: false` with NO `truncationReasons`. That is the whole
+point: the browser clamp stays at 100 nodes (the byte ceiling caps emission
+at ~221 anyway), so scoping — not a bigger budget — is how a deep target and
+a provable absence are reached. `QaObservation.scope`
+(`{ ref, role, name, tag }`) echoes the root the driver observed and is
+absent for whole-page observations; node `inViewport` keeps whole-page
+viewport-intersection meaning.
+
+What it changes for the soundness rules above:
+
+- `node-absent` with nothing matched **passes on a COMPLETE scoped view** —
+the absence is proven inside the container, which the whole-page rules could
+never prove. The decision rule needed no change: the observation's own
+`truncated: false` drives it.
+- A scoped view that is STILL truncated escalates **within the same scope**
+(one bounded re-read at `QA_ESCALATED_NODE_BUDGET` carrying the same
+`withinRef`), never by widening to the whole page; a still-truncated scoped
+view fails closed with `INCONCLUSIVE_TRUNCATED` exactly like an unscoped
+one. Unscoped truncated views keep their exact escalation and
+`INCONCLUSIVE_TRUNCATED` semantics.
+- `completeness` now names the scope whenever the deciding view was scoped
+(additive `scope: { role, name }`), and a scoped deciding view ALWAYS
+reports completeness — complete or truncated — so "absent from this
+container" can never be read as "absent from the whole page" (the latter
+is still unprovable). The detail string and report.md say which container
+the outcome was decided inside.
+- Replay: a scenario assertion may carry `scope: { role, name }` (loader-
+validated fail-closed). The runner resolves that container in the whole-page
+view by UNIQUE predicate — ambiguous containers are refused with the
+existing `TARGET_NOT_UNIQUE` vocabulary, never guessed — takes a SETTLED
+scoped observation within it, and decides the assertion against that scoped
+view; driver refusals on the scoped read surface as themselves (their code
+rides into `failure.code`), never as a "not found". After a scoped
+decision the runner refreshes the whole-page view (settled, fail-closed on
+an unstable refresh) because the scoped read consumed the observation the
+container was resolved from.
+- Export records the scope when the explorer used one: an assertion whose
+deciding proof observation was scoped is exported with the container's
+`scope: { role, name }` — never as if it were a whole-page proof.
+`page-url` is never scoped (the URL travels on every observation). When the
+action's PRECEDING observation was scoped, the step intent records that the
+target's whole-page uniqueness was not verified at export.
+- The computer driver has no scoping: a `withinRef` there is REFUSED with a
+clear error, never silently ignored.
+
 ## Record-time scroll-proof escalation (Explore recording only)
 
 Explore cannot re-observe a recorded trajectory, so the recording session

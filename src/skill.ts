@@ -91,6 +91,21 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   \`node-budget-exceeded\` names the node budget. When the re-observation applied the SAME budget
   as before (already at the driver maximum), raising \`qa_observe max_nodes\` cannot help — narrow
   the page or region, or scroll the target into a smaller view.
+- A view can also be SCOPED (browser, driver contract v8): pass \`within_ref\` — an opaque ref
+  from your CURRENT (latest, unexpired) \`qa_observe\` result — to observe only the composed
+  subtree rooted at that element. Budgets, the byte ceiling, the scan window, and the iframe
+  marker become SUBTREE-relative, so a container whose subtree fits reports \`truncated: false\`
+  with no \`truncationReasons\`: absence inside it is PROVABLE (a \`node-absent\` can pass there),
+  and a deep target unreachable in the whole-page window becomes reachable. The observation's
+  \`scope\` field (\`{ ref, role, name, tag }\`) echoes the root the driver observed; it is absent
+  for whole-page observations. An unknown, expired, consumed, non-element, or detached ref
+  REFUSES the call with its driver code (\`REF_UNKNOWN\` / \`REF_EXPIRED\` / \`TARGET_CHANGED\` /
+  ...) — never a whole-page fallback and never a "not found". The computer driver does not
+  support scoping and refuses \`within_ref\`. A scoped proof is exported as a scoped assertion
+  (\`scope: { role, name }\`), which Replay re-derives in the whole-page view (UNIQUE predicate,
+  \`TARGET_NOT_UNIQUE\` when ambiguous) and decides inside the container; the completeness block
+  names the scope, so "absent from this container" is never read as "absent from the whole page".
+
 - The moment a problem appears, call \`qa_evidence\` before navigating away or changing state.
   Missing permissions, truncation, and driver rejection are boundaries, never green results.
 

@@ -109,6 +109,24 @@ export interface QaAssertion {
   /** Expected observation fragment (lossless JSON only), interpreted by kind. */
   expected: unknown;
   description?: string;
+  /**
+   * Optional container scope (ADDITIVE, schemaVersion stays 1; browser
+   * driver contract v8). When present, Replay resolves this container in
+   * the whole-page view by UNIQUE predicate (an ambiguous container is
+   * refused with TARGET_NOT_UNIQUE, never guessed), observes WITHIN it, and
+   * decides the assertion against that scoped view. Budgets and the
+   * truncated flag are then subtree-relative, so a complete scoped view
+   * makes node-absent provable inside the container even when the whole
+   * page is unbounded. A scoped proof is never decided (or reported) as if
+   * it were a whole-page proof.
+   */
+  scope?: QaScenarioAssertionScope;
+}
+
+/** Predicate naming the container a scoped assertion is decided inside. */
+export interface QaScenarioAssertionScope {
+  role: string;
+  name: string;
 }
 
 /**
@@ -260,10 +278,13 @@ export type QaFailureCode =
  * Completeness context of the view an assertion was decided against.
  *
  * This is an ADDITIVE field (schemaVersion stays 1) and is present ONLY when
- * truncation actually touched the decision, so a result taken from a complete
+ * truncation actually touched the decision OR the deciding view was scoped
+ * (browser driver contract v8), so a result taken from a complete WHOLE-PAGE
  * view is unchanged byte for byte. When it IS present, a human triaging
- * report.json / report.md / report.jsonl can tell "not present" apart from "we
- * could not see the whole page".
+ * report.json / report.md / report.jsonl can tell "not present" apart from
+ * "we could not see the whole page" — and, via `scope`, "absent from the
+ * whole page" apart from "absent from this container" (the latter now
+ * provable, the former still not).
  */
 export interface QaViewCompleteness {
   /** Whether the FINAL deciding view was still truncated at its node budget. */
@@ -288,9 +309,18 @@ export interface QaViewCompleteness {
   escalated: boolean;
   /** Whether this outcome depends on the view being complete (unproven if it is not). */
   outcomeDependsOnCompleteView: boolean;
+  /**
+   * ADDITIVE (browser driver contract v8): the scope of the DECIDING view
+   * when it was a scoped observation — the { role, name } of the container
+   * the assertion was decided inside. Present exactly when the deciding view
+   * was scoped (complete or truncated); absent means the deciding view was
+   * whole-page. This is what lets a reader tell "absent from this container"
+   * (provable) apart from "absent from the whole page" (not provable today).
+   */
+  scope?: { role: string; name: string };
   /** Present exactly when the outcome could not be proven from an incomplete view. */
   reason?: QaInconclusiveReason;
-  /** Deterministic, human-readable explanation naming the applied budget and the reasons. */
+  /** Deterministic, human-readable explanation naming the applied budget, the scope, and the reasons. */
   detail: string;
 }
 
@@ -332,7 +362,15 @@ export interface QaAssertionResult {
   passed: boolean;
   expected: unknown;
   observed: unknown;
-  /** Completeness of the deciding view; present only when truncation touched the decision. */
+  /**
+   * ADDITIVE (browser driver contract v8): echo of the scenario assertion's
+   * container scope (QaAssertion.scope). Present exactly when the replayed
+   * assertion carried one, so a final-assertion result is never read as a
+   * whole-page claim when it was decided inside a container. Step results
+   * carry the same information through their full `assertion` echo.
+   */
+  scope?: { role: string; name: string };
+  /** Completeness of the deciding view; present only when truncation touched the decision or the view was scoped. */
   completeness?: QaViewCompleteness;
   /**
    * Stable machine code when the assertion was refused for a structural reason

@@ -56,6 +56,12 @@ export class BrowserAdapter implements QaDriverAdapter {
   async observe(ownerId: string, options?: QaObserveOptions): Promise<QaObservation> {
     const driverOptions: BrowserObservationOptions = {
       ...(options?.maxNodes === undefined ? {} : { maxNodes: options.maxNodes }),
+      // v8 scoped observation: the driver resolves the ref exactly as actions
+      // do and REFUSES (REF_INVALID / REF_UNKNOWN / REF_EXPIRED / PAGE_CHANGED
+      // / TARGET_CHANGED / WITHIN_NOT_ELEMENT / OBSERVATION_REQUIRED) instead
+      // of falling back to a whole-page view. The refusal propagates verbatim
+      // — this adapter never catches, retries, or reroutes it.
+      ...(options?.withinRef === undefined ? {} : { within: options.withinRef }),
     };
     const observation = await this.#driver.observe(ownerId, driverOptions);
     return {
@@ -68,6 +74,11 @@ export class BrowserAdapter implements QaDriverAdapter {
       // Driver-named reasons travel verbatim (a driver that reports none
       // leaves the field absent; the QA layer never invents reasons).
       ...(observation.truncationReasons === undefined ? {} : { truncationReasons: observation.truncationReasons }),
+      // v8: the driver echoes the root it observed. Honest-optional: absent
+      // means the view was NOT scoped (scope null for whole-page views, or a
+      // pre-v8 driver that reports no scope). A scoped observation's budgets
+      // and truncation are subtree-relative.
+      ...(observation.scope === undefined || observation.scope === null ? {} : { scope: observation.scope }),
     };
   }
 

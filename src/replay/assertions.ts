@@ -1,5 +1,11 @@
 import { QA_INCONCLUSIVE_TRUNCATED, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
-import type { QaObservation, QaObserveOptions, QaSemanticNode, QaSettleWidened } from '../session/adapter.ts';
+import type {
+  QaObservation,
+  QaObservationScope,
+  QaObserveOptions,
+  QaSemanticNode,
+  QaSettleWidened,
+} from '../session/adapter.ts';
 
 /**
  * Distinct refusal codes for a node-value assertion matched against a node the
@@ -218,6 +224,24 @@ function readsNodes(kind: QaAssertionKind): boolean {
 }
 
 /**
+ * The ref that chains the NEXT scoped read: the re-collected scope root node's
+ * FRESH ref inside a scoped observation. The observation's scope.ref echoes
+ * the ref the caller PASSED — which belonged to the observation the scoped
+ * read just replaced, so it never resolves again. The root node is found by
+ * the scope echo's role+name+tag identity (the driver emits the root first,
+ * and a caller can only have scoped to a node it observed, so the root is
+ * selectable); undefined when the view is whole-page or the root is absent.
+ */
+function scopeRootRef(observation: QaObservation): string | undefined {
+  const scope = observation.scope;
+  if (scope === undefined) return undefined;
+  const root = observation.nodes.find(
+    (node) => node.role === scope.role && node.name === scope.name && node.tag === scope.tag,
+  );
+  return root?.ref;
+}
+
+/**
  * Would this outcome be decided against a truncated view? An absent-claim on
  * ANY truncated view qualifies (the claim is about the whole view), and so does
  * a present/in-viewport claim that found NO match. A present-claim that already
@@ -243,6 +267,8 @@ interface CompletenessContext {
   priorBudget: number | null;
   /** Driver-named reasons the deciding view is partial (absent = not reported). */
   truncationReasons: readonly string[] | undefined;
+  /** The scope of the deciding view when it was a scoped observation. */
+  scope: QaObservationScope | undefined;
   escalated: boolean;
   escalationFailed: boolean;
 }
@@ -307,6 +333,12 @@ function truncationAdvice(context: CompletenessContext): string {
   return 'raise the observation node budget (qa_observe max_nodes) or narrow the page,';
 }
 
+/** Names the deciding view's scope (browser contract v8) when it has one. */
+function scopeClause(scope: QaObservationScope | undefined): string {
+  if (scope === undefined) return '';
+  return 'the deciding view was scoped to the ' + scope.role + ' named "' + scope.name + '"; ';
+}
+
 function completenessDetail(
   kind: QaAssertionKind,
   deciding: AssertionEval,
@@ -314,6 +346,7 @@ function completenessDetail(
   nodeBudget: number | null,
   priorBudget: number | null,
   truncationReasons: readonly string[] | undefined,
+  scope: QaObservationScope | undefined,
   escalated: boolean,
   escalationFailed: boolean,
 ): string {
@@ -324,30 +357,33 @@ function completenessDetail(
     nodeBudget,
     priorBudget,
     truncationReasons,
+    scope,
     escalated,
     escalationFailed,
   };
   const budget = budgetLabel(nodeBudget);
   const escalation = escalationClause(context);
+  const scoped = scopeClause(scope);
   if (!readsNodes(kind)) {
     return 'the observation was truncated at its ' + budget
       + ' budget, but this assertion reads the page URL only and does not depend on node completeness.';
   }
   if (deciding.inconclusive) {
-    return escalation
+    return escalation + scoped
       + 'the view was STILL truncated at its ' + budget + ' budget, so "' + kind
-      + '" cannot be proven from it: a matching node may exist outside the returned window. '
+      + '" cannot be proven from it: a matching node may exist outside the returned window'
+      + (scope === undefined ? '' : ' of that container\'s subtree') + '. '
       + 'This is not "not present" — ' + truncationAdvice(context) + ' then re-run.';
   }
   if (truncated) {
-    return escalation
+    return escalation + scoped
       + 'the deciding view was truncated at its ' + budget
       + ' budget, but a matching node was RETURNED by it, and a returned node is sound evidence '
       + 'of presence even in an incomplete view.';
   }
-  return escalation
-    + 'the first view was truncated at its node budget; the deciding view at the ' + budget
-    + ' budget was COMPLETE, so the outcome is proven against the whole view.';
+  return escalation + scoped
+    + 'the deciding view was COMPLETE, so the outcome is proven against '
+    + (scope === undefined ? 'the whole view.' : 'the whole subtree of that container.');
 }
 
 /**
@@ -367,8 +403,11 @@ export async function decideAssertion(
   reobserve: QaReobserve,
 ): Promise<QaAssertionDecision> {
   const first = evaluateAssertion(assertion, observation);
-  if (!observation.truncated) {
-    // A complete view decides everything on its own; nothing to escalate or report.
+  if (!observation.truncated && observation.scope === undefined) {
+    // A complete WHOLE-PAGE view decides everything on its own; nothing to
+    // escalate or report. A complete SCOPED view still reports completeness:
+    // its scope must be named, so a container-scoped absence is never read as
+    // a whole-page absence.
     return {
       passed: first.passed,
       observed: first.observed,
@@ -382,15 +421,32 @@ export async function decideAssertion(
   let evaluation = first;
   let escalated = false;
   let escalationFailed = false;
-  if (needsFullerView(assertion.kind, first)) {
-    try {
-      const fuller = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
-      deciding = fuller;
-      evaluation = evaluateAssertion(assertion, fuller);
-      escalated = true;
-    } catch {
-      // No fuller view is available: decide against what we have, fail closed.
+  if (observation.truncated && needsFullerView(assertion.kind, first)) {
+    // A scoped decision escalates WITHIN the same scope: the escalated view is
+    // a strictly fuller read of the same subtree (same container, bigger
+    // budget), never a whole-page widening that would change what the claim
+    // is about. The chain key is the re-collected ROOT NODE's fresh ref (the
+    // scope.ref echo is the passed ref, which the scoped read just consumed).
+    // An unscoped decision escalates exactly as before.
+    const withinRef = scopeRootRef(observation);
+    if (observation.scope !== undefined && withinRef === undefined) {
+      // The scoped view cannot be re-chained (its root is not among the
+      // returned nodes): decide against the scoped view, fail closed.
       escalationFailed = true;
+    } else {
+      const escalationOptions: QaObserveOptions = {
+        maxNodes: QA_ESCALATED_NODE_BUDGET,
+        ...(withinRef === undefined ? {} : { withinRef }),
+      };
+      try {
+        const fuller = await reobserve(escalationOptions);
+        deciding = fuller;
+        evaluation = evaluateAssertion(assertion, fuller);
+        escalated = true;
+      } catch {
+        // No fuller view is available: decide against what we have, fail closed.
+        escalationFailed = true;
+      }
     }
   }
 
@@ -404,6 +460,9 @@ export async function decideAssertion(
     nodeBudget,
     escalated,
     outcomeDependsOnCompleteView: evaluation.inconclusive,
+    ...(deciding.scope === undefined
+      ? {}
+      : { scope: { role: deciding.scope.role, name: deciding.scope.name } }),
     ...(deciding.truncationReasons === undefined ? {} : { truncationReasons: deciding.truncationReasons }),
     ...(evaluation.inconclusive ? { reason: QA_INCONCLUSIVE_TRUNCATED } : {}),
     detail: completenessDetail(
@@ -413,6 +472,7 @@ export async function decideAssertion(
       nodeBudget,
       priorBudget,
       deciding.truncationReasons,
+      deciding.scope,
       escalated,
       escalationFailed,
     ),
@@ -519,8 +579,21 @@ export async function decideAssertionWithRetry(
       break;
     }
     let next: QaObservation;
+    // Each retry re-reads the LATEST deciding view's container: the chain key
+    // is the re-collected scope root NODE's fresh ref (the scope.ref echo is
+    // the passed ref, which the last read consumed). An unscoped retry keeps
+    // looking at the whole page (unchanged).
+    const withinRef = scopeRootRef(decision.observation);
+    if (decision.observation.scope !== undefined && withinRef === undefined) {
+      // The scoped view cannot be re-chained: keep the existing outcome,
+      // fail closed (never widen a scoped retry to the whole page).
+      break;
+    }
     try {
-      next = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
+      next = await reobserve({
+        maxNodes: QA_ESCALATED_NODE_BUDGET,
+        ...(withinRef === undefined ? {} : { withinRef }),
+      });
     } catch {
       // No settled fuller view is available: keep the existing outcome.
       break;

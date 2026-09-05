@@ -97,7 +97,8 @@ const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes', 'set
 const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'intervalMs', 'adaptiveBudgetMs'] as const;
 const TARGET_FIELDS = ['launch', 'loginState'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
-const ASSERTION_FIELDS = ['kind', 'expected', 'description'] as const;
+const ASSERTION_FIELDS = ['kind', 'expected', 'description', 'scope'] as const;
+const ASSERTION_SCOPE_FIELDS = ['role', 'name'] as const;
 const NODE_VALUE_EXPECTATION_FIELDS = ['role', 'name', 'tag', 'value'] as const;
 const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
 const PREDICATE_FIELDS = ['role', 'name', 'tag'] as const;
@@ -306,6 +307,16 @@ function validateScrollAmount(value: unknown, position: string): 'page' | number
   fail(position, 'expected "page" or a finite non-negative number');
 }
 
+function validateAssertionScope(value: unknown, position: string): { role: string; name: string } {
+  const obj = expectObject(value, position);
+  assertKnownFields(obj, ASSERTION_SCOPE_FIELDS, position);
+  // Fail closed exactly like every other schema field: the container predicate
+  // needs a non-empty role AND accessible name, and nothing else.
+  const role = expectNonEmptyString(obj.role, position + '.role');
+  const name = expectNonEmptyString(obj.name, position + '.name');
+  return { role, name };
+}
+
 /** Validates an assertion object (also used by the qa_assert MCP tool). */
 export function validateAssertion(value: unknown, position = 'assertion'): QaAssertion {
   const obj = expectObject(value, position);
@@ -333,6 +344,9 @@ export function validateAssertion(value: unknown, position = 'assertion'): QaAss
   const out: QaAssertion = { kind, expected: obj.expected };
   if (obj.description !== undefined) {
     out.description = expectNonEmptyString(obj.description, position + '.description');
+  }
+  if (obj.scope !== undefined) {
+    out.scope = validateAssertionScope(obj.scope, position + '.scope');
   }
   return out;
 }

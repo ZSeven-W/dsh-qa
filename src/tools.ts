@@ -289,7 +289,14 @@ function guard(handler: (args: never, exec: ToolExecutionContext) => Promise<unk
       return toLosslessJson(await handler(args, exec))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      return toLosslessJson({ ok: false, error: message })
+      // A driver-issued refusal (the browser driver's DriverIssue) carries a
+      // structured code (REF_INVALID / REF_EXPIRED / TARGET_CHANGED / ...): it
+      // must surface as itself, so the agent can tell a refusal apart from a
+      // "not found" or any other ordinary failure.
+      const code = error instanceof Error && typeof (error as Error & { code?: unknown }).code === 'string'
+        ? (error as Error & { code: string }).code
+        : undefined
+      return toLosslessJson({ ok: false, ...(code === undefined ? {} : { code }), error: message })
     }
   }
 }
@@ -328,6 +335,8 @@ interface ObserveArgs {
   max_nodes?: number
   max_depth?: number
   ttl_ms?: number
+  /** Browser-only (contract v8): ref from the caller's CURRENT observation to observe within. */
+  within_ref?: string
 }
 
 interface ActArgs {
@@ -453,6 +462,7 @@ export function createQaTools(host: QaToolHost): QaTools {
       max_nodes: intProp,
       max_depth: intProp,
       ttl_ms: intProp,
+      within_ref: strProp,
     }, []),
     output: outputFor(),
     timeoutMs: 30_000,
@@ -464,6 +474,7 @@ export function createQaTools(host: QaToolHost): QaTools {
         ...(args.max_nodes === undefined ? {} : { maxNodes: args.max_nodes }),
         ...(args.max_depth === undefined ? {} : { maxDepth: args.max_depth }),
         ...(args.ttl_ms === undefined ? {} : { ttlMs: args.ttl_ms }),
+        ...(args.within_ref === undefined ? {} : { withinRef: args.within_ref }),
       })
       return {
         ...settled.observation,

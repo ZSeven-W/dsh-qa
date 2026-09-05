@@ -279,8 +279,37 @@ export class QaSession {
    */
   async observeSettled(options?: QaObserveOptions, settle?: QaSettleCallOptions): Promise<QaSettleResult> {
     this.#assertStarted();
+    // Scoped settled reads (browser driver contract v8): every poll REPLACES
+    // the driver's current observation, so the within ref from the previous
+    // poll no longer resolves. Re-key it each poll to the re-collected scope
+    // root, found by the scope echo's role+name+tag identity in the fresh
+    // view (the caller can only have scoped to a node it OBSERVED, so the
+    // root is always selectable). A fresh view that no longer returns the
+    // root fails closed instead of silently re-narrowing to some other node.
+    let withinRef = options?.withinRef;
     const result = await observeUntilStable(
-      () => this.#adapter.observe(this.#ownerId, options),
+      async () => {
+        const pollOptions: QaObserveOptions = options ?? {};
+        const observation = await this.#adapter.observe(
+          this.#ownerId,
+          { ...pollOptions, ...(withinRef === undefined ? {} : { withinRef }) },
+        );
+        if (withinRef !== undefined) {
+          const scope = observation.scope;
+          const root = scope === undefined
+            ? undefined
+            : observation.nodes.find(
+                (node) => node.role === scope.role && node.name === scope.name && node.tag === scope.tag,
+              );
+          if (root === undefined) {
+            throw new Error(
+              'the scoped observation no longer returns its scope root node, so the settled scoped read cannot continue; re-observe and retry',
+            );
+          }
+          withinRef = root.ref;
+        }
+        return observation;
+      },
       this.#settle,
       settle ?? {},
       this.#widenGate,

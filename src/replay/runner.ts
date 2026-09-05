@@ -13,6 +13,7 @@ import type {
   QaRunReport,
   QaScenario,
   QaScenarioAction,
+  QaScenarioAssertionScope,
   QaSettleWidening,
   QaStepResult,
   QaViewCompleteness,
@@ -28,6 +29,7 @@ import {
   QA_ESCALATED_NODE_BUDGET,
   type QaAssertionDecision,
   type QaReobserve,
+  type QaRetriedDecision,
 } from './assertions.ts';
 
 export interface ReplayRunOptions {
@@ -68,7 +70,16 @@ class QaCodeError extends Error {
 
 /** The failure code an error carries, when it carries one. */
 function failureCodeFor(error: unknown): string | undefined {
-  return error instanceof QaCodeError ? error.code : undefined;
+  if (error instanceof QaCodeError) return error.code;
+  // Driver-issued errors (the browser driver's DriverIssue) carry a
+  // structured code (REF_INVALID / REF_EXPIRED / TARGET_CHANGED / ...): it
+  // must survive into the report, so a driver refusal is never read as an
+  // ordinary assertion failure or a "not found".
+  if (error instanceof Error) {
+    const code = (error as Error & { code?: unknown }).code;
+    if (typeof code === 'string' && code !== '') return code;
+  }
+  return undefined;
 }
 
 /** Human-readable spelling of an action-target predicate, for failure messages. */
@@ -78,6 +89,90 @@ function describeTarget(target: QaNodePredicate): string {
   if (target.name !== undefined) parts.push('name "' + target.name + '"');
   if (target.tag !== undefined) parts.push('tag "' + target.tag + '"');
   return parts.length === 0 ? 'no fields' : parts.join(', ');
+}
+
+/**
+ * Observe WITHIN the container an assertion is scoped to (browser driver
+ * contract v8). The container is resolved in the WHOLE-PAGE view by UNIQUE
+ * predicate — an ambiguous container is refused with the existing
+ * TARGET_NOT_UNIQUE vocabulary, never guessed — and the scoped read is
+ * SETTLED like every other verification observation. A driver refusal on
+ * the scoped read (REF_INVALID / REF_EXPIRED / TARGET_CHANGED / ...)
+ * propagates as itself, never degraded into a "not found".
+ *
+ * The container itself has the same blind spot as an action target: it can
+ * fall outside a truncated whole-page window, so the resolution escalates the
+ * node budget ONCE (whole-page, the same settled way as action targets) before
+ * concluding; a still-truncated view that lacks the container fails closed
+ * naming INCONCLUSIVE_TRUNCATED instead of pretending the container is gone.
+ */
+async function observeScopeView(
+  scope: QaScenarioAssertionScope,
+  wholePage: QaObservation,
+  session: QaSession,
+  reobserve: QaReobserve,
+): Promise<QaObservation> {
+  const matchesIn = (view: QaObservation): typeof view.nodes =>
+    view.nodes.filter((node) => matchesNode(node, { role: scope.role, name: scope.name }));
+  let view = wholePage;
+  let matches = matchesIn(view);
+  let escalated = false;
+  if (matches.length === 0 && view.truncated) {
+    try {
+      view = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
+      escalated = true;
+      matches = matchesIn(view);
+    } catch {
+      // No fuller view: fall through and report honestly against the truncated one.
+    }
+  }
+  if (matches.length === 0) {
+    if (view.truncated) {
+      const applied = escalated
+        ? view.maxNodes === undefined
+          ? 'the escalated budget (the driver did not report the budget it applied)'
+          : 'the applied ' + String(view.maxNodes) + '-node escalated budget'
+        : 'the driver-default budget';
+      throw new Error(
+        'no observable node matches the assertion scope, and the view was still truncated at '
+        + applied + ' (' + QA_INCONCLUSIVE_TRUNCATED
+        + '): the container may exist outside the returned window rather than be missing from the page',
+      );
+    }
+    throw new Error(
+      'no observable node matches the assertion scope (role "' + scope.role + '", name "' + scope.name + '")',
+    );
+  }
+  if (matches.length > 1) {
+    throw new QaCodeError(
+      QA_TARGET_NOT_UNIQUE,
+      QA_TARGET_NOT_UNIQUE + ': ' + String(matches.length) + ' nodes match the assertion scope (role "'
+      + scope.role + '", name "' + scope.name + '"); the scoped container is not uniquely identifiable, so the assertion was not decided',
+    );
+  }
+  const container = matches[0];
+  if (container === undefined) {
+    throw new Error('no observable node matches the assertion scope');
+  }
+  const settled = await session.observeSettled({ withinRef: container.ref });
+  if (!settled.stable) {
+    throw new Error(unsettledMessage('scoped', settled.budgetMs));
+  }
+  return settled.observation;
+}
+
+/** Decide one assertion, honoring its optional container scope. */
+async function decideAssertionScoped(
+  assertion: QaScenario['assertions'][number] | QaScenario['steps'][number]['assert'],
+  observation: QaObservation,
+  reobserve: QaReobserve,
+  session: QaSession,
+): Promise<QaRetriedDecision> {
+  if (assertion.scope === undefined) {
+    return decideAssertionWithRetry(assertion, observation, reobserve, session);
+  }
+  const scopedView = await observeScopeView(assertion.scope, observation, session, reobserve);
+  return decideAssertionWithRetry(assertion, scopedView, reobserve, session);
 }
 
 function resolveRef(target: QaNodePredicate, observation: QaObservation): string {
@@ -431,9 +526,11 @@ export async function runScenario(
       };
     }
 
-    for (const step of scenario.steps) {
+    for (let stepIndex = 0; stepIndex < scenario.steps.length; stepIndex += 1) {
       // Fail closed: an unsettled view before the first step proves nothing.
       if (failure !== null) break;
+      const step = scenario.steps[stepIndex];
+      if (step === undefined) continue;
       const base: StepBase = { index: step.index, intent: step.intent, action: step.action };
 
       let resolved: QaAction;
@@ -500,7 +597,23 @@ export async function runScenario(
       // seen the whole view (see decideAssertion). A positive-existence "not
       // found" is retried within the settle budget (see decideAssertionWithRetry)
       // so a slow page's late node/role is not mistaken for absence.
-      const decision = await decideAssertionWithRetry(step.assert, result.observation, reobserve, session);
+      // An assertion carrying a scope (browser contract v8) is decided against
+      // a settled observation WITHIN that container, resolved from this whole-
+      // page view; a driver refusal on the scoped read fails the run as itself.
+      let decision: QaRetriedDecision;
+      try {
+        decision = await decideAssertionScoped(step.assert, result.observation, reobserve, session);
+      } catch (error) {
+        stepResults.push(buildStepResult(base, step.assert, result.receipt, result.outcome, false, null));
+        const code = failureCodeFor(error);
+        failure = {
+          stepIndex: step.index,
+          message: errorMessage(error),
+          ...(code === undefined ? {} : { code }),
+          reproduction: toReproduction(stepResults),
+        };
+        break;
+      }
       if (settleWidened === null && decision.widened !== null) {
         settleWidened = { ...decision.widened, at: step.index };
       }
@@ -518,7 +631,28 @@ export async function runScenario(
           decision.elapsedMs,
         ),
       );
-      current = decision.observation;
+      if (step.assert.scope === undefined) {
+        current = decision.observation;
+      } else if (stepIndex < scenario.steps.length - 1) {
+        // The scoped read consumed the observation the container was
+        // resolved from, so the next action cannot reuse it (its refs are
+        // stale). Take a fresh SETTLED whole-page view; an unsettled one
+        // fails closed exactly like the initial view.
+        const refresh = await session.observeSettled();
+        if (settleWidened === null && refresh.widened !== null) {
+          settleWidened = { ...refresh.widened, at: step.index };
+        }
+        if (!refresh.stable) {
+          failure = {
+            stepIndex: step.index,
+            message: unsettledMessage('post-scoped-assertion', refresh.budgetMs),
+            code: QA_INCONCLUSIVE_UNSTABLE,
+            reproduction: toReproduction(stepResults),
+          };
+          break;
+        }
+        current = refresh.observation;
+      }
       if (!decision.passed) {
         failure = {
           stepIndex: step.index,
@@ -549,7 +683,28 @@ export async function runScenario(
       for (let i = 0; failure === null && i < scenario.assertions.length; i += 1) {
         const assertion = scenario.assertions[i];
         if (assertion === undefined) continue;
-        const decision = await decideAssertionWithRetry(assertion, finalObservation, reobserve, session);
+        let decision: QaRetriedDecision;
+        try {
+          decision = await decideAssertionScoped(assertion, finalObservation, reobserve, session);
+        } catch (error) {
+          const code = failureCodeFor(error);
+          assertionResults.push({
+            kind: assertion.kind,
+            ...(assertion.description === undefined ? {} : { description: assertion.description }),
+            passed: false,
+            expected: assertion.expected,
+            observed: null,
+            ...(assertion.scope === undefined ? {} : { scope: assertion.scope }),
+            ...(code === undefined ? {} : { reason: code }),
+          });
+          failure = {
+            stepIndex: null,
+            message: errorMessage(error),
+            ...(code === undefined ? {} : { code }),
+            reproduction: toReproduction(stepResults),
+          };
+          break;
+        }
         if (settleWidened === null && decision.widened !== null) {
           settleWidened = { ...decision.widened, at: 'final' };
         }
@@ -559,11 +714,33 @@ export async function runScenario(
           passed: decision.passed,
           expected: assertion.expected,
           observed: decision.observed,
+          ...(assertion.scope === undefined ? {} : { scope: assertion.scope }),
           ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
           ...(decision.reason === undefined ? {} : { reason: decision.reason }),
           ...(decision.attempts <= 1 ? {} : { attempts: decision.attempts, elapsedMs: decision.elapsedMs }),
         });
-        finalObservation = decision.observation;
+        if (assertion.scope === undefined) {
+          finalObservation = decision.observation;
+        } else if (i + 1 < scenario.assertions.length) {
+          // Same discipline as the step loop: a scoped read consumes the
+          // view the container was resolved from; refresh whole-page (when
+          // another final assertion still needs it) and fail closed on an
+          // unsettled refresh.
+          const refresh = await session.observeSettled();
+          if (settleWidened === null && refresh.widened !== null) {
+            settleWidened = { ...refresh.widened, at: 'final' };
+          }
+          if (!refresh.stable) {
+            failure = {
+              stepIndex: null,
+              message: unsettledMessage('post-scoped-assertion', refresh.budgetMs),
+              code: QA_INCONCLUSIVE_UNSTABLE,
+              reproduction: toReproduction(stepResults),
+            };
+            break;
+          }
+          finalObservation = refresh.observation;
+        }
         if (!decision.passed) {
           failure = {
             stepIndex: null,
