@@ -1,4 +1,4 @@
-import { QA_INCONCLUSIVE_TRUNCATED, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
+import { QA_COVERAGE_UNVERIFIED, QA_INCONCLUSIVE_TRUNCATED, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
 import type {
   QaObservation,
   QaObservationScope,
@@ -141,6 +141,13 @@ export interface QaAssertionDecision {
  * a node-absent claim can never pass on a truncated observation, and a
  * node-present / node-in-viewport claim that found nothing on one is reported
  * as inconclusive rather than as a plain "not present".
+ *
+ * Coverage rule (QA-BL-052), equally not left to callers: a node-absent
+ * claim can ALSO never pass on a COMPLETE observation whose boundaries the
+ * driver has not verified (coverageVerified !== true) — scoped or whole-page
+ * — because closed shadow roots and unresolved slot assignment can silently
+ * hide nodes from a complete-looking view. It fails closed with
+ * QA_COVERAGE_UNVERIFIED instead of a false "gone".
  */
 export function evaluateAssertion(assertion: QaAssertion, observation: QaObservation): AssertionEval {
   const kind = assertion.kind;
@@ -154,13 +161,29 @@ export function evaluateAssertion(assertion: QaAssertion, observation: QaObserva
     const predicate = assertion.expected as QaNodePredicate;
     const match = observation.nodes.find((node) => matchesNode(node, predicate));
     const found = match !== undefined;
-    // Absence is a claim about the WHOLE view: a truncated view cannot support
-    // it, so it fails closed instead of silently passing.
-    return {
-      passed: !found && !observation.truncated,
-      observed: found ? toObservedNode(match) : null,
-      inconclusive: !found && observation.truncated,
-    };
+    if (found) {
+      // A returned matching node is sound evidence of PRESENCE: the assertion
+      // fails normally (never inconclusive), whatever the coverage state.
+      return { passed: false, observed: toObservedNode(match), inconclusive: false };
+    }
+    if (observation.truncated) {
+      // Absence is a claim about the WHOLE view: a truncated view cannot
+      // support it, so it fails closed instead of silently passing
+      // (INCONCLUSIVE_TRUNCATED semantics, unchanged).
+      return { passed: false, observed: null, inconclusive: true };
+    }
+    if (observation.coverageVerified !== true) {
+      // QA-BL-052 containment (scoped AND whole-page views): a COMPLETE view
+      // still cannot prove absence while the driver has not verified the
+      // observation's boundaries. Closed shadow roots are neither pierced nor
+      // counted and slot assignment may be unresolved, so a complete-looking
+      // view can silently miss nodes — "no observable node matched" is
+      // UNPROVEN, never "absent". The gate is per-observation evidence
+      // (coverageVerified, driver contract v9 Phase C), never a driver
+      // version; no adapter reports it yet, so node-absent cannot pass today.
+      return { passed: false, observed: null, inconclusive: true, reason: QA_COVERAGE_UNVERIFIED };
+    }
+    return { passed: true, observed: null, inconclusive: false };
   }
   if (kind === 'node-in-viewport') {
     const predicate = assertion.expected as QaNodePredicate;
@@ -369,6 +392,15 @@ function completenessDetail(
       + ' budget, but this assertion reads the page URL only and does not depend on node completeness.';
   }
   if (deciding.inconclusive) {
+    if (deciding.reason === QA_COVERAGE_UNVERIFIED) {
+      // QA-BL-052: the view is complete but its boundaries are unverified.
+      // The detail must say, in plain words, that no observable node matched
+      // but the absence is UNPROVEN — never "not present".
+      return escalation + scoped
+        + 'no observable node matched the assertion, but the observation\'s boundaries '
+        + '(closed shadow roots, slot assignment) were not verified, so the absence is UNPROVEN — not "not present". '
+        + 'The driver must report coverageVerified before a node-absent assertion can pass.';
+    }
     return escalation + scoped
       + 'the view was STILL truncated at its ' + budget + ' budget, so "' + kind
       + '" cannot be proven from it: a matching node may exist outside the returned window'
@@ -396,6 +428,11 @@ function completenessDetail(
  * "not present". A re-observation that throws (for example an escalated view
  * that never settled) is not fatal either: the decision falls back to the
  * original view, still fail-closed.
+ *
+ * QA-BL-052: a COMPLETE deciding view whose boundaries are unverified
+ * (coverageVerified !== true) fails a node-absent claim CLOSED with
+ * QA_COVERAGE_UNVERIFIED instead of passing — a bigger budget cannot add
+ * coverage evidence, so no escalation is attempted for it.
  */
 export async function decideAssertion(
   assertion: QaAssertion,
@@ -403,11 +440,13 @@ export async function decideAssertion(
   reobserve: QaReobserve,
 ): Promise<QaAssertionDecision> {
   const first = evaluateAssertion(assertion, observation);
-  if (!observation.truncated && observation.scope === undefined) {
-    // A complete WHOLE-PAGE view decides everything on its own; nothing to
-    // escalate or report. A complete SCOPED view still reports completeness:
-    // its scope must be named, so a container-scoped absence is never read as
-    // a whole-page absence.
+  if (!observation.truncated && observation.scope === undefined && !first.inconclusive) {
+    // A decided complete WHOLE-PAGE view reports nothing to escalate or
+    // explain. A complete SCOPED view still reports completeness: its scope
+    // must be named, so a container-scoped absence is never read as a
+    // whole-page absence — and a coverage-unverified ABSENCE (QA-BL-052) is
+    // inconclusive even on a complete whole-page view, so it falls through
+    // to the completeness block below instead of reporting silently.
     return {
       passed: first.passed,
       observed: first.observed,
@@ -455,16 +494,24 @@ export async function decideAssertion(
   const nodeBudget: number | null = deciding.maxNodes ?? null;
   const priorBudget: number | null = observation.maxNodes ?? null;
 
+  // QA-BL-052: an inconclusive evaluation is either a still-truncated view
+  // (INCONCLUSIVE_TRUNCATED) or a complete-but-unverified one
+  // (COVERAGE_UNVERIFIED); the reason rides in the completeness block so the
+  // report names the ACTUAL cause.
+  const coverageUnverified = evaluation.inconclusive && evaluation.reason === QA_COVERAGE_UNVERIFIED;
+
   const completeness: QaViewCompleteness = {
     truncated: deciding.truncated,
     nodeBudget,
     escalated,
-    outcomeDependsOnCompleteView: evaluation.inconclusive,
+    outcomeDependsOnCompleteView: evaluation.inconclusive && !coverageUnverified,
     ...(deciding.scope === undefined
       ? {}
       : { scope: { role: deciding.scope.role, name: deciding.scope.name } }),
     ...(deciding.truncationReasons === undefined ? {} : { truncationReasons: deciding.truncationReasons }),
-    ...(evaluation.inconclusive ? { reason: QA_INCONCLUSIVE_TRUNCATED } : {}),
+    ...(evaluation.inconclusive
+      ? { reason: coverageUnverified ? QA_COVERAGE_UNVERIFIED : QA_INCONCLUSIVE_TRUNCATED }
+      : {}),
     detail: completenessDetail(
       assertion.kind,
       evaluation,

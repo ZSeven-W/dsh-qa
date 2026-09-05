@@ -19,7 +19,9 @@ import {
   QA_ESCALATED_NODE_BUDGET,
 } from '../src/replay/index.ts'
 import {
+  QA_COVERAGE_UNVERIFIED,
   QA_INCONCLUSIVE_TRUNCATED,
+  QA_SCOPE_NOT_DURABLE,
   QA_TARGET_NOT_UNIQUE,
 } from '../src/contracts.ts'
 
@@ -142,26 +144,50 @@ test('ComputerAdapter refuses a withinRef instead of silently ignoring it', asyn
 // 2. Assertion soundness on scoped views
 // ---------------------------------------------------------------------------
 
-test('node-absent passes on a COMPLETE scoped view (absence is provable inside the container)', () => {
+// CHANGED (QA-BL-052 / Codex Q4, deliberate semantics downgrade): a
+// COMPLETE scoped view can no longer prove absence by itself. Closed shadow
+// roots inside the container and unresolved slot assignment are invisible to
+// the driver's projection, so "nothing matched" is UNPROVEN until the
+// observation carries coverageVerified — scoped AND whole-page views alike.
+test('node-absent on a COMPLETE scoped view is UNPROVEN without verified coverage', () => {
   const scopedComplete = view([], { scope: CONTAINER_SCOPE })
   const result = evaluateAssertion({ kind: 'node-absent', expected: { role: 'link' } }, scopedComplete)
-  assert.equal(result.passed, true, 'nothing matched in a complete container view: provable absence')
+  assert.equal(result.passed, false, 'nothing matched, but the scoped view is unverified: absence is UNPROVEN')
+  assert.equal(result.inconclusive, true)
+  assert.equal(result.reason, QA_COVERAGE_UNVERIFIED)
+})
+
+test('coverageVerified: true restores the node-absent PASS on a COMPLETE scoped view (the v9 restoration path)', () => {
+  const scopedVerified = view([], { scope: CONTAINER_SCOPE, coverageVerified: true })
+  const result = evaluateAssertion({ kind: 'node-absent', expected: { role: 'link' } }, scopedVerified)
+  assert.equal(result.passed, true, 'coverageVerified restores the proven absence inside the container')
   assert.equal(result.inconclusive, false)
 })
 
-test('decideAssertion names the scope whenever the deciding view was scoped, complete or truncated', async () => {
+test('decideAssertion names the scope whenever the deciding view was scoped — and the coverage gate applies there too', async () => {
   const scopedComplete = view([], { scope: CONTAINER_SCOPE })
-  const pass = await decideAssertion(
+  const decision = await decideAssertion(
     { kind: 'node-absent', expected: { role: 'link' } },
     scopedComplete,
     async () => { throw new Error('a complete view must never escalate') },
   )
-  assert.equal(pass.passed, true)
-  assert.ok(pass.completeness !== null, 'a scoped deciding view always carries completeness')
-  assert.deepEqual(pass.completeness.scope, { role: 'region', name: 'Deep container' }, 'the completeness block names the scope')
-  assert.equal(pass.completeness.truncated, false)
-  assert.equal(pass.completeness.reason, undefined)
-  assert.match(pass.completeness.detail, /scoped to the region named "Deep container"/)
+  assert.equal(decision.passed, false, 'unverified scoped view: absence is UNPROVEN')
+  assert.ok(decision.completeness !== null, 'a scoped deciding view always carries completeness')
+  assert.deepEqual(decision.completeness.scope, { role: 'region', name: 'Deep container' }, 'the completeness block names the scope')
+  assert.equal(decision.completeness.truncated, false)
+  assert.equal(decision.completeness.reason, QA_COVERAGE_UNVERIFIED)
+  assert.match(decision.completeness.detail, /scoped to the region named "Deep container"/)
+  assert.match(decision.completeness.detail, /not "not present"/)
+
+  const verified = await decideAssertion(
+    { kind: 'node-absent', expected: { role: 'link' } },
+    view([], { scope: CONTAINER_SCOPE, coverageVerified: true }),
+    async () => { throw new Error('a complete view must never escalate') },
+  )
+  assert.equal(verified.passed, true, 'coverageVerified restores the scoped absence pass')
+  assert.ok(verified.completeness !== null, 'a scoped deciding view always carries completeness')
+  assert.equal(verified.completeness.reason, undefined)
+  assert.deepEqual(verified.completeness.scope, { role: 'region', name: 'Deep container' })
 })
 
 test('node-absent on a TRUNCATED scoped view escalates WITHIN the scope and still fails closed INCONCLUSIVE_TRUNCATED', async () => {
@@ -209,7 +235,10 @@ test('an UNscoped truncated view keeps its exact escalation and INCONCLUSIVE_TRU
   assert.equal(decision.completeness.scope, undefined, 'an unscoped deciding view never names a scope')
 })
 
-test('a scoped decision whose deciding view is COMPLETE does not escalate and passes inside the scope', async () => {
+// CHANGED (QA-BL-052 / Codex Q4): the escalated view is COMPLETE and scoped,
+// but its boundaries are unverified — the absence stays UNPROVEN. The
+// escalation still happens exactly once, within the same scope.
+test('a scoped decision whose deciding view is COMPLETE does not escalate further — and without coverage the absence stays UNPROVEN', async () => {
   const scopedTruncatedFirst = view([node('br-c', 'region', 'Deep container', 'div')], { scope: CONTAINER_SCOPE, truncated: true, maxNodes: 40 })
   const escalationCalls = []
   const decision = await decideAssertion(
@@ -220,8 +249,32 @@ test('a scoped decision whose deciding view is COMPLETE does not escalate and pa
       return view([node('br-c', 'region', 'Deep container', 'div')], { scope: CONTAINER_SCOPE, truncated: false, maxNodes: QA_ESCALATED_NODE_BUDGET })
     },
   )
-  assert.equal(decision.passed, true, 'the complete scoped escalation proves the absence')
+  assert.equal(decision.passed, false, 'complete scoped escalation, unverified coverage: absence is UNPROVEN')
   assert.deepEqual(escalationCalls, [{ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'br-c' }])
+  assert.equal(decision.completeness.reason, QA_COVERAGE_UNVERIFIED)
+  assert.deepEqual(decision.completeness.scope, { role: 'region', name: 'Deep container' })
+  assert.match(decision.completeness.detail, /not "not present"/)
+})
+
+test('coverageVerified on the complete scoped escalation restores the pass inside the scope (the v9 restoration path)', async () => {
+  const scopedTruncatedFirst = view([node('br-c', 'region', 'Deep container', 'div')], { scope: CONTAINER_SCOPE, truncated: true, maxNodes: 40 })
+  const escalationCalls = []
+  const decision = await decideAssertion(
+    { kind: 'node-absent', expected: { role: 'link' } },
+    scopedTruncatedFirst,
+    async (options) => {
+      escalationCalls.push(options)
+      return view([node('br-c', 'region', 'Deep container', 'div')], {
+        scope: CONTAINER_SCOPE,
+        truncated: false,
+        maxNodes: QA_ESCALATED_NODE_BUDGET,
+        coverageVerified: true,
+      })
+    },
+  )
+  assert.equal(decision.passed, true, 'coverageVerified restores the proven scoped absence')
+  assert.deepEqual(escalationCalls, [{ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'br-c' }])
+  assert.equal(decision.completeness.reason, undefined)
   assert.deepEqual(decision.completeness.scope, { role: 'region', name: 'Deep container' })
 })
 
@@ -263,16 +316,35 @@ test('the loader accepts a scope predicate on an assertion and rejects malformed
   })
   assert.deepEqual(valid.scope, { role: 'region', name: 'Deep container' })
 
+  // CHANGED (QA-BL-054): an empty accessible NAME is a legitimate exact-match
+  // predicate value (unnamed containers are the common case) and is kept
+  // literally; the loader no longer rejects it.
+  const emptyName = validateAssertion({
+    kind: 'node-absent',
+    expected: { role: 'button', name: 'x' },
+    scope: { role: 'region', name: '' },
+  })
+  assert.deepEqual(emptyName.scope, { role: 'region', name: '' })
+
+  // CHANGED (QA-BL-054): an optional tag may disambiguate the container
+  // predicate ("role+name, plus tag when needed"); the loader accepts it.
+  const withTag = validateAssertion({
+    kind: 'node-absent',
+    expected: { role: 'button', name: 'x' },
+    scope: { role: 'region', name: 'x', tag: 'div' },
+  })
+  assert.deepEqual(withTag.scope, { role: 'region', name: 'x', tag: 'div' })
+
   assert.throws(
     () => validateAssertion({ kind: 'node-absent', expected: { role: 'button' }, scope: { role: 'region' } }),
     ScenarioValidationError,
   )
   assert.throws(
-    () => validateAssertion({ kind: 'node-absent', expected: { role: 'button' }, scope: { role: 'region', name: 'x', tag: 'div' } }),
+    () => validateAssertion({ kind: 'node-absent', expected: { role: 'button' }, scope: { role: '', name: 'x' } }),
     ScenarioValidationError,
   )
   assert.throws(
-    () => validateAssertion({ kind: 'node-absent', expected: { role: 'button' }, scope: { role: '', name: 'x' } }),
+    () => validateAssertion({ kind: 'node-absent', expected: { role: 'button' }, scope: { role: 'region', name: 'x', tag: '' } }),
     ScenarioValidationError,
   )
   assert.throws(
@@ -311,11 +383,16 @@ test('a scenario whose assertions carry scope round-trips through validateScenar
 // 4. Export records the scope the explorer used
 // ---------------------------------------------------------------------------
 
+// CHANGED (QA-BL-054): a scoped proof exports its scope ONLY when the
+// container predicate is unique in a COMPLETE recorded baseline observation,
+// so the happy-path baseline below is complete (truncated:false). The
+// truncated/ambiguous baselines now pin SCOPE_NOT_DURABLE exclusions in their
+// own tests.
 const wholeBefore = () => view([
   node('br-c', 'region', 'Deep container', 'div'),
   node('br-a', 'button', 'anchor', 'button'),
   node('br-s', 'status', 'IDLE', 'div'),
-], { truncated: true })
+], { truncated: false })
 
 const scopedAfter = () => view([
   node('br-c', 'region', 'Deep container', 'div'),
@@ -386,12 +463,104 @@ test('export notes a scoped PRECEDING observation on the step intent instead of 
 })
 
 // ---------------------------------------------------------------------------
+// 4b. QA-BL-054: a scope is exported only when its predicate is unique in a
+//     COMPLETE recorded baseline observation — never silently dropped.
+// ---------------------------------------------------------------------------
+
+test('an empty-name container scope is kept LITERALLY when unique in a complete baseline (QA-BL-054)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-scoped-export-empty-name-'))
+  try {
+    const before = view([
+      node('br-c', 'region', '', 'div'),
+      node('br-a', 'button', 'anchor', 'button'),
+      node('br-s', 'status', 'IDLE', 'div'),
+    ], { truncated: false })
+    const after = view([
+      node('br-c', 'region', '', 'div'),
+      node('br-a', 'button', 'anchor', 'button'),
+      node('br-s', 'status', 'READY', 'div'),
+    ], { scope: { ref: 'br-c', role: 'region', name: '', tag: 'div' }, truncated: false })
+    const exported = await exportScopedStep(dir, before, after)
+    assert.equal(exported.ok, true, JSON.stringify(exported))
+    assert.deepEqual(
+      exported.scenario.steps[0].assert.scope,
+      { role: 'region', name: '' },
+      'the empty name is a legitimate predicate value and must be kept literally, never dropped',
+    )
+    assert.deepEqual(exported.scenario.assertions[0].scope, { role: 'region', name: '' })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a scoped proof whose baseline was TRUNCATED is excluded with SCOPE_NOT_DURABLE (uniqueness unproven)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-scoped-export-truncated-baseline-'))
+  try {
+    const exported = await exportScopedStep(dir, view([
+      node('br-c', 'region', 'Deep container', 'div'),
+      node('br-a', 'button', 'anchor', 'button'),
+      node('br-s', 'status', 'IDLE', 'div'),
+    ], { truncated: true }), scopedAfter())
+    assert.equal(exported.ok, false, 'the scope cannot be proven durable from a truncated baseline')
+    assert.equal(exported.excludedActions.length, 1, JSON.stringify(exported.excludedActions))
+    assert.equal(exported.excludedActions[0].reason, QA_SCOPE_NOT_DURABLE)
+    assert.match(exported.excludedActions[0].detail, /truncated at the driver node budget/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a scoped proof whose container is AMBIGUOUS in the baseline is excluded with SCOPE_NOT_DURABLE', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-scoped-export-ambiguous-'))
+  try {
+    const before = view([
+      node('br-c', 'region', 'Deep container', 'div'),
+      node('br-c2', 'region', 'Deep container', 'div'),
+      node('br-a', 'button', 'anchor', 'button'),
+      node('br-s', 'status', 'IDLE', 'div'),
+    ], { truncated: false })
+    const exported = await exportScopedStep(dir, before, scopedAfter())
+    assert.equal(exported.ok, false, 'an ambiguous container is never exported as durable')
+    assert.equal(exported.excludedActions[0].reason, QA_SCOPE_NOT_DURABLE)
+    assert.match(exported.excludedActions[0].detail, /matches 2 nodes/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('role+name ambiguous but role+name+tag unique exports the scope WITH the tag (plus tag when needed)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-scoped-export-tag-'))
+  try {
+    const before = view([
+      node('br-c', 'region', 'Deep container', 'div'),
+      node('br-c2', 'region', 'Deep container', 'section'),
+      node('br-a', 'button', 'anchor', 'button'),
+      node('br-s', 'status', 'IDLE', 'div'),
+    ], { truncated: false })
+    const exported = await exportScopedStep(dir, before, scopedAfter())
+    assert.equal(exported.ok, true, JSON.stringify(exported))
+    assert.deepEqual(
+      exported.scenario.steps[0].assert.scope,
+      { role: 'region', name: 'Deep container', tag: 'div' },
+      'the scope echo tag disambiguates the container predicate',
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // 5. Replay: scope resolution, refusals, and the export -> replay round trip
 // ---------------------------------------------------------------------------
 
 function scopedPageAdapter(extra = {}) {
   let clicked = false
   let observed = 0
+  // CHANGED (QA-BL-054): the whole-page view is now COMPLETE. Replay only
+  // resolves a scope container against a view where its uniqueness is proven
+  // (a complete view with exactly one match); a truncated view escalates once
+  // and a still-truncated one is refused (pinned by the dedicated tests
+  // below). These synthetic adapters model the proven case directly.
   const wholePage = () => ({
     page: { url: LAUNCH, title: 'scoped fixture' },
     nodes: [
@@ -403,7 +572,7 @@ function scopedPageAdapter(extra = {}) {
       node('br-a', 'button', 'anchor', 'button'),
       node('br-s', 'status', clicked ? 'READY' : 'IDLE', 'div'),
     ],
-    truncated: true,
+    truncated: false,
   })
   const scoped = () => ({
     page: { url: LAUNCH, title: 'scoped fixture' },
@@ -612,4 +781,83 @@ test('a scope container still missing after the escalation fails closed naming I
   assert.notEqual(report.status, 'pass')
   assert.match(report.failure?.message ?? '', /no observable node matches the assertion scope, and the view was still truncated/)
   assert.match(report.failure?.message ?? '', /INCONCLUSIVE_TRUNCATED/)
+})
+
+/** A page whose scope container matches ONCE in a truncated whole-page view. */
+function oneMatchTruncatedAdapter(extra = {}) {
+  let clicked = false
+  let escalatedReads = 0
+  // The DEFAULT whole-page view is truncated and returns the container ONCE
+  // (uniqueness unproven, QA-BL-054). The ESCALATED read completes the view —
+  // unless stillTruncated pins the refusal case, where it stays truncated.
+  const whole = (escalated) => ({
+    page: { url: LAUNCH, title: 'scoped fixture' },
+    nodes: [
+      node('br-c', 'region', 'Deep container', 'div'),
+      node('br-a', 'button', 'anchor', 'button'),
+      node('br-s', 'status', clicked ? 'READY' : 'IDLE', 'div'),
+    ],
+    truncated: extra.stillTruncated === true ? true : !escalated,
+  })
+  return {
+    adapter: {
+      kind: 'browser',
+      async start(_owner, options) {
+        return { page: { url: options?.url ?? LAUNCH, title: 'scoped fixture' }, headless: true }
+      },
+      async observe(_owner, options) {
+        if (options?.withinRef !== undefined) {
+          return {
+            page: { url: LAUNCH, title: 'scoped fixture' },
+            scope: { ref: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
+            nodes: [
+              node('br-c', 'region', 'Deep container', 'div'),
+              node('br-a', 'button', 'anchor', 'button'),
+              node('br-s', 'status', clicked ? 'READY' : 'IDLE', 'div'),
+            ],
+            truncated: false,
+          }
+        }
+        if (options?.maxNodes === QA_ESCALATED_NODE_BUDGET) escalatedReads += 1
+        return whole(options?.maxNodes === QA_ESCALATED_NODE_BUDGET)
+      },
+      async act(_owner, action) {
+        if (action.kind === 'click') clicked = true
+        return { status: 'confirmed', dispatched: true }
+      },
+      async evidence() {
+        return { console: [], network: [], bounded: true, dropped: { console: 0, network: 0 } }
+      },
+      async stop() { return { stopped: true, reason: 'requested' } },
+    },
+    escalatedReads: () => escalatedReads,
+  }
+}
+
+test('one container match in a TRUNCATED whole-page view escalates ONCE — uniqueness is unproven there (QA-BL-054)', async () => {
+  const { adapter, escalatedReads } = oneMatchTruncatedAdapter()
+  const report = await runScenario(validateScenario(SCOPED_SCENARIO), adapter, {
+    ownerId: 'scoped-one-match-escalate',
+    settle: SETTLE,
+  })
+  assert.equal(report.status, 'pass', JSON.stringify(report))
+  assert.ok(escalatedReads() >= 2, 'the truncated whole-page view must be re-read at the bounded budget: ' + String(escalatedReads()))
+  assert.deepEqual(report.steps[0].completeness?.scope, { role: 'region', name: 'Deep container' })
+})
+
+test('one container match in a STILL-truncated escalated view refuses with INCONCLUSIVE_TRUNCATED naming the scope (QA-BL-054)', async () => {
+  // CHANGED (QA-BL-054): one match in a truncated view is NOT proven
+  // uniqueness — a twin may sit outside the returned window. The runner
+  // refuses instead of scoping into a container it cannot identify, and the
+  // refusal names the scope and the code.
+  const { adapter } = oneMatchTruncatedAdapter({ stillTruncated: true })
+  const report = await runScenario(validateScenario(SCOPED_SCENARIO), adapter, {
+    ownerId: 'scoped-one-match-still-truncated',
+    settle: SETTLE,
+  })
+  assert.notEqual(report.status, 'pass')
+  assert.match(report.failure?.message ?? '', /one observable node matches the assertion scope/)
+  assert.match(report.failure?.message ?? '', /Deep container/, 'the refusal names the scope')
+  assert.match(report.failure?.message ?? '', /INCONCLUSIVE_TRUNCATED/)
+  assert.match(report.failure?.message ?? '', /twin container may exist outside the returned window/)
 })

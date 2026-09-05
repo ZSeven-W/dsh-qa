@@ -19,7 +19,7 @@ import {
 import { QaSession, QaSessionManager } from '../src/session/index.ts'
 import { writeReports } from '../src/reporters/index.ts'
 import { createQaTools, QaToolHost } from '../src/tools.ts'
-import { QA_INCONCLUSIVE_TRUNCATED } from '../src/contracts.ts'
+import { QA_COVERAGE_UNVERIFIED, QA_INCONCLUSIVE_TRUNCATED } from '../src/contracts.ts'
 
 // Truncation soundness suite.
 //
@@ -72,6 +72,7 @@ function budgetAdapter(options = {}) {
     driverMax = 100,
     withDeep = true,
     inViewport = true,
+    coverageVerified = false,
   } = options
   const observed = []
   let revealed = false
@@ -111,6 +112,9 @@ function budgetAdapter(options = {}) {
         // names — exactly the shape the real browser driver reports.
         maxNodes: budget,
         ...(truncated ? { truncationReasons: ['node-budget-exceeded'] } : {}),
+        // Affirmative coverage evidence (driver contract v9, Phase C); the
+        // restoration-path tests turn this on to pin the future pass.
+        ...(coverageVerified ? { coverageVerified: true } : {}),
       }
     },
     async act(_owner, action) {
@@ -167,9 +171,25 @@ test('node-absent can never pass on a truncated observation', () => {
   assert.equal(onTruncated.inconclusive, true)
   assert.equal(onTruncated.observed, null)
 
+  // CHANGED (QA-BL-052 / Codex Q4): a complete view no longer proves
+  // absence by itself. The observation's boundaries (closed shadow roots,
+  // slot assignment) must be VERIFIED first — until then the absence is
+  // UNPROVEN and fails closed with QA_COVERAGE_UNVERIFIED, never a false
+  // "gone".
   const onComplete = evaluateAssertion({ kind: 'node-absent', expected: DEEP }, completeView)
-  assert.equal(onComplete.passed, true, 'a complete view still proves absence')
-  assert.equal(onComplete.inconclusive, false)
+  assert.equal(onComplete.passed, false, 'a complete but UNVERIFIED view cannot prove absence')
+  assert.equal(onComplete.inconclusive, true)
+  assert.equal(onComplete.reason, QA_COVERAGE_UNVERIFIED)
+
+  // The restoration path: per-observation affirmative coverage evidence
+  // brings back the proven absence (pinned here, provided by the driver in
+  // contract v9 Phase C).
+  const onVerifiedComplete = evaluateAssertion(
+    { kind: 'node-absent', expected: DEEP },
+    { ...completeView, coverageVerified: true },
+  )
+  assert.equal(onVerifiedComplete.passed, true, 'coverageVerified restores the proven absence on a complete view')
+  assert.equal(onVerifiedComplete.inconclusive, false)
 })
 
 test('a match in a truncated view is still sound evidence of presence', () => {
@@ -266,16 +286,43 @@ test('an absent-claim escalates once and then fails correctly when the node exis
   assert.equal(decision.completeness.reason, undefined, 'a decided outcome is not inconclusive')
 })
 
-test('a genuinely absent node passes once the escalated view is complete', async () => {
+// CHANGED (QA-BL-052 / Codex Q4, deliberate semantics downgrade): the
+// escalated view is COMPLETE, but the driver never verified its boundaries,
+// so the genuinely absent node is still UNPROVEN. The decision fails closed
+// with QA_COVERAGE_UNVERIFIED and a detail that says so in plain words.
+test('a genuinely absent node on a complete escalated view is still UNPROVEN without verified coverage', async () => {
   const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div')], false, { maxNodes: 100 }))
   const decision = await decideAssertion({ kind: 'node-absent', expected: DEEP }, view([], true, { maxNodes: 60 }), reobserve)
 
   assert.deepEqual(calls, [QA_ESCALATED_NODE_BUDGET])
-  assert.equal(decision.passed, true)
+  assert.equal(decision.passed, false, 'absence on an unverified view is UNPROVEN')
   assert.equal(decision.observed, null)
   assert.equal(decision.completeness.escalated, true)
   assert.equal(decision.completeness.truncated, false)
   assert.equal(decision.completeness.nodeBudget, 100, 'the applied budget is reported, never the requested 500')
+  assert.equal(decision.completeness.reason, QA_COVERAGE_UNVERIFIED)
+  assert.equal(
+    decision.completeness.outcomeDependsOnCompleteView,
+    false,
+    'the view WAS complete: what is missing is coverage verification, not nodes',
+  )
+  assert.match(decision.completeness.detail, /no observable node matched/)
+  assert.match(decision.completeness.detail, /closed shadow roots, slot assignment/)
+  assert.match(decision.completeness.detail, /UNPROVEN/)
+  assert.match(decision.completeness.detail, /not "not present"/)
+})
+
+test('coverageVerified: true on the escalated observation RESTORES the proven absence (the v9 restoration path)', async () => {
+  const verifiedFuller = view([node('a', 'status', 'IDLE', 'div')], false, { maxNodes: 100, coverageVerified: true })
+  const { calls, reobserve } = escalator(verifiedFuller)
+  const decision = await decideAssertion({ kind: 'node-absent', expected: DEEP }, view([], true, { maxNodes: 60 }), reobserve)
+
+  assert.deepEqual(calls, [QA_ESCALATED_NODE_BUDGET])
+  assert.equal(decision.passed, true, 'coverageVerified restores the proven absence')
+  assert.equal(decision.completeness.escalated, true)
+  assert.equal(decision.completeness.truncated, false)
+  assert.equal(decision.completeness.nodeBudget, 100)
+  assert.equal(decision.completeness.reason, undefined, 'a decided outcome is not inconclusive')
   assert.equal(decision.completeness.outcomeDependsOnCompleteView, false)
 })
 
@@ -312,9 +359,26 @@ test('a present-claim that already found its match never escalates', async () =>
   assert.equal(url.passed, true)
   assert.match(url.completeness.detail, /does not depend on node completeness/)
 
+  // CHANGED (QA-BL-052 / Codex Q4): a complete whole-page view without
+  // verified coverage can no longer prove absence, and that inconclusive
+  // outcome now carries a completeness block so the reason is visible.
   const complete = await decideAssertion({ kind: 'node-absent', expected: DEEP }, view([], false), reobserve)
-  assert.equal(complete.passed, true)
-  assert.equal(complete.completeness, null, 'a complete view needs no truncation context')
+  assert.equal(complete.passed, false, 'unverified boundaries: absence is UNPROVEN')
+  assert.ok(complete.completeness !== null, 'the coverage refusal is reported, not silent')
+  assert.equal(complete.completeness.reason, QA_COVERAGE_UNVERIFIED)
+  assert.equal(complete.completeness.truncated, false)
+  assert.equal(complete.completeness.escalated, false)
+  assert.match(complete.completeness.detail, /not "not present"/)
+
+  // The restoration path: with affirmative coverage evidence the complete
+  // view decides the absence and needs no completeness context at all.
+  const verifiedComplete = await decideAssertion(
+    { kind: 'node-absent', expected: DEEP },
+    view([], false, { coverageVerified: true }),
+    reobserve,
+  )
+  assert.equal(verifiedComplete.passed, true, 'coverageVerified restores the pass on a complete whole-page view')
+  assert.equal(verifiedComplete.completeness, null, 'a decided complete view needs no truncation context')
 
   assert.deepEqual(calls, [], 'evidence of presence is sound; nothing to escalate')
 })
@@ -360,9 +424,14 @@ test('QA-BL-043: a same-budget escalation reports the driver maximum and never t
 test('QA-BL-043: a wider applied budget names both numbers in the detail', async () => {
   const { calls, reobserve } = escalator(view([node('a', 'status', 'IDLE', 'div')], false, { maxNodes: 100 }))
   const decision = await decideAssertion({ kind: 'node-absent', expected: DEEP }, view([], true, { maxNodes: 60 }), reobserve)
-  assert.equal(decision.passed, true)
+  // CHANGED (QA-BL-052 / Codex Q4): the escalated view is complete but its
+  // boundaries are unverified, so the absence stays UNPROVEN; the detail
+  // still names both budgets and now the unverified-boundaries cause.
+  assert.equal(decision.passed, false, 'unverified coverage: absence cannot pass')
+  assert.equal(decision.completeness.reason, QA_COVERAGE_UNVERIFIED)
   assert.equal(decision.completeness.nodeBudget, 100, 'the APPLIED budget is reported')
   assert.match(decision.completeness.detail, /applied 100 nodes instead of the prior 60/, 'the detail names the applied and the prior budget')
+  assert.match(decision.completeness.detail, /closed shadow roots, slot assignment/)
   assert.equal(decision.completeness.truncationReasons, undefined, 'a complete deciding view carries no reasons')
 })
 
@@ -436,6 +505,50 @@ test('QA-BL-044: the qa_assert tool result carries truncationReasons and the app
   }
 })
 
+test('QA-BL-052: the qa_assert tool result surfaces COVERAGE_UNVERIFIED on a complete unverified view', async () => {
+  const owner = 'coverage-tool'
+  const adapter = {
+    kind: 'browser',
+    async start() { return { page: { url: LAUNCH, title: 'coverage fixture' }, headless: true } },
+    async observe() {
+      return {
+        page: { url: LAUNCH, title: 'coverage fixture' },
+        nodes: [node('n-status', 'status', 'IDLE', 'div')],
+        truncated: false,
+      }
+    },
+    async act() { return { status: 'confirmed', dispatched: true } },
+    async evidence() { return { console: [], network: [], bounded: true, dropped: { console: 0, network: 0 } } },
+    async stop() { return { stopped: true, reason: 'requested' } },
+  }
+  const recorder = new QaTrajectoryRecorder()
+  const manager = new QaSessionManager(new RecordingQaDriverAdapter(adapter, recorder), { settle: SETTLE })
+  const host = new QaToolHost({ settle: SETTLE })
+  host.managerFor = async () => manager
+  host.managerForOwner = async () => manager
+  const tools = createQaTools(host)
+  try {
+    await tools.qaSessionStart.execute({ owner, driver: 'browser', url: LAUNCH }, {})
+    const result = await tools.qaAssert.execute(
+      { owner, kind: 'node-absent', expected: { role: 'button', name: 'Nowhere' } },
+      { agent: { id: 'coverage-tool-agent' } },
+    )
+    // The view is COMPLETE, so the absence can no longer pass: the tool result
+    // must carry the new machine code and the honest detail — never a false
+    // "absent".
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(result.passed, false)
+    assert.equal(result.inconclusive, true)
+    assert.equal(result.code, QA_COVERAGE_UNVERIFIED)
+    assert.equal(result.completeness.reason, QA_COVERAGE_UNVERIFIED)
+    assert.equal(result.completeness.truncated, false)
+    assert.match(result.completeness.detail, /closed shadow roots, slot assignment/)
+    assert.match(result.completeness.detail, /not "not present"/)
+  } finally {
+    await host.dispose()
+  }
+})
+
 // ---------------------------------------------------------------------------
 // 3. The replay runner: the false pass, and the recovery.
 // ---------------------------------------------------------------------------
@@ -473,7 +586,11 @@ test('an unprovable absence is reported as INCONCLUSIVE, not as an ordinary fail
   assert.match(report.failure.message, /may exist outside the returned window/)
 })
 
-test('a genuinely absent node still passes after escalation', async () => {
+// CHANGED (QA-BL-052 / Codex Q4): the runner can no longer produce a PASS
+// for a genuinely absent node — the escalated view is complete but the
+// driver never verified its boundaries, so the run fails closed with the
+// new reason code and the honest detail.
+test('a genuinely absent node after escalation is still UNPROVEN without verified coverage', async () => {
   const adapter = budgetAdapter({ total: 80, deepAt: 70 })
   const report = await runScenario(
     scenario([REVEAL_STEP], [{ kind: 'node-absent', expected: { role: 'button', name: 'Never rendered' } }]),
@@ -481,10 +598,29 @@ test('a genuinely absent node still passes after escalation', async () => {
     { ownerId: 'truncation-true-absence', settle: SETTLE },
   )
 
-  assert.equal(report.status, 'pass')
+  assert.notEqual(report.status, 'pass', 'an unverified absence must never pass the run')
+  assert.equal(report.assertions[0].passed, false)
+  assert.equal(report.assertions[0].completeness.escalated, true)
+  assert.equal(report.assertions[0].completeness.truncated, false)
+  assert.equal(report.assertions[0].completeness.reason, QA_COVERAGE_UNVERIFIED)
+  assert.equal(report.assertions[0].reason, QA_COVERAGE_UNVERIFIED)
+  assert.match(report.assertions[0].completeness?.detail ?? '', /closed shadow roots, slot assignment/)
+  assert.match(report.failure?.message ?? '', new RegExp(QA_COVERAGE_UNVERIFIED))
+})
+
+test('coverageVerified on the driver restores the genuinely-absent PASS (the v9 restoration path)', async () => {
+  const adapter = budgetAdapter({ total: 80, deepAt: 70, coverageVerified: true })
+  const report = await runScenario(
+    scenario([REVEAL_STEP], [{ kind: 'node-absent', expected: { role: 'button', name: 'Never rendered' } }]),
+    adapter,
+    { ownerId: 'truncation-verified-absence', settle: SETTLE },
+  )
+
+  assert.equal(report.status, 'pass', JSON.stringify(report.failure))
   assert.equal(report.assertions[0].passed, true)
   assert.equal(report.assertions[0].completeness.escalated, true)
   assert.equal(report.assertions[0].completeness.truncated, false)
+  assert.equal(report.assertions[0].completeness.reason, undefined)
 })
 
 test('a target outside the initial budget is found by escalation (the scroll scenario)', async () => {

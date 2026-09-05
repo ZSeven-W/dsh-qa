@@ -3,8 +3,10 @@
 // Contracts remain the shared type vocabulary every package compiles against.
 export {
   QA_ADVISORY_REASONING_TRUST,
+  QA_COVERAGE_UNVERIFIED,
   QA_DRIVERS,
   QA_INCONCLUSIVE_TRUNCATED,
+  QA_SCOPE_NOT_DURABLE,
   QA_TOOL_NAMES,
   type QaAdvisoryReasoningTrust,
   type QaInconclusiveReason,

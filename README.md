@@ -129,6 +129,18 @@ The replay runner resolves action targets the same way, and the exporter records
 a truncated proof observation as a `Weak proof:` note in the step intent. Full
 rationale: `docs/TRUNCATION.md`.
 
+**Absence passes are SUSPENDED (QA-BL-052).** `node-absent` means "no
+driver-OBSERVABLE semantic node" — the driver's projection excludes hidden and
+zero-rect elements — and even a COMPLETE view (scoped or whole-page) cannot
+currently prove an absence: closed shadow roots are neither pierced nor
+counted and slot assignment may be unresolved, so a complete-looking view can
+silently miss nodes. Until the deciding observation carries
+`coverageVerified: true` (the driver's coverage probe, contract v9 Phase C —
+no adapter reports it yet), an otherwise-passing absence fails closed with
+`completeness.reason: "COVERAGE_UNVERIFIED"` and a detail saying the absence
+is UNPROVEN, not "not present". A returned matching node still fails
+`node-absent` normally, and `INCONCLUSIVE_TRUNCATED` semantics are unchanged.
+
 ## Scoped observation (browser driver contract v8)
 
 The browser clamp stays at 100 nodes while real pages exceed it, so `qa_observe`
@@ -136,23 +148,30 @@ accepts `within_ref` — an opaque ref from the caller's CURRENT observation —
 observes only the composed subtree rooted at that element. Budgets, the byte
 ceiling, the scan window, and the iframe marker become **subtree-relative**: a
 container whose subtree fits reports `truncated: false` with no
-`truncationReasons`, which makes `node-absent` **provable inside that container**
-and a deep target unreachable in the whole-page window reachable. The
-observation's `scope` field (`{ ref, role, name, tag }`) echoes the root the
-driver observed; whole-page observations carry none. An unknown, expired,
+`truncationReasons`, and a deep target unreachable in the whole-page window
+becomes reachable. Scoping does NOT currently make `node-absent` pass: absence
+stays UNPROVEN until the observation carries `coverageVerified` (see above).
+The observation's `scope` field (`{ ref, role, name, tag }`) echoes the root
+the driver observed; whole-page observations carry none. An unknown, expired,
 consumed, non-element, or detached ref refuses the call with its driver code
 (`REF_UNKNOWN` / `REF_EXPIRED` / `TARGET_CHANGED` / …) — never a whole-page
 fallback, never a "not found". The computer driver does not support scoping and
 refuses `within_ref`.
 
 Scoped observations flow into Replay: a scenario assertion may carry
-`scope: { role, name }`; the runner resolves that container in the whole-page
-view by UNIQUE predicate (`TARGET_NOT_UNIQUE` when ambiguous, never a guess),
-observes within it, and decides the assertion against that scoped view. The
-`completeness` block names the scope when the deciding view was scoped, so
-"absent from this container" is never read as "absent from the whole page",
-and export records a scoped proof as a scoped assertion — never as if it were a
-whole-page proof. See `docs/TRUNCATION.md`.
+`scope: { role, name, tag? }` (an empty name kept literally); the runner
+resolves that container in the whole-page view by UNIQUE predicate
+(`TARGET_NOT_UNIQUE` when ambiguous, never a guess), and one match in a
+TRUNCATED whole-page view is not proven uniqueness — it escalates the budget
+once and refuses a still-truncated view with `INCONCLUSIVE_TRUNCATED` naming
+the scope. It then observes within the container and decides the assertion
+against that scoped view. The `completeness` block names the scope when the
+deciding view was scoped, so "absent from this container" is never read as
+"absent from the whole page" — and since QA-BL-052 neither passes until the
+driver verifies coverage. Export records a scoped proof as a scoped assertion
+ONLY when the container predicate is unique in a COMPLETE recorded baseline
+observation; otherwise the step is excluded with `SCOPE_NOT_DURABLE` — never
+silently exported as a whole-page proof. See `docs/TRUNCATION.md`.
 
 ## Visual assertions (advisory)
 

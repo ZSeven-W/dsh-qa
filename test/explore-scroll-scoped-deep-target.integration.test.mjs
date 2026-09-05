@@ -1,23 +1,19 @@
-// QA-BL-050 closed loop against a REAL headless Chrome: a page whose unique
-// scroll target sits beyond the driver's CLAMPED 100-node whole-page window
-// (so no whole-page budget — not even the record-time escalation at
-// QA_ESCALATED_NODE_BUDGET — can ever return it) but inside a container that
-// IS inside the default window. The pre-fix defect: the one whole-page
-// re-observation #escalateScrollProof takes is clamped to 100 nodes, the
-// target at emitted position 102 is never returned no matter the budget, and
-// the scroll step is excluded (NO_PROVEN_STEPS) — the scenario is impossible
-// to export today. The fix: when the settled whole-page proof view is
-// truncated and lacks the target in the viewport, the escalation prefers a
-// SCOPED read rooted at the scroll target's nearest suitable container (the
-// region at position 42), whose subtree (61 nodes) fits the subtree budget
-// COMPLETELY. The exported scenario's scroll step then asserts
-// node-in-viewport carrying the container scope, and replay passes twice
-// deterministically.
+// QA-BL-050 -> QA-BL-055 (pinned exclusion until contract v9 identity
+// anchor — QA-BL-055): the SCOPED record-time escalation that used to prove a
+// deep scroll target (whole-page position 102) was RETIRED because a
+// container-heuristic root plus a same-identity twin can satisfy the proof
+// without the acted element actually being inside the container. The
+// whole-page escalation (QA-BL-045/047) remains, and it cannot reach the
+// target (the driver clamps maxNodes to 100). This real-browser test now pins
+// the HONEST outcome: the deep target is NOT proven, qa_act shows NO
+// proofEscalated, and export EXCLUDES the scroll step with the scroll-specific
+// detail (NO_PROVEN_STEPS). The fixture STAYS so Phase B (contract v9 identity
+// anchor, QA-BL-055) can restore the capability with identity-safe evidence.
 //
 // Explore flow: whole-page observe (find the container) -> scoped observe
 // within the container (find the target's ref) -> scroll to the ref -> the
-// recording session takes exactly ONE SCOPED escalated read and records it as
-// the proof -> export -> replay twice.
+// whole-page escalation fails to return the target -> the settled observation
+// stays the proof -> export excludes the scroll step.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -27,7 +23,6 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { discoverInstalledBrowser } from '@zseven-w/dsh-browser'
-import { loadScenarioFromPath } from '../src/replay/index.ts'
 import { createQaTools, QaToolHost } from '../src/tools.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -44,7 +39,7 @@ async function listen(server) {
   return server.address().port
 }
 
-test('explore a container-scoped deep scroll target -> scoped node-in-viewport step -> replay PASS twice', { timeout: 300_000 }, async (t) => {
+test('deep scroll target beyond the whole-page clamp -> pinned exclusion until the v9 identity anchor (QA-BL-055)', { timeout: 300_000 }, async (t) => {
   try {
     await discoverInstalledBrowser()
   } catch (error) {
@@ -75,7 +70,7 @@ test('explore a container-scoped deep scroll target -> scoped node-in-viewport s
     // 1. The defect precondition, observed for real: NO whole-page budget can
     //    return the target. The default window is truncated without it, and
     //    the clamped 100-node window is truncated without it too — this is the
-    //    case the whole-page escalation can never prove.
+    //    case the (now whole-page-only) escalation can never prove.
     const initial = await call(tools.qaObserve, { owner })
     assert.equal(initial.truncated, true, 'the fixture must exceed the default 60-node budget')
     assert.equal(
@@ -110,83 +105,44 @@ test('explore a container-scoped deep scroll target -> scoped node-in-viewport s
     assert.ok(target, 'the scoped view returns the unique target')
     assert.equal(target.inViewport, false, 'the target starts below the fold')
 
-    // 3. Scroll to the target's ref: the record-time escalation must take the
-    //    ONE SCOPED read (the whole-page escalation is impossible here), and
-    //    the recorded proof observation must be the scoped one.
+    // 3. Scroll to the target's ref. CHANGED (QA-BL-055): the retired scoped
+    //    escalation is gone, and the ONE whole-page escalation (clamped to
+    //    100 nodes) cannot return the target at position 102 — so the proof is
+    //    NOT escalated and the deep target is NOT proven. qa_act must show no
+    //    proofEscalated and keep the settled whole-page observation.
     const scrolled = await call(tools.qaAct, { owner, action: 'scroll', ref: target.ref })
     assert.equal(scrolled.outcome, 'ok')
     assert.equal(scrolled.receipt.status, 'confirmed')
-    assert.equal(scrolled.proofEscalated, true, 'the record-time escalation was accepted')
-    assert.deepEqual(
-      scrolled.observation.scope === undefined
-        ? undefined
-        : { role: scrolled.observation.scope.role, name: scrolled.observation.scope.name },
-      CONTAINER,
-      'the recorded proof observation is the SCOPED escalated view, never a whole-page view',
-    )
+    assert.equal(scrolled.proofEscalated, undefined, 'the record-time escalation was NOT accepted: the deep target stays unproven')
+    assert.equal(scrolled.observation.scope, undefined, 'the proof stays the settled WHOLE-PAGE view')
+    assert.equal(scrolled.observation.truncated, true, 'the proof stays the settled truncated view')
     assert.equal(
-      scrolled.observation.truncated,
+      scrolled.observation.nodes.some((item) => item.name === 'Deep Target'),
       false,
-      'the recorded proof observation keeps its own honest truncated flag: the container subtree is complete',
+      'the deep target never appears in the whole-page proof view',
     )
-    const inView = scrolled.observation.nodes.find((item) => item.role === TARGET.role && item.name === TARGET.name)
-    assert.ok(inView, 'the proof observation returns the target')
-    assert.equal(inView.inViewport, true, 'the target is in the viewport after the scroll')
 
-    // 4. Export: the scroll step must be PROVEN with the container scope, not
-    //    excluded and never exported as a whole-page proof.
+    // 4. Export: the scroll step is NOT proven, so it is EXCLUDED with the
+    //    scroll-specific detail (and, with no other step, the export refuses
+    //    with NO_PROVEN_STEPS). It is never exported unscoped — and it is
+    //    never exported as proven when it is not.
     const exported = await call(tools.qaRecordExport, {
       owner,
       output_path: scenarioPath,
       name: 'fixture-scoped-deep-scroll',
     })
-    assert.equal(exported.ok, true, JSON.stringify(exported))
-    assert.equal(exported.excludedActions.length, 0, JSON.stringify(exported.excludedActions))
-    assert.equal(exported.scenario.steps.length, 1, 'exactly the scroll step')
-    const [scrollStep] = exported.scenario.steps
-    assert.equal(scrollStep.action.kind, 'scroll')
-    assert.ok('target' in scrollStep.action, 'scroll is exported by target, not positionally')
-    assert.equal(scrollStep.action.target.name, TARGET.name)
-    assert.equal(scrollStep.action.target.role, TARGET.role)
-    assert.equal(scrollStep.assert.kind, 'node-in-viewport')
-    assert.deepEqual(scrollStep.assert.expected, TARGET)
-    assert.deepEqual(
-      scrollStep.assert.scope,
-      CONTAINER,
-      'the scoped proof exports with the container scope, never as a whole-page proof',
+    assert.equal(exported.ok, false, 'the unproven scroll cannot export a scenario')
+    assert.equal(exported.code, 'NO_PROVEN_STEPS', JSON.stringify(exported))
+    assert.equal(exported.excludedActions.length, 1, JSON.stringify(exported.excludedActions))
+    const exclusion = exported.excludedActions[0]
+    assert.equal(exclusion.reason, 'ASSERTION_NOT_PROVABLE')
+    assert.match(
+      exclusion.detail,
+      /truncated at the driver node budget and did not return the scroll target "Deep Target"/,
+      'the exclusion names the actual scroll cause, never the click/fill wording',
     )
+    assert.match(exclusion.detail, /scroll outcome is unproven/)
 
-    const loaded = loadScenarioFromPath(scenarioPath)
-    assert.deepEqual(loaded, exported.scenario)
-
-    // 5. Replay twice; both runs PASS with byte-identical deterministic
-    //    projections, the step resolved inside the container scope.
-    const projections = []
-    for (let run = 0; run < 2; run += 1) {
-      const replay = await call(tools.qaReplayRun, {
-        scenario: scenarioPath,
-        owner: 'scoped-deep-scroll-replay-' + run,
-        headless: true,
-      })
-      assert.equal(replay.status, 'pass', 'replay ' + (run + 1) + ' must PASS: ' + JSON.stringify(replay.failure ?? {}))
-      assert.equal(replay.steps.length, 1)
-      assert.ok(replay.steps.every((step) => step.status === 'pass' && step.assertionPassed === true))
-      assert.deepEqual(
-        replay.steps[0].completeness?.scope,
-        CONTAINER,
-        'the replay step was decided inside the container scope',
-      )
-      projections.push(replay.steps.map((step) => ({
-        index: step.index,
-        status: step.status,
-        intent: step.intent,
-        action: step.action,
-        assertionPassed: step.assertionPassed,
-        observed: step.observed,
-        expected: step.expected,
-      })))
-    }
-    assert.deepEqual(projections[0], projections[1], 'two replays are deterministic')
     await call(tools.qaSessionStop, { owner })
   } finally {
     await host.dispose()

@@ -13,6 +13,7 @@ import type {
   QaNodePredicate,
   QaScenario,
   QaScenarioAction,
+  QaScenarioAssertionScope,
   QaScenarioMeta,
   QaScenarioTarget,
   QaSettleOverride,
@@ -98,7 +99,7 @@ const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'int
 const TARGET_FIELDS = ['launch', 'loginState'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description', 'scope'] as const;
-const ASSERTION_SCOPE_FIELDS = ['role', 'name'] as const;
+const ASSERTION_SCOPE_FIELDS = ['role', 'name', 'tag'] as const;
 const NODE_VALUE_EXPECTATION_FIELDS = ['role', 'name', 'tag', 'value'] as const;
 const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
 const PREDICATE_FIELDS = ['role', 'name', 'tag'] as const;
@@ -307,14 +308,22 @@ function validateScrollAmount(value: unknown, position: string): 'page' | number
   fail(position, 'expected "page" or a finite non-negative number');
 }
 
-function validateAssertionScope(value: unknown, position: string): { role: string; name: string } {
+function validateAssertionScope(value: unknown, position: string): QaScenarioAssertionScope {
   const obj = expectObject(value, position);
   assertKnownFields(obj, ASSERTION_SCOPE_FIELDS, position);
   // Fail closed exactly like every other schema field: the container predicate
-  // needs a non-empty role AND accessible name, and nothing else.
+  // needs a non-empty role. QA-BL-054: the accessible NAME may be the EMPTY
+  // STRING — an unnamed container is the common case and the empty name is an
+  // exact-match predicate value, never a missing one. An optional TAG may
+  // disambiguate the predicate ("role+name, plus tag when needed"); when
+  // present it must be a non-empty string.
   const role = expectNonEmptyString(obj.role, position + '.role');
-  const name = expectNonEmptyString(obj.name, position + '.name');
-  return { role, name };
+  const name = expectString(obj.name, position + '.name');
+  const out: QaScenarioAssertionScope = { role, name };
+  if (obj.tag !== undefined) {
+    out.tag = expectNonEmptyString(obj.tag, position + '.tag');
+  }
+  return out;
 }
 
 /** Validates an assertion object (also used by the qa_assert MCP tool). */

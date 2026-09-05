@@ -10,7 +10,7 @@ import type {
   QaSettleOverride,
   QaStep,
 } from '../contracts.ts';
-import { QA_SETTLE_SCHEMA_BUDGET_MAX, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
+import { QA_SCOPE_NOT_DURABLE, QA_SETTLE_SCHEMA_BUDGET_MAX, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
 import { projectArtifactPath, redactText } from '../redaction/index.ts';
 import { evaluateAssertion, loadScenarioFromPath, validateScenario } from '../replay/index.ts';
 import type { QaObservation, QaSemanticNode } from '../session/adapter.ts';
@@ -564,13 +564,70 @@ function proofWasTruncated(before: QaObservation | null, after: QaObservation): 
   return before?.truncated === true || after.truncated === true;
 }
 
-/** The scope of a proof observation, as a scenario assertion scope. */
-function proofScope(observation: QaObservation | null): QaScenarioAssertionScope | null {
-  if (observation === null || observation.scope === undefined) return null;
-  const role = clean(observation.scope.role);
-  const name = clean(observation.scope.name);
-  if (role === '' || name === '') return null;
-  return { role, name };
+/**
+ * The durability verdict for a scoped proof observation's container
+ * (QA-BL-054).
+ *
+ * A scoped proof is exported WITH its scope only when the container predicate
+ * is PROVEN durable: role+name (plus tag when needed to disambiguate) must
+ * match EXACTLY ONE node in the recorded BASELINE observation (the action's
+ * pre-action view), and that baseline must be complete (truncated:false). An
+ * empty accessible NAME is a legitimate predicate value and is kept LITERALLY
+ * (`name: ''`) — unnamed containers are the common case. Anything else makes
+ * the step EXCLUDED with SCOPE_NOT_DURABLE: a scoped proof is never silently
+ * exported as if it were a whole-page proof.
+ *
+ * Null means the proof is whole-page (no scope to carry) — only then is the
+ * assertion exported unscoped.
+ */
+type ProofScopeVerdict =
+  | { durable: true; scope: QaScenarioAssertionScope }
+  | { durable: false; detail: string };
+
+function proofScope(
+  proof: QaObservation | null,
+  baseline: QaObservation | null,
+): ProofScopeVerdict | null {
+  if (proof === null || proof.scope === undefined) return null;
+  const echo = proof.scope;
+  const role = clean(echo.role);
+  const name = clean(echo.name);
+  if (role === '') {
+    return {
+      durable: false,
+      detail: 'the scoped proof\'s container has no role, so the scope cannot be recorded durably.',
+    };
+  }
+  const tag = clean(echo.tag);
+  const describe = 'the container role "' + role + '" named "' + name + '"'
+    + (tag === '' ? '' : ' (tag "' + tag + '")');
+  if (baseline === null || baseline.truncated) {
+    return {
+      durable: false,
+      detail: baseline === null
+        ? 'no recorded baseline observation precedes the scoped proof, so the uniqueness of '
+          + describe + ' cannot be proven — the scope is never silently dropped.'
+        : 'the recorded baseline observation was truncated at the driver node budget, so '
+          + describe + ' may have a twin outside the returned window: uniqueness is unproven — '
+          + 'the scope is never silently dropped.',
+    };
+  }
+  const byRoleName = baseline.nodes.filter((node) => node.role === role && node.name === name);
+  if (byRoleName.length === 1) return { durable: true, scope: { role, name } };
+  // role+name is ambiguous: the driver's scope-echo tag may disambiguate the
+  // predicate (role+name, plus tag when needed).
+  if (byRoleName.length > 1 && tag !== '') {
+    const byRoleNameTag = baseline.nodes.filter(
+      (node) => node.role === role && node.name === name && node.tag === tag,
+    );
+    if (byRoleNameTag.length === 1) return { durable: true, scope: { role, name, tag } };
+  }
+  return {
+    durable: false,
+    detail: describe + ' matches ' + String(byRoleName.length)
+      + ' nodes in the recorded baseline observation, so its uniqueness is not proven — '
+      + 'the scope is never silently dropped.',
+  };
 }
 
 /**
@@ -579,11 +636,21 @@ function proofScope(observation: QaObservation | null): QaScenarioAssertionScope
  * contract v8): Replay then re-derives the container, observes within it, and
  * decides the assertion against that scoped view. `page-url` is deliberately
  * NOT scoped — the URL travels on every observation whatever the scope did.
+ *
+ * QA-BL-054: when the scope is not proven durable against the recorded
+ * baseline (see proofScope), the caller EXCLUDES the step with
+ * SCOPE_NOT_DURABLE — the scope is never silently dropped.
  */
-function withProofScope(assertion: QaAssertion, proof: QaObservation | null): QaAssertion {
-  if (assertion.kind === 'page-url') return assertion;
-  const scope = proofScope(proof);
-  return scope === null ? assertion : { ...assertion, scope };
+function withProofScope(
+  assertion: QaAssertion,
+  proof: QaObservation | null,
+  baseline: QaObservation | null,
+): { assertion: QaAssertion; notDurable: string | null } {
+  if (assertion.kind === 'page-url') return { assertion, notDurable: null };
+  const verdict = proofScope(proof, baseline);
+  if (verdict === null) return { assertion, notDurable: null };
+  if (!verdict.durable) return { assertion, notDurable: verdict.detail };
+  return { assertion: { ...assertion, scope: verdict.scope }, notDurable: null };
 }
 
 /**
@@ -592,10 +659,12 @@ function withProofScope(assertion: QaAssertion, proof: QaObservation | null): Qa
  * while Replay resolves the action target in the whole-page view.
  */
 function scopedPrecedingViewWeakness(before: QaObservation | null): string | null {
-  const scope = proofScope(before);
-  if (scope === null) return null;
-  return 'the action\'s preceding observation was scoped to the ' + scope.role + ' named "'
-    + scope.name + '", so the action target\'s whole-page uniqueness was not verified at export '
+  if (before === null || before.scope === undefined) return null;
+  const role = clean(before.scope.role);
+  if (role === '') return null;
+  const name = clean(before.scope.name);
+  return 'the action\'s preceding observation was scoped to the ' + role + ' named "'
+    + name + '", so the action target\'s whole-page uniqueness was not verified at export '
     + '(Replay resolves the target in the whole-page view) — verify manually.';
 }
 
@@ -912,6 +981,13 @@ function buildScenario(
         continue;
       }
       const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
+      const scopedStep = withProofScope(resolved.assert, candidate.after, candidate.before);
+      if (scopedStep.notDurable !== null) {
+        // QA-BL-054: a scoped proof whose container is not proven durable is
+        // EXCLUDED, never silently exported as an unscoped assertion.
+        excluded.push(exclusion(recorded, QA_SCOPE_NOT_DURABLE, scopedStep.notDurable));
+        continue;
+      }
       steps.push({
         index: steps.length + 1,
         intent: normalizeIntent(intentWithWeaknesses(
@@ -926,7 +1002,7 @@ function buildScenario(
           ],
         )),
         action: resolved.action,
-        assert: withProofScope(resolved.assert, candidate.after),
+        assert: scopedStep.assertion,
       });
       continue;
     }
@@ -987,6 +1063,13 @@ function buildScenario(
     // truncationWeakensProof). A scoped preceding observation is recorded too:
     // the target's whole-page uniqueness was never verified at export.
     const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
+    const scopedStep = withProofScope(synthesized.assertion.assertion, after, candidate.before);
+    if (scopedStep.notDurable !== null) {
+      // QA-BL-054: a scoped proof whose container is not proven durable is
+      // EXCLUDED, never silently exported as an unscoped assertion.
+      excluded.push(exclusion(recorded, QA_SCOPE_NOT_DURABLE, scopedStep.notDurable));
+      continue;
+    }
     const intent = normalizeIntent(intentWithWeaknesses(intentFor(stepAction), [
       ...(synthesized.assertion.weakness === null ? [] : [synthesized.assertion.weakness]),
       ...(proofWasTruncated(candidate.before, after) && truncationWeakensProof(synthesized.assertion.assertion)
@@ -1000,7 +1083,7 @@ function buildScenario(
       action: stepAction,
       // A scoped proof observation exports as a scoped assertion — never as if
       // it were a whole-page proof (browser driver contract v8).
-      assert: withProofScope(synthesized.assertion.assertion, after),
+      assert: scopedStep.assertion,
     });
   }
 

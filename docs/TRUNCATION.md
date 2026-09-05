@@ -8,6 +8,43 @@ defaults to 200 and clamps to 500, and both also enforce a byte ceiling).
 A truncated view is **incomplete, not empty**. That single fact decides what an
 assertion may conclude from it.
 
+## `node-absent` means "no driver-OBSERVABLE semantic node"
+
+The driver's projection is of **observable semantic nodes**: elements hidden by
+`visibility:hidden`, `display:none`, `opacity:0`, or zero client rects are
+skipped by the visibility gate and are NOT returned and NOT counted. So
+`node-absent` never claims "the element is not in the DOM" — it can only claim
+"no OBSERVABLE node matched". A control that exists but is momentarily hidden
+(fade-in, `content-visibility`, a collapsed panel) is invisible to every
+absence claim by design, and a reader must not treat an absence pass as a
+DOM-level fact.
+
+## Absence passes are SUSPENDED until the driver verifies coverage (QA-BL-052)
+
+Even a **complete** observation — scoped or whole-page — cannot currently prove
+an absence. The driver does not yet verify the observation's **boundaries**:
+closed shadow roots inside the subtree are neither pierced nor counted, and
+slot assignment may be unresolved, so a view that reports `truncated: false`
+can silently miss whole subtrees of semantic nodes. The audit (zcode
+REPORT.md, F1/F2) showed the old "a complete scoped view proves absence" claim
+was unsound exactly this way.
+
+Containment, fail-closed: an otherwise-passing `node-absent` (no match on a
+complete view) now fails closed with `passed: false`, `inconclusive: true`, and
+the reason code **`COVERAGE_UNVERIFIED`** — scoped AND whole-page views alike.
+The gate is per-observation affirmative evidence (`QaObservation.coverageVerified
+=== true`, to be provided by the driver's coverage probe in contract v9 Phase
+C); it is never a driver-version check, and no adapter reports the field yet —
+that is the point. The moment a driver reports `coverageVerified: true` on the
+deciding observation, the proven-absence pass returns (the restoration path is
+pinned by tests). `INCONCLUSIVE_TRUNCATED` semantics for truncated views are
+unchanged, and a returned matching node still fails `node-absent` normally.
+
+The `completeness.detail` for the coverage refusal says, in plain words, that
+no observable node matched but the observation's boundaries (closed shadow
+roots, slot assignment) were not verified, so the absence is UNPROVEN — not
+"not present".
+
 ## The rule
 
 | claim | truncated view | why |
@@ -27,7 +64,11 @@ Evidence of presence is sound; absence of evidence is not evidence of absence.
 1. **`node-absent` can never pass on a truncated observation.**
    `evaluateAssertion` (src/replay/assertions.ts) fails it closed, and the
    result is marked `inconclusive` rather than silently converted into an
-   ordinary "not present".
+   ordinary "not present". Since QA-BL-052 it can also never pass on a
+   COMPLETE observation whose boundaries the driver has not verified
+   (`coverageVerified !== true`): that outcome fails closed with
+   `COVERAGE_UNVERIFIED` and a completeness block explaining that the absence
+   is UNPROVEN — see the section above.
 
 2. **One bounded budget escalation before concluding.** When an outcome would
    be decided against a truncated view — any absent-claim, or a present /
@@ -111,18 +152,21 @@ Inside a scoped observation, **`maxNodes`, the 48 KiB byte ceiling, the scan
 window, and the iframe marker are all subtree-relative**. A subtree that fits
 reports `truncated: false` with NO `truncationReasons`. That is the whole
 point: the browser clamp stays at 100 nodes (the byte ceiling caps emission
-at ~221 anyway), so scoping — not a bigger budget — is how a deep target and
-a provable absence are reached. `QaObservation.scope`
+at ~221 anyway), so scoping — not a bigger budget — is how a deep target is
+reached (an absence stays UNPROVEN until coverage is verified, see above).
+`QaObservation.scope`
 (`{ ref, role, name, tag }`) echoes the root the driver observed and is
 absent for whole-page observations; node `inViewport` keeps whole-page
 viewport-intersection meaning.
 
 What it changes for the soundness rules above:
 
-- `node-absent` with nothing matched **passes on a COMPLETE scoped view** —
-the absence is proven inside the container, which the whole-page rules could
-never prove. The decision rule needed no change: the observation's own
-`truncated: false` drives it.
+- `node-absent` with nothing matched **no longer passes even on a COMPLETE
+scoped view** (QA-BL-052): closed shadow roots inside the container and
+unresolved slot assignment are unverified, so a complete-looking scoped view
+can silently miss nodes. It fails closed with `COVERAGE_UNVERIFIED` until
+the deciding observation carries `coverageVerified: true` (driver contract
+v9, Phase C) — exactly like whole-page absence claims.
 - A scoped view that is STILL truncated escalates **within the same scope**
 (one bounded re-read at `QA_ESCALATED_NODE_BUDGET` carrying the same
 `withinRef`), never by widening to the whole page; a still-truncated scoped
@@ -132,22 +176,34 @@ one. Unscoped truncated views keep their exact escalation and
 - `completeness` now names the scope whenever the deciding view was scoped
 (additive `scope: { role, name }`), and a scoped deciding view ALWAYS
 reports completeness — complete or truncated — so "absent from this
-container" can never be read as "absent from the whole page" (the latter
-is still unprovable). The detail string and report.md say which container
-the outcome was decided inside.
-- Replay: a scenario assertion may carry `scope: { role, name }` (loader-
-validated fail-closed). The runner resolves that container in the whole-page
-view by UNIQUE predicate — ambiguous containers are refused with the
-existing `TARGET_NOT_UNIQUE` vocabulary, never guessed — takes a SETTLED
-scoped observation within it, and decides the assertion against that scoped
-view; driver refusals on the scoped read surface as themselves (their code
-rides into `failure.code`), never as a "not found". After a scoped
-decision the runner refreshes the whole-page view (settled, fail-closed on
-an unstable refresh) because the scoped read consumed the observation the
-container was resolved from.
-- Export records the scope when the explorer used one: an assertion whose
-deciding proof observation was scoped is exported with the container's
-`scope: { role, name }` — never as if it were a whole-page proof.
+container" can never be read as "absent from the whole page" (and since
+QA-BL-052 NEITHER is provable until the driver verifies coverage). The
+detail string and report.md say which container the outcome was decided
+inside.
+- Replay: a scenario assertion may carry `scope: { role, name, tag? }`
+(loader-validated fail-closed; the name may be empty). The runner resolves
+that container in the whole-page view by UNIQUE predicate — ambiguous
+containers are refused with the existing `TARGET_NOT_UNIQUE` vocabulary,
+never guessed. QA-BL-054: ZERO matches in a truncated whole-page view may
+mean the container sits outside the window, and ONE match in a truncated
+view is NOT proven uniqueness (a twin may sit outside the window) — both
+escalate the whole-page budget ONCE, and a still-truncated view refuses
+with `INCONCLUSIVE_TRUNCATED` naming the scope. It then takes a SETTLED
+scoped observation within the container and decides the assertion against
+that scoped view; driver refusals on the scoped read surface as themselves
+(their code rides into `failure.code`), never as a "not found". After a
+scoped decision the runner refreshes the whole-page view (settled,
+fail-closed on an unstable refresh) because the scoped read consumed the
+observation the container was resolved from.
+- Export records the scope when the explorer used one AND the scope is
+PROVEN durable (QA-BL-054): an assertion whose deciding proof observation
+was scoped is exported with the container's `scope: { role, name }` only
+when that predicate (role+name, plus tag when needed to disambiguate)
+matches EXACTLY ONE node in the recorded BASELINE observation (the action's
+pre-action view) and that baseline is COMPLETE (`truncated: false`). An
+empty accessible NAME is a legitimate predicate value and is kept literally
+(`name: ''`). Anything else EXCLUDES the step with `SCOPE_NOT_DURABLE` — a
+scoped proof is never silently exported as if it were a whole-page proof.
 `page-url` is never scoped (the URL travels on every observation). When the
 action's PRECEDING observation was scoped, the step intent records that the
 target's whole-page uniqueness was not verified at export.
@@ -162,54 +218,22 @@ takes the ONE bounded escalation at RECORD time instead: a browser
 still lacks the action target in the viewport gets one more SETTLED read at
 `QA_ESCALATED_NODE_BUDGET`.
 
-**Scoped preference (QA-BL-050).** The browser driver clamps `maxNodes` to
-100 and emits nodes in composed-tree DOM order, so a target beyond the 100th
-visible semantic node is unreachable by ANY whole-page budget — the escalated
-read must be SCOPED to prove it. When the recorded baseline yields a
-container, the escalation roots the read at the scroll target's nearest
-suitable container (the driver's node shape exposes NO ancestry, so the rule
-works from what the recording DID capture):
+**Scoped preference RETIRED (QA-BL-055).** The QA-BL-050 container-heuristic
+SCOPED escalation is switched OFF: the audit (F4) showed the nearest-
+container heuristic can pick a NON-ancestor (the driver exposes no ancestry),
+and a same-identity twin inside the wrong container can then satisfy the
+proof — matching by role+name+tag across observations is not identity. A
+target beyond the clamped 100-node whole-page window is therefore NOT
+provable today, and the scroll step is honestly excluded at export (the deep-
+target fixture test pins this exclusion until contract v9's identity anchor
+restores the capability). The ONE escalation is the WHOLE-PAGE read again
+(QA-BL-045/047 behaviour, all acceptance properties intact):
 
-1. the nearest PRECEDING container-role node in the baseline view's DOM
-   order (roles: region/main/navigation/list/table/form/group/
-   complementary/article/section), else
-2. the baseline's own scope root when the baseline was scoped (a scoped
-   observation returns exactly that root's subtree, so the root contains the
-   target), else
-3. no container: the escalation falls back to today's whole-page read.
-
-The baseline container ref can never scope the read itself — the driver
-resolves a `within` ref only against its LATEST observation — so the
-container's role+name+tag identity is re-keyed into the settled view and that
-node's fresh ref is passed as `withinRef` (each escalated settle poll then
-re-keys to the re-collected scope root, exactly like a settled scoped read).
-A container that is not in the settled view means no usable within ref exists
-and the whole-page read runs instead. A scoped read that refuses or fails
-acceptance consumes the ONE escalation: the settled observation is kept and
-NO whole-page re-read follows (at most one escalation per action, scoped OR
-whole-page, never both).
-
-**Scoped acceptance rule.** `scrollProofExtends` is a prefix-extension
-check and does not apply across scopes: a scoped view is a DIFFERENT WINDOW
-onto the page (another root, subtree-relative budgets, its own node order),
-never a prefix of the whole-page view. The scoped escalated view is accepted
-as the proof exactly when, in addition to the window settling (`stable`)
-and the target being returned with `inViewport: true`,
-
-1. it carries the driver's `scope` echo, AND
-2. it is CONSISTENT with the settled view: identical page URL and title, and
-   every node the two windows SHARE — a scoped node whose role+name+tag
-   identity also appears in the settled view — field-equivalent in both
-   windows (`inViewport` included; when the settled view returns several
-   same-identity nodes, the scoped node must match EVERY one). A scoped node
-   with no identity match in the settled view is expected (the settled window
-   is truncated) and does not fail; at least one node is always shared (the
-   container itself). Any drift on a shared node fails closed.
-
-The whole-page fallback keeps its unchanged rule: the escalated view must
-EXTEND the settled one (same page URL/title and every settled node unchanged
-at the front in the same order — the page is still the exact state the settle
-window proved).
+**Whole-page acceptance rule (unchanged).** The escalated view must EXTEND
+the settled one (same page URL/title and every settled node unchanged at the
+front in the same order — the page is still the exact state the settle window
+proved), the window must have settled (`stable`), and the target must be
+returned with `inViewport: true`.
 
 The recorded proof observation keeps its own honest `truncated` flag and
 its `scope`, and export carries the scope onto the synthesized assertion
@@ -229,11 +253,14 @@ re-persists the session policy, and never replaces the session baseline — the
 next action still compares against the action's own settled observation.
 An accepted escalation is visible on the `qa_act` result as
 `proofEscalated: true` plus the escalated window's report under
-`escalatedSettle` (the action's own window stays under `settle`). The
-recorder re-binds the proof by the EXACT recorded action id carried on the
-receipt: a null or non-matching id (e.g. a concurrent act settled in between)
-is refused and recorded as a recording issue, never silently re-bound to the
-wrong action.
+`escalatedSettle` (the action's own window stays under `settle`). QA-BL-058:
+when the escalated read itself THROWS (a driver refusal such as PAGE_CHANGED /
+REF_EXPIRED — previously swallowed into a silent "no escalation"), the result
+DISCLOSES it as `escalationRefused: { code?, reason }`; the proof stays the
+settled observation either way (fail closed). The recorder re-binds the proof
+by the EXACT recorded action id carried on the receipt: a null or
+non-matching id (e.g. a concurrent act settled in between) is refused and
+recorded as a recording issue, never silently re-bound to the wrong action.
 
 ## Budget
 

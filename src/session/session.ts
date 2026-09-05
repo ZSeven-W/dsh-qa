@@ -61,13 +61,22 @@ export interface QaActResult {
   /**
    * ADDITIVE, present exactly when the record-time scroll-proof escalation
    * was ACCEPTED (see #escalateScrollProof): `observation` is then the
-   * escalated proof view — a fuller whole-page view, or (QA-BL-050) a SCOPED
-   * view rooted at the target's container, whose own `scope` and `truncated`
-   * fields travel verbatim — and `escalatedSettle` reports the escalated
+   * escalated proof view — a fuller WHOLE-PAGE view whose own `truncated`
+   * field travels verbatim — and `escalatedSettle` reports the escalated
    * window that produced it. Absent when the escalation never ran or was
    * refused (the proof then stays the settled observation).
    */
   proofEscalated?: true;
+  /**
+   * ADDITIVE disclosure (QA-BL-058): present exactly when the ONE bounded
+   * record-time scroll-proof escalation was TAKEN but REFUSED because the
+   * escalated read threw or was refused by the driver (e.g. PAGE_CHANGED /
+   * REF_EXPIRED surfaced as an error — previously swallowed into a silent
+   * "no escalation"). The fail-closed behaviour is unchanged: the proof
+   * stays the settled observation. `code` carries the driver's machine code
+   * when one was recognizable.
+   */
+  escalationRefused?: { code?: string; reason: string };
   /**
    * The escalated window's report; present exactly when `proofEscalated`
    * is. `stable` is always true here (an unsettled escalated window is
@@ -186,113 +195,14 @@ function scrollProofExtends(settled: QaObservation, escalated: QaObservation): b
   return true;
 }
 
-/**
- * QA-BL-050: the roles a scroll-target container may have. The ARIA landmark
- * and structure roles that (a) the browser driver actually emits for real
- * pages and (b) unambiguously "open a region" in composed-tree DOM order.
- */
-const SCROLL_TARGET_CONTAINER_ROLES: ReadonlySet<string> = new Set([
-  'region',
-  'main',
-  'navigation',
-  'list',
-  'table',
-  'form',
-  'group',
-  'complementary',
-  'article',
-  'section',
-]);
-
-/**
- * QA-BL-050: the scroll target's nearest suitable container, derived from the
- * pre-action baseline observation alone.
- *
- * WHY THIS RULE: the browser driver's node shape exposes NO ancestry
- * (BrowserSemanticNode carries ref/role/name/tag/interactive/editable/
- * disabled/inViewport/href/value/... and no parent or container field), so
- * the "nearest suitable container" cannot be walked up a parent chain. What
- * the recording DID capture is the flat composed-tree DOM order of the
- * baseline view, plus — for a scoped baseline — the root the view was
- * rooted at.
- *
- * The rule, in order:
- *  1. The nearest PRECEDING container-role node in the baseline view's DOM
- *     order: scanning from the node just before the target back to the front
- *     of the list, the first node whose role is in
- *     SCROLL_TARGET_CONTAINER_ROLES. In DOM order the nearest preceding
- *     container is the container that most tightly encloses (or ends just
- *     before) the target among those the recorded view can see.
- *  2. When no container-role node precedes the target and the baseline view
- *     is itself SCOPED, the scope root IS a recorded element that contains
- *     the target (a scoped observation returns exactly the root plus its
- *     subtree), so it is used as the container.
- *  3. Otherwise there is no suitable container: null, and the caller falls
- *     back to the whole-page escalated read.
- *
- * Returns the container's cross-observation identity ({ role, name, tag }).
- * The rule is pinned by test/scroll-proof-scoped-escalation.test.mjs.
- */
-function scrollTargetContainer(
-  baseline: QaObservation,
-  targetIndex: number,
-): { role: string; name: string; tag: string } | null {
-  const nodes = baseline.nodes;
-  for (let index = targetIndex - 1; index >= 0; index -= 1) {
-    const candidate = nodes[index];
-    if (candidate !== undefined && SCROLL_TARGET_CONTAINER_ROLES.has(candidate.role)) {
-      return { role: candidate.role, name: candidate.name, tag: candidate.tag };
-    }
-  }
-  const scope = baseline.scope;
-  if (scope !== undefined) {
-    return { role: scope.role, name: scope.name, tag: scope.tag };
-  }
-  return null;
-}
-
-/**
- * QA-BL-050: acceptance of a SCOPED escalated view as the scroll proof.
- *
- * scrollProofExtends is a PREFIX-extension check and is meaningless across
- * scopes: a scoped view is a DIFFERENT WINDOW onto the page (another root,
- * subtree-relative budgets, its own node order) and is never a prefix of the
- * whole-page view. The scoped case instead requires the two windows to be
- * CONSISTENT observations of the same page state:
- *
- *  - identical page URL and title (same page), AND
- *  - every node the SCOPED view SHARES with the settled view — a scoped node
- *    whose role+name+tag identity also appears in the settled view — must be
- *    field-equivalent in both windows (scrollProofNodeEquivalent). When the
- *    settled view returns several nodes with that identity, the scoped node
- *    must be equivalent to EVERY one of them (fail closed: twins are
- *    indistinguishable without ancestry). A scoped node with no identity
- *    match in the settled view is EXPECTED (the settled window is truncated
- *    and cannot see it) and does not fail.
- *
- * At least one node is always shared: the container itself — the within ref
- * was re-keyed from a settled-view node carrying the container's identity,
- * and the scoped view returns that same root first. Any field drift on a
- * shared node (inViewport included) means the page changed between the two
- * reads, and the proof stays the settled observation (fail closed).
- */
-function scopedScrollProofConsistent(settled: QaObservation, scoped: QaObservation): boolean {
-  if (settled.page.url !== scoped.page.url) return false;
-  if (settled.page.title !== scoped.page.title) return false;
-  for (const scopedNode of scoped.nodes) {
-    for (const settledNode of settled.nodes) {
-      if (
-        settledNode.role === scopedNode.role
-        && settledNode.name === scopedNode.name
-        && settledNode.tag === scopedNode.tag
-        && !scrollProofNodeEquivalent(settledNode, scopedNode)
-      ) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
+// QA-BL-055: the QA-BL-050 container-heuristic SCOPED escalation is RETIRED.
+// The audit (F4) showed the heuristic can pick a NON-ancestor container, and a
+// same-identity twin inside the wrong container can then satisfy the proof:
+// finding the container by role+name+tag across observations is not identity.
+// The ONE record-time scroll-proof escalation is the WHOLE-PAGE read again
+// (QA-BL-045/047), until contract v9's identity anchor (Phase B) restores the
+// capability. test/scroll-proof-scoped-escalation.test.mjs pins the ABSENCE of
+// any withinRef in an escalated observe.
 
 /**
  * The ref that chains the NEXT scoped read: the re-collected scope root
@@ -302,6 +212,9 @@ function scopedScrollProofConsistent(settled: QaObservation, scoped: QaObservati
  * the scope echo's role+name+tag identity (the driver emits the root first,
  * and a caller can only have scoped to a node it observed, so the root is
  * selectable); undefined when the view is whole-page or the root is absent.
+ *
+ * Still used by observeSettled / #observeEscalated to re-key SETTLED scoped
+ * reads (a caller-scoped read, not the retired escalation); kept for that.
  */
 function scopedRootRefOf(observation: QaObservation): string | undefined {
   const scope = observation.scope;
@@ -480,12 +393,13 @@ export class QaSession {
    */
   async #observeEscalated(options?: QaObserveOptions): Promise<QaSettleResult> {
     this.#assertStarted();
-    // A SCOPED escalated read (QA-BL-050) re-keys its within ref each poll
-    // exactly like observeSettled: every scoped observe replaces the driver's
-    // current observation, so the previous poll's ref no longer resolves. A
-    // fresh view that no longer returns its scope root fails the window (the
-    // caller keeps the settled observation — fail closed, at most one
-    // escalation).
+    // A scoped escalated read re-keys its within ref each poll exactly like
+    // observeSettled: every scoped observe replaces the driver's current
+    // observation, so the previous poll's ref no longer resolves. A fresh
+    // view that no longer returns its scope root fails the window (the caller
+    // keeps the settled observation — fail closed, at most one escalation).
+    // The record-time scroll escalation itself is WHOLE-PAGE (QA-BL-055) and
+    // never passes a withinRef.
     let withinRef = options?.withinRef;
     const result = await observeUntilStable(
       async () => {
@@ -567,14 +481,15 @@ export class QaSession {
     // target in the viewport gets ONE bounded escalation (recording
     // adapters only, see #escalateScrollProof): a target deep in DOM order is
     // simply outside the default node-budget window, and without the fuller
-    // view export could never evaluate the node-in-viewport proof. The
-    // escalation prefers a SCOPED read rooted at the target's nearest
-    // suitable container (QA-BL-050: a target beyond the driver's clamped
-    // whole-page window is reachable only by scoping) and falls back to the
-    // whole-page read when no container is available. At most one escalation
-    // per action; a refused one keeps the settled observation.
+    // view export could never evaluate the node-in-viewport proof. The ONE
+    // escalation is the WHOLE-PAGE read (QA-BL-045/047; the QA-BL-050 scoped
+    // container escalation is RETIRED — QA-BL-055). At most one escalation per
+    // action; a refused one keeps the settled observation and, when the
+    // escalated read itself threw, is DISCLOSED as escalationRefused
+    // (QA-BL-058).
     let proofObservation = settled.observation;
     let escalatedSettle: QaSettleReport | null = null;
+    let escalationRefused: { code?: string; reason: string } | undefined;
     if (
       settled.stable
       && proofObservation.truncated
@@ -587,8 +502,12 @@ export class QaSession {
         receipt.actionId ?? null,
       );
       if (escalated !== null) {
-        proofObservation = escalated.observation;
-        escalatedSettle = escalated.settle;
+        if (escalated.accepted) {
+          proofObservation = escalated.observation;
+          escalatedSettle = escalated.settle;
+        } else {
+          escalationRefused = escalated.refusal;
+        }
       }
     }
     return {
@@ -600,6 +519,7 @@ export class QaSession {
       // escalatedSettle (see QaActResult) instead of shadowing this one.
       settle: settleReportOf(settled),
       ...(escalatedSettle === null ? {} : { proofEscalated: true as const, escalatedSettle }),
+      ...(escalationRefused === undefined ? {} : { escalationRefused }),
       // A confirmed/unknown receipt still describes a dispatch, but an unstable
       // proof window means the CONSEQUENCE is unproven: `outcome` stays honest
       // about the dispatch ('ok'/'unknown') while `proven: false` + the code
@@ -617,25 +537,21 @@ export class QaSession {
    * live assertion path already closes with its own bounded re-observation
    * (replay/assertions.ts decideAssertion).
    *
-   * QA-BL-050: the escalation prefers a SCOPED read rooted at the scroll
-   * target's nearest suitable container (see scrollTargetContainer) and
-   * falls back to today's whole-page read only when no container is
-   * available. The browser driver clamps maxNodes to 100, so a target beyond
-   * the 100th visible semantic node is unreachable by ANY whole-page budget —
-   * scoping is the only way to return it, and a container subtree that fits
-   * reports truncated:false (absence provable). The container's identity is
-   * re-keyed against the SETTLED view (the driver resolves a within ref only
-   * against its latest observation; a baseline ref would refuse REF_UNKNOWN).
+   * QA-BL-055: the escalation is the WHOLE-PAGE read (QA-BL-045/047
+   * behaviour). The QA-BL-050 SCOPED container escalation is RETIRED: the
+   * nearest-container heuristic can pick a NON-ancestor (the driver exposes
+   * no ancestry), and a same-identity twin inside the wrong container can
+   * then satisfy the proof — matching by role+name+tag across observations
+   * is not identity. Phase B (contract v9) restores the capability with an
+   * identity-preserving anchor.
    *
    * Accepts the escalated observation as the action's proof ONLY when
    *
    *  1. its window settled (stable),
-   *  2. the escalated view is consistent with the settled one — for a
-   *     whole-page escalation, stably EXTENDS it (see scrollProofExtends);
-   *     for a scoped escalation, the scoped consistency rule (see
-   *     scopedScrollProofConsistent: same URL/title plus every node the two
-   *     windows share unchanged — the prefix rule is meaningless across
-   *     scopes), AND
+   *  2. the escalated view stably EXTENDS the settled one (see
+   *     scrollProofExtends: same page URL/title and every settled node
+   *     unchanged at the front in the same order — the page is still the
+   *     exact state the settle window proved), AND
    *  3. the escalated view returns the action target (matched by the
    *     pre-action predicate) with inViewport === true — a fuller view that
    *     still does not place the target in the viewport is a useless
@@ -649,15 +565,22 @@ export class QaSession {
    * re-bind exactly this action's proof — a mismatch is refused by the
    * recorder and never silently re-bound. An unsettled window, a changed
    * page, a still-off-viewport target, or a missing pre-action target all
-   * keep the settled observation — at most ONE escalation per action
-   * (scoped OR whole-page, never both), no loop, fail closed.
+   * keep the settled observation — at most ONE escalation per action, no
+   * loop, fail closed. QA-BL-058: an escalated read that THROWS (a driver
+   * refusal such as PAGE_CHANGED / REF_EXPIRED) is DISCLOSED through the
+   * returned `refusal` instead of being swallowed into a silent null — the
+   * fail-closed outcome is unchanged, only the observability is new.
    */
   async #escalateScrollProof(
     action: QaAction,
     baselineObservation: QaObservation | null,
     settledObservation: QaObservation,
     actionId: string | null,
-  ): Promise<{ observation: QaObservation; settle: QaSettleReport } | null> {
+  ): Promise<
+    | { accepted: true; observation: QaObservation; settle: QaSettleReport }
+    | { accepted: false; refusal: { code?: string; reason: string } }
+    | null
+  > {
     if (this.#adapter.kind !== 'browser') return null;
     if (action.kind !== 'scroll' || !('ref' in action)) return null;
     // The ref is the pre-action identity inside the baseline observation only
@@ -671,60 +594,8 @@ export class QaSession {
       (candidate) => matchesNode(candidate, target) && candidate.inViewport === true,
     );
     if (alreadyInViewport) return null;
-    // QA-BL-050 scoped preference: root the escalated read at the target's
-    // nearest suitable container when the recording captured one (see
-    // scrollTargetContainer). The baseline container ref can never scope the
-    // read itself — the driver resolves a within ref only against its LATEST
-    // observation (the settled one) and would refuse a baseline ref with
-    // REF_UNKNOWN — so the container's role+name+tag identity is re-keyed
-    // into the settled view, and the FIRST node with that identity decides
-    // (twins are indistinguishable without ancestry; the acceptance rule
-    // fails closed on any drift).
-    const container = baselineObservation === null
-      ? null
-      : scrollTargetContainer(baselineObservation, targetIndex);
-    if (container !== null) {
-      const containerNode = settledObservation.nodes.find(
-        (candidate) => candidate.role === container.role
-          && candidate.name === container.name
-          && candidate.tag === container.tag,
-      );
-      if (containerNode !== undefined) {
-        try {
-          const escalated = await this.#observeEscalated({
-            maxNodes: QA_ESCALATED_NODE_BUDGET,
-            withinRef: containerNode.ref,
-          });
-          const scoped = escalated.observation;
-          const targetInViewport = scoped.nodes.some(
-            (candidate) => matchesNode(candidate, target) && candidate.inViewport === true,
-          );
-          if (
-            escalated.stable
-            && scoped.scope !== undefined
-            && scopedScrollProofConsistent(settledObservation, scoped)
-            && targetInViewport
-          ) {
-            try {
-              this.#adapter.noteEscalatedScrollProof?.(this.#ownerId, actionId);
-            } catch { /* observational only */ }
-            return { observation: scoped, settle: settleReportOf(escalated) };
-          }
-          // The ONE escalation was taken and refused: keep the settled
-          // observation. There is deliberately NO whole-page re-read after a
-          // refused scoped attempt (at most one escalation per action).
-          return null;
-        } catch {
-          // A refused scoped read (the page changed) also consumes the ONE
-          // escalation: keep the settled observation, fail closed.
-          return null;
-        }
-      }
-      // The container is not in the settled view, so no usable within ref
-      // exists: fall through to the whole-page escalated read below.
-    }
-    // Whole-page escalated read: the fallback when no container is available
-    // or re-keyable, and the behaviour for every pre-QA-BL-050 fixture.
+    // The ONE whole-page escalated read (QA-BL-055: the scoped container
+    // escalation is retired — no withinRef is ever passed here).
     try {
       const escalated = await this.#observeEscalated({ maxNodes: QA_ESCALATED_NODE_BUDGET });
       const targetInViewport = escalated.observation.nodes.some(
@@ -736,10 +607,20 @@ export class QaSession {
       try {
         this.#adapter.noteEscalatedScrollProof?.(this.#ownerId, actionId);
       } catch { /* observational only */ }
-      return { observation: escalated.observation, settle: settleReportOf(escalated) };
-    } catch {
-      // No settled fuller view is available: keep the settled observation.
-      return null;
+      return { accepted: true, observation: escalated.observation, settle: settleReportOf(escalated) };
+    } catch (error) {
+      // QA-BL-058: the escalated read threw (a driver refusal such as
+      // PAGE_CHANGED / REF_EXPIRED). Disclose it; the proof stays the settled
+      // observation (fail closed, unchanged).
+      const message = error instanceof Error ? error.message : String(error);
+      const code = (error as Error & { code?: unknown }).code;
+      return {
+        accepted: false,
+        refusal: {
+          reason: message === '' ? 'the escalated re-observation was refused by the driver' : message,
+          ...(typeof code === 'string' && code !== '' ? { code } : {}),
+        },
+      };
     }
   }
 

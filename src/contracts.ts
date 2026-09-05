@@ -113,20 +113,32 @@ export interface QaAssertion {
    * Optional container scope (ADDITIVE, schemaVersion stays 1; browser
    * driver contract v8). When present, Replay resolves this container in
    * the whole-page view by UNIQUE predicate (an ambiguous container is
-   * refused with TARGET_NOT_UNIQUE, never guessed), observes WITHIN it, and
-   * decides the assertion against that scoped view. Budgets and the
-   * truncated flag are then subtree-relative, so a complete scoped view
-   * makes node-absent provable inside the container even when the whole
-   * page is unbounded. A scoped proof is never decided (or reported) as if
-   * it were a whole-page proof.
+   * refused with TARGET_NOT_UNIQUE, never guessed; one match in a truncated
+   * view is NOT proven uniqueness — the runner escalates the whole-page
+   * budget ONCE and refuses a still-truncated view with
+   * INCONCLUSIVE_TRUNCATED naming the scope, QA-BL-054), observes WITHIN it,
+   * and decides the assertion against that scoped view. Budgets and the
+   * truncated flag are then subtree-relative. NOTE (QA-BL-052): even a
+   * complete scoped view cannot make node-absent pass until the driver
+   * verifies the observation's boundaries (coverageVerified). A scoped
+   * proof is never decided (or reported) as if it were a whole-page proof.
    */
   scope?: QaScenarioAssertionScope;
 }
 
-/** Predicate naming the container a scoped assertion is decided inside. */
+/**
+ * Predicate naming the container a scoped assertion is decided inside.
+ *
+ * QA-BL-054: `name` may be the EMPTY STRING — an unnamed container is the
+ * common case and the empty name is an exact-match predicate value, never a
+ * missing one. `tag` is OPTIONAL and additive: export adds it only when
+ * role+name alone is ambiguous in the recorded baseline and the container's
+ * tag disambiguates ("role+name, plus tag when needed").
+ */
 export interface QaScenarioAssertionScope {
   role: string;
   name: string;
+  tag?: string;
 }
 
 /**
@@ -243,7 +255,7 @@ export interface QaObservedNode {
  */
 export const QA_INCONCLUSIVE_TRUNCATED = 'INCONCLUSIVE_TRUNCATED';
 
-export type QaInconclusiveReason = typeof QA_INCONCLUSIVE_TRUNCATED;
+export type QaInconclusiveReason = typeof QA_INCONCLUSIVE_TRUNCATED | typeof QA_COVERAGE_UNVERIFIED;
 
 /**
  * Stable reason code recorded when an assertion (or a post-action consequence)
@@ -255,7 +267,10 @@ export type QaInconclusiveReason = typeof QA_INCONCLUSIVE_TRUNCATED;
  */
 export const QA_INCONCLUSIVE_UNSTABLE = 'INCONCLUSIVE_UNSTABLE';
 
-export type QaInconclusiveCode = typeof QA_INCONCLUSIVE_TRUNCATED | typeof QA_INCONCLUSIVE_UNSTABLE;
+export type QaInconclusiveCode =
+  | typeof QA_INCONCLUSIVE_TRUNCATED
+  | typeof QA_INCONCLUSIVE_UNSTABLE
+  | typeof QA_COVERAGE_UNVERIFIED;
 
 /**
  * Stable reason code for a REPLAY action target that matches more than one
@@ -267,10 +282,39 @@ export type QaInconclusiveCode = typeof QA_INCONCLUSIVE_TRUNCATED | typeof QA_IN
  */
 export const QA_TARGET_NOT_UNIQUE = 'TARGET_NOT_UNIQUE';
 
+/**
+ * Stable reason code recorded when an otherwise-passing `node-absent` could
+ * NOT be proven because the deciding observation carries no affirmative
+ * coverage evidence (`QaObservation.coverageVerified !== true`).
+ *
+ * QA-BL-052 containment: a COMPLETE view still cannot prove absence while the
+ * driver has not verified the observation's boundaries — closed shadow roots
+ * inside the subtree are neither pierced nor counted, and slot assignment may
+ * be unresolved, so a complete-looking view can silently miss nodes. "No
+ * observable node matched" is therefore UNPROVEN, never "absent", and the
+ * assertion fails closed with this code (scoped AND whole-page views alike).
+ * A returned matching node still fails the assertion normally. The gate is
+ * per-observation evidence, never a driver version: the moment the driver
+ * reports `coverageVerified: true` (contract v9, Phase C) the proven-absence
+ * pass returns.
+ */
+export const QA_COVERAGE_UNVERIFIED = 'COVERAGE_UNVERIFIED';
+
+/**
+ * Stable EXPORT-exclusion code recorded when a scoped proof observation could
+ * NOT be exported with its container scope because the container predicate is
+ * not proven durable: it must match EXACTLY ONE node (role+name, plus tag
+ * when needed to disambiguate) in a COMPLETE recorded baseline observation.
+ * A scoped proof is never silently exported as a whole-page one — the step is
+ * excluded instead (QA-BL-054).
+ */
+export const QA_SCOPE_NOT_DURABLE = 'SCOPE_NOT_DURABLE';
+
 /** Machine codes a run failure may carry (QaRunFailure.code); open for future codes. */
 export type QaFailureCode =
   | typeof QA_INCONCLUSIVE_UNSTABLE
   | typeof QA_INCONCLUSIVE_TRUNCATED
+  | typeof QA_COVERAGE_UNVERIFIED
   | typeof QA_TARGET_NOT_UNIQUE
   | (string & {});
 
@@ -307,7 +351,12 @@ export interface QaViewCompleteness {
   truncationReasons?: string[];
   /** Whether one bounded budget escalation was performed before deciding. */
   escalated: boolean;
-  /** Whether this outcome depends on the view being complete (unproven if it is not). */
+  /**
+   * Whether this outcome depends on the view being complete (unproven if it
+   * is not). False when the view WAS complete and the refusal is
+   * QA_COVERAGE_UNVERIFIED instead: there the nodes are not the problem,
+   * the unverified observation boundaries are.
+   */
   outcomeDependsOnCompleteView: boolean;
   /**
    * ADDITIVE (browser driver contract v8): the scope of the DECIDING view
@@ -315,10 +364,17 @@ export interface QaViewCompleteness {
    * the assertion was decided inside. Present exactly when the deciding view
    * was scoped (complete or truncated); absent means the deciding view was
    * whole-page. This is what lets a reader tell "absent from this container"
-   * (provable) apart from "absent from the whole page" (not provable today).
+   * apart from "absent from the whole page" — and since QA-BL-052 NEITHER is
+   * provable until the driver verifies coverage (coverageVerified).
    */
   scope?: { role: string; name: string };
-  /** Present exactly when the outcome could not be proven from an incomplete view. */
+  /**
+   * Present exactly when the outcome could not be proven from the view as
+   * reported: INCONCLUSIVE_TRUNCATED for an incomplete view, or
+   * COVERAGE_UNVERIFIED when the view was complete but its boundaries
+   * (closed shadow roots, slot assignment) were not verified — an absence
+   * claim is UNPROVEN either way.
+   */
   reason?: QaInconclusiveReason;
   /** Deterministic, human-readable explanation naming the applied budget, the scope, and the reasons. */
   detail: string;
@@ -364,12 +420,14 @@ export interface QaAssertionResult {
   observed: unknown;
   /**
    * ADDITIVE (browser driver contract v8): echo of the scenario assertion's
-   * container scope (QaAssertion.scope). Present exactly when the replayed
-   * assertion carried one, so a final-assertion result is never read as a
-   * whole-page claim when it was decided inside a container. Step results
-   * carry the same information through their full `assertion` echo.
+   * container scope (QaAssertion.scope), verbatim — including an empty
+   * `name` and an optional disambiguating `tag` (QA-BL-054). Present exactly
+   * when the replayed assertion carried one, so a final-assertion result is
+   * never read as a whole-page claim when it was decided inside a container.
+   * Step results carry the same information through their full `assertion`
+   * echo.
    */
-  scope?: { role: string; name: string };
+  scope?: QaScenarioAssertionScope;
   /** Completeness of the deciding view; present only when truncation touched the decision or the view was scoped. */
   completeness?: QaViewCompleteness;
   /**

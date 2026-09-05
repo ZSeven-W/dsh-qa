@@ -46,8 +46,9 @@ function escapeLoneSurrogates(text: string): string {
 
 /**
  * One line of view-completeness context. It is rendered only for assertions
- * truncation actually touched, and it is what lets a human tell "not present"
- * from "we could not see the whole page".
+ * truncation or the coverage gate actually touched, and it is what lets a
+ * human tell "not present" from "we could not see the whole page" from
+ * "the observation's boundaries were not verified" (COVERAGE_UNVERIFIED).
  */
 function completenessLine(completeness: QaViewCompleteness): string {
   const reasons = completeness.truncationReasons;

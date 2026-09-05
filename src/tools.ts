@@ -14,7 +14,7 @@ import { BrowserAdapter } from './adapters/browser.ts'
 import { ComputerAdapter } from './adapters/computer.ts'
 import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts'
 import { loadComputerDriver } from './adapters/loadComputer.ts'
-import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_UNSTABLE } from './contracts.ts'
+import { QA_ADVISORY_REASONING_TRUST, QA_COVERAGE_UNVERIFIED, QA_INCONCLUSIVE_UNSTABLE } from './contracts.ts'
 import { QA_TOOL_DESCRIPTIONS } from './tool-descriptions.ts'
 import type { QaDriverKind } from './contracts.ts'
 import {
@@ -614,7 +614,10 @@ export function createQaTools(host: QaToolHost): QaTools {
       }
       // A truncated view can never prove an absence (and never disprove a
       // presence): the decision escalates the node budget once and fails closed
-      // with INCONCLUSIVE_TRUNCATED rather than reporting a false green.
+      // with INCONCLUSIVE_TRUNCATED rather than reporting a false green. And
+      // since QA-BL-052 even a COMPLETE view cannot prove an absence while the
+      // driver has not verified the observation's boundaries: that outcome
+      // fails closed with COVERAGE_UNVERIFIED.
       const decision = await decideAssertionWithRetry(assertion, settled.observation, sessionReobserve(session), session)
       return {
         ok: true,
@@ -624,6 +627,9 @@ export function createQaTools(host: QaToolHost): QaTools {
         expected: assertion.expected,
         settle: { stable: settled.stable, passes: settled.passes, budgetMs: session.settlePolicy.budgetMs, quietRequiredMs: settled.quietRequiredMs, widened: settled.widened ?? decision.widened },
         ...(decision.completeness === null ? {} : { completeness: decision.completeness }),
+        ...(decision.completeness?.reason === QA_COVERAGE_UNVERIFIED
+          ? { inconclusive: true, code: QA_COVERAGE_UNVERIFIED }
+          : {}),
         ...(decision.attempts <= 1 ? {} : { attempts: decision.attempts, elapsedMs: decision.elapsedMs }),
       }
     },

@@ -105,8 +105,10 @@ export interface QaComputerEvidence {
  * driver observed it at resolution time. `ref` is the caller-passed within
  * ref (the driver echoes it back). Absent for whole-page observations and for
  * drivers that do not report a scope; when present, the observation's
- * truncation, budgets, and the iframe marker are SUBTREE-relative, so absence
- * inside a complete scoped view is provable.
+ * truncation, budgets, and the iframe marker are SUBTREE-relative. NOTE
+ * (QA-BL-052): subtree completeness alone no longer proves absence — the
+ * observation must also carry `coverageVerified` (closed shadow roots, slot
+ * assignment), otherwise a node-absent claim fails closed as UNPROVEN.
  */
 export interface QaObservationScope {
   ref: string;
@@ -148,6 +150,18 @@ export interface QaObservation {
   fingerprint?: string;
   app?: QaComputerAppIdentity;
   window?: QaComputerWindowIdentity;
+  /**
+   * ADDITIVE (driver contract v9, Phase C): AFFIRMATIVE evidence that this
+   * observation's boundaries were VERIFIED — closed shadow roots among all
+   * descendants (pierced or counted) and slot assignment resolved — so the
+   * view really contains every semantic node of its scope. Honest-optional:
+   * absent means the driver did NOT verify coverage, and a `node-absent`
+   * claim is then UNPROVEN (QA-BL-052: it fails closed with
+   * COVERAGE_UNVERIFIED even on a complete view, scoped or whole-page). NO
+   * adapter sets this field yet — that is deliberate containment until the
+   * driver gains the coverage probe.
+   */
+  coverageVerified?: boolean;
 }
 
 export interface QaActionReceipt {
@@ -219,9 +233,11 @@ export interface QaObserveOptions {
    * non-element, or detached ref — it never silently falls back to a
    * whole-page view. Budgets, the byte ceiling, the scan window, and the
    * iframe marker become subtree-relative, so a subtree that fits reports
-   * truncated:false and node-absent becomes provable inside that container.
-   * The computer driver does not support scoping: a withinRef there is
-   * REFUSED with a clear error, never silently ignored.
+   * truncated:false and a deep target unreachable whole-page becomes
+   * reachable. NOTE (QA-BL-052): scoping does NOT currently make
+   * node-absent pass — absence is UNPROVEN until the observation carries
+   * coverageVerified. The computer driver does not support scoping: a
+   * withinRef there is REFUSED with a clear error, never silently ignored.
    */
   withinRef?: string;
 }

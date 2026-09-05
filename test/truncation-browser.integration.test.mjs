@@ -9,7 +9,7 @@ import { BrowserManager, discoverInstalledBrowser } from '@zseven-w/dsh-browser'
 import { BrowserAdapter } from '../src/adapters/index.ts'
 import { runScenario, validateScenario, QA_ESCALATED_NODE_BUDGET } from '../src/replay/index.ts'
 import { QaSession } from '../src/session/index.ts'
-import { QA_INCONCLUSIVE_TRUNCATED } from '../src/contracts.ts'
+import { QA_COVERAGE_UNVERIFIED, QA_INCONCLUSIVE_TRUNCATED } from '../src/contracts.ts'
 
 // End-to-end truncation regression against a REAL browser and a real page with
 // far more semantic nodes (73) than the default observation budget (60).
@@ -125,25 +125,33 @@ test('a page larger than the node budget never yields a false "absent"', { timeo
 
     // -----------------------------------------------------------------
     // 3. The recovery: the scroll target outside the budget still resolves,
-    //    the in-viewport claim is proven, a present-claim outside the initial
-    //    budget passes, and a genuinely absent node still passes.
+    //    the in-viewport claim is proven, and a present-claim outside the
+    //    initial budget passes. CHANGED (QA-BL-052 / Codex Q4, deliberate
+    //    semantics downgrade): the genuinely-absent claim NO LONGER passes —
+    //    the real browser never reports coverageVerified yet, so the absence
+    //    is UNPROVEN and the run fails closed with QA_COVERAGE_UNVERIFIED.
     // -----------------------------------------------------------------
     const recovered = await runScenario(
       scenario(origin, [
-        { kind: 'node-absent', expected: ABSENT },
         { kind: 'node-present', expected: DEEP },
+        { kind: 'node-absent', expected: ABSENT },
       ]),
       new BrowserAdapter(await newDriver()),
       { ownerId: 'node-budget-recovery', launchUrl: origin, headless: true },
     )
-    assert.equal(recovered.status, 'pass', JSON.stringify(recovered.failure ?? {}))
+    assert.notEqual(recovered.status, 'pass', 'an unverified absence must never pass the run')
     // The owner's scroll scenario: found without a human raising max_nodes.
     assert.equal(recovered.steps[0].assertionPassed, true)
     assert.equal(recovered.steps[0].completeness.escalated, true)
     assert.deepEqual(recovered.steps[0].observed, [{ role: 'button', name: 'Deep control', tag: 'button' }])
-    assert.equal(recovered.assertions[0].passed, true, 'a genuinely absent node still passes after escalation')
-    assert.equal(recovered.assertions[0].completeness.truncated, false)
-    assert.equal(recovered.assertions[1].passed, true, 'presence outside the initial budget is found by escalation')
+    // The PRESENT claim is asserted FIRST: it passes (found by escalation), so
+    // the runner still reaches the absence claim after it (a failed assertion
+    // stops the loop, so the ordering is part of the pin).
+    assert.equal(recovered.assertions[0].passed, true, 'presence outside the initial budget is found by escalation')
+    assert.equal(recovered.assertions[1].passed, false, 'a genuinely absent node is UNPROVEN until the driver verifies coverage')
+    assert.equal(recovered.assertions[1].completeness.truncated, false)
+    assert.equal(recovered.assertions[1].completeness.reason, QA_COVERAGE_UNVERIFIED)
+    assert.match(recovered.assertions[1].completeness.detail, /closed shadow roots, slot assignment/)
   } finally {
     for (const driver of drivers) await driver.dispose().catch(() => {})
     for (const rootDir of roots) await rm(rootDir, { recursive: true, force: true })

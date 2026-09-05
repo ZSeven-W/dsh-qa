@@ -92,6 +92,18 @@ function describeTarget(target: QaNodePredicate): string {
   return parts.length === 0 ? 'no fields' : parts.join(', ');
 }
 
+/** The matching predicate of an assertion scope (role+name, plus tag when carried). */
+function scopePredicate(scope: QaScenarioAssertionScope): QaNodePredicate {
+  return { role: scope.role, name: scope.name, ...(scope.tag === undefined ? {} : { tag: scope.tag }) };
+}
+
+/** Human-readable spelling of an assertion scope, for refusal messages. */
+function describeScope(scope: QaScenarioAssertionScope): string {
+  const parts = ['role "' + scope.role + '"', 'name "' + scope.name + '"'];
+  if (scope.tag !== undefined) parts.push('tag "' + scope.tag + '"');
+  return parts.join(', ');
+}
+
 /**
  * Observe WITHIN the container an assertion is scoped to (browser driver
  * contract v8). The container is resolved in the WHOLE-PAGE view by UNIQUE
@@ -101,11 +113,14 @@ function describeTarget(target: QaNodePredicate): string {
  * the scoped read (REF_INVALID / REF_EXPIRED / TARGET_CHANGED / ...)
  * propagates as itself, never degraded into a "not found".
  *
- * The container itself has the same blind spot as an action target: it can
- * fall outside a truncated whole-page window, so the resolution escalates the
- * node budget ONCE (whole-page, the same settled way as action targets) before
- * concluding; a still-truncated view that lacks the container fails closed
- * naming INCONCLUSIVE_TRUNCATED instead of pretending the container is gone.
+ * QA-BL-054: uniqueness must be PROVEN. ZERO matches in a truncated
+ * whole-page view may mean the container sits outside the window, and ONE
+ * match in a truncated view is NOT proven unique (a twin may sit outside the
+ * window). Both escalate the whole-page node budget ONCE (the existing
+ * mechanism, the same settled way as action targets) before concluding; a
+ * still-truncated view refuses with INCONCLUSIVE_TRUNCATED naming the scope
+ * instead of scoping into a container it cannot identify. Two or more
+ * matches are proven non-unique and never escalate.
  */
 async function observeScopeView(
   scope: QaScenarioAssertionScope,
@@ -113,12 +128,13 @@ async function observeScopeView(
   session: QaSession,
   reobserve: QaReobserve,
 ): Promise<QaObservation> {
+  const predicate = scopePredicate(scope);
   const matchesIn = (view: QaObservation): typeof view.nodes =>
-    view.nodes.filter((node) => matchesNode(node, { role: scope.role, name: scope.name }));
+    view.nodes.filter((node) => matchesNode(node, predicate));
   let view = wholePage;
   let matches = matchesIn(view);
   let escalated = false;
-  if (matches.length === 0 && view.truncated) {
+  if (view.truncated && matches.length <= 1) {
     try {
       view = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
       escalated = true;
@@ -141,14 +157,29 @@ async function observeScopeView(
       );
     }
     throw new Error(
-      'no observable node matches the assertion scope (role "' + scope.role + '", name "' + scope.name + '")',
+      'no observable node matches the assertion scope (' + describeScope(scope) + ')',
     );
   }
   if (matches.length > 1) {
     throw new QaCodeError(
       QA_TARGET_NOT_UNIQUE,
-      QA_TARGET_NOT_UNIQUE + ': ' + String(matches.length) + ' nodes match the assertion scope (role "'
-      + scope.role + '", name "' + scope.name + '"); the scoped container is not uniquely identifiable, so the assertion was not decided',
+      QA_TARGET_NOT_UNIQUE + ': ' + String(matches.length) + ' nodes match the assertion scope ('
+      + describeScope(scope) + '); the scoped container is not uniquely identifiable, so the assertion was not decided',
+    );
+  }
+  if (view.truncated) {
+    // QA-BL-054: exactly ONE match in a STILL-truncated view is not proven
+    // uniqueness — a twin container may sit outside the returned window.
+    // Refuse, naming the scope and the code.
+    const applied = escalated
+      ? view.maxNodes === undefined
+        ? 'the escalated budget (the driver did not report the budget it applied)'
+        : 'the applied ' + String(view.maxNodes) + '-node escalated budget'
+      : 'the driver-default budget';
+    throw new Error(
+      'one observable node matches the assertion scope (' + describeScope(scope)
+      + '), but the view was still truncated at ' + applied + ' (' + QA_INCONCLUSIVE_TRUNCATED
+      + '): a twin container may exist outside the returned window, so the scoped container is not uniquely identifiable',
     );
   }
   const container = matches[0];
@@ -371,14 +402,16 @@ function buildStepResult(
 
 /**
  * Failure message for a decided assertion. An outcome that could not be proven
- * from an incomplete view is NEVER reported as an ordinary "failed": it names
- * QA_INCONCLUSIVE_TRUNCATED and the budget, so a human triaging the report can
- * tell "not present" from "we could not see the whole page".
+ * is NEVER reported as an ordinary "failed": it names the machine code —
+ * QA_INCONCLUSIVE_TRUNCATED (an incomplete view) or QA_COVERAGE_UNVERIFIED
+ * (a complete view whose boundaries the driver did not verify) — and the
+ * honest detail, so a human triaging the report can tell "not present" from
+ * "we could not see the whole page" from "the boundaries were not verified".
  */
 function assertionFailureMessage(what: string, decision: QaAssertionDecision): string {
   const completeness = decision.completeness;
-  if (completeness?.reason === QA_INCONCLUSIVE_TRUNCATED) {
-    return what + ' is ' + QA_INCONCLUSIVE_TRUNCATED + ': ' + completeness.detail;
+  if (completeness?.reason !== undefined) {
+    return what + ' is ' + completeness.reason + ': ' + completeness.detail;
   }
   if (decision.reason !== undefined) {
     return what + ' failed (' + decision.reason + ')';

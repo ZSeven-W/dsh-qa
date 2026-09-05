@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { QaSession, resolveSettlePolicy } from '../src/session/index.ts'
 import { decideAssertionWithRetry, runScenario, sessionReobserve } from '../src/replay/index.ts'
+import { QA_COVERAGE_UNVERIFIED } from '../src/contracts.ts'
 
 // QA-BL-041: adaptive widening from the assertion-retry path. The 4ea9035
 // widening only fired when a settle window ended UNSTABLE; when the page
@@ -182,10 +183,16 @@ test('D: node-absent on a fast-settling view is never widened or retried into a 
     fastSettleLateAppearAdapter({ appearAfterMs: 4000 }),
     { ownerId: 'retry-d', settle: resolveSettlePolicy({ adaptiveBudgetMs: 6000 }) },
   )
-  // The node is genuinely absent at the (fast) decision time, so node-absent
-  // passes immediately at the original budget; it must NOT wait for the 4000ms
-  // appearance (which would turn absence into a waiting game) nor widen.
-  assert.equal(report.status, 'pass', JSON.stringify(report.failure))
+  // CHANGED (QA-BL-052 / Codex Q4): the node is genuinely absent from a
+  // complete fast-settling view, but the observation's boundaries are
+  // UNVERIFIED, so the absence is UNPROVEN — the run fails closed with
+  // QA_COVERAGE_UNVERIFIED. It still must NOT wait for the 4000ms
+  // appearance (which would turn absence into a waiting game) nor widen,
+  // and the retry accounting must stay absent.
+  assert.equal(report.status, 'fail', JSON.stringify(report.failure))
+  assert.equal(report.steps[0].assertionPassed, false)
+  assert.equal(report.steps[0].completeness?.reason, QA_COVERAGE_UNVERIFIED)
+  assert.match(report.steps[0].completeness?.detail ?? '', /closed shadow roots, slot assignment/)
   assert.equal(report.settle.budgetMs, 2500, 'the budget is never widened by node-absent')
   assert.equal(report.settleWidened, undefined, 'node-absent never widens')
   assert.equal(report.steps[0].attempts, undefined, 'node-absent is never retried')

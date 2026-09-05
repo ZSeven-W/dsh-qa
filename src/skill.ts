@@ -83,6 +83,16 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   budget and then fails closed with \`completeness.reason: "INCONCLUSIVE_TRUNCATED"\` rather than
   reporting a false "gone". Read \`completeness\` before believing any negative result: "we did not
   see it" is not "it is not there". A found node is sound evidence of presence either way.
+- Since QA-BL-052 even a COMPLETE view cannot currently prove an absence. \`node-absent\` means
+  "no driver-OBSERVABLE semantic node" (hidden and zero-rect elements are excluded from the
+  projection), and the driver does not yet verify the observation's boundaries: closed shadow
+  roots are neither pierced nor counted and slot assignment may be unresolved, so a
+  complete-looking view can silently miss nodes. Until the deciding observation carries
+  \`coverageVerified: true\` (driver contract v9, Phase C — no driver reports it yet), an
+  otherwise-passing absence fails closed with \`completeness.reason: "COVERAGE_UNVERIFIED"\`
+  (scoped AND whole-page views): no observable node matched, but the boundaries were not
+  verified, so the absence is UNPROVEN. Never report "absent"; report "not observed, and absence
+  cannot be proven". A returned matching node still fails \`node-absent\` normally.
   \`completeness.nodeBudget\` is the budget the DRIVER actually applied (each driver clamps the
   request to its own maximum: browser 100, computer 500 — a browser run never reports 500), and
   \`completeness.truncationReasons\` names WHY the view is partial: \`iframe-not-traversed\` means
@@ -95,16 +105,25 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   from your CURRENT (latest, unexpired) \`qa_observe\` result — to observe only the composed
   subtree rooted at that element. Budgets, the byte ceiling, the scan window, and the iframe
   marker become SUBTREE-relative, so a container whose subtree fits reports \`truncated: false\`
-  with no \`truncationReasons\`: absence inside it is PROVABLE (a \`node-absent\` can pass there),
-  and a deep target unreachable in the whole-page window becomes reachable. The observation's
+  with no \`truncationReasons\`, and a deep target unreachable in the whole-page window becomes
+  reachable. Absence inside it is STILL UNPROVEN until the driver reports \`coverageVerified\`
+  (QA-BL-052: the container's closed shadow roots and slot assignment are not verified, so a
+  missing node may just be invisible — \`node-absent\` fails closed with
+  \`COVERAGE_UNVERIFIED\` on a complete scoped view too). The observation's
   \`scope\` field (\`{ ref, role, name, tag }\`) echoes the root the driver observed; it is absent
   for whole-page observations. An unknown, expired, consumed, non-element, or detached ref
   REFUSES the call with its driver code (\`REF_UNKNOWN\` / \`REF_EXPIRED\` / \`TARGET_CHANGED\` /
   ...) — never a whole-page fallback and never a "not found". The computer driver does not
   support scoping and refuses \`within_ref\`. A scoped proof is exported as a scoped assertion
-  (\`scope: { role, name }\`), which Replay re-derives in the whole-page view (UNIQUE predicate,
-  \`TARGET_NOT_UNIQUE\` when ambiguous) and decides inside the container; the completeness block
-  names the scope, so "absent from this container" is never read as "absent from the whole page".
+  (\`scope: { role, name }\`, an empty name kept literally) ONLY when the container predicate
+  (role+name, plus tag when needed) is unique in a COMPLETE recorded baseline observation —
+  otherwise the step is excluded with \`SCOPE_NOT_DURABLE\`, never silently exported as a
+  whole-page proof. Replay re-derives the container in the whole-page view (UNIQUE predicate,
+  \`TARGET_NOT_UNIQUE\` when ambiguous; one match in a truncated view is not proven unique and
+  escalates once, a still-truncated view refuses with \`INCONCLUSIVE_TRUNCATED\` naming the
+  scope) and decides inside the container; the completeness block names the scope, so "absent
+  from this container" is never read as "absent from the whole page" — and neither is provable
+  until \`coverageVerified\`.
 
 - The moment a problem appears, call \`qa_evidence\` before navigating away or changing state.
   Missing permissions, truncation, and driver rejection are boundaries, never green results.

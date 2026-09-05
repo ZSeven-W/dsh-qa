@@ -78,10 +78,16 @@ test('scoped observe reaches a deep target beyond the whole-page window and prov
       const anchor = anchorView.nodes.find((node) => node.name === 'Scope anchor region')
       assert.ok(anchor, 'the scope anchor is inside the whole-page window')
       const narrow = await session.observe({ withinRef: anchor.ref, maxNodes: 100 })
-      assert.deepEqual(
-        narrow.scope,
-        { ref: anchor.ref, role: 'region', name: 'Scope anchor region', tag: 'main' },
-        'the observation echoes the scope root the driver observed',
+      // The driver's scope echo is projected VERBATIM; Phase B adds a FRESH
+      // rootRef field (contract v9), so pin the stable identity fields and
+      // tolerate the additive one rather than freezing the in-flight shape.
+      assert.equal(narrow.scope?.ref, anchor.ref, 'the scope echoes the passed within ref')
+      assert.equal(narrow.scope?.role, 'region')
+      assert.equal(narrow.scope?.name, 'Scope anchor region')
+      assert.equal(narrow.scope?.tag, 'main')
+      assert.ok(
+        narrow.scope?.rootRef === undefined || typeof narrow.scope.rootRef === 'string',
+        'an additive rootRef (driver contract v9) is a string when present',
       )
       const container = narrow.nodes.find((node) => node.name === 'Deep container')
       assert.ok(container, 'the narrow observation reaches the container')
@@ -91,17 +97,23 @@ test('scoped observe reaches a deep target beyond the whole-page window and prov
       assert.ok(narrow.truncationReasons?.includes('iframe-not-traversed'), 'the iframe inside main must flag the main-scoped view: ' + JSON.stringify(narrow.truncationReasons))
 
       // Scope to the container: the whole subtree fits, truncated false with no
-      // reasons — absence inside the container is now provable.
+      // reasons. (Absence inside it stays UNPROVEN until coverageVerified —
+      // QA-BL-052 — but the deep target is now REACHABLE.)
       const scoped = await session.observe({ withinRef: container.ref, maxNodes: 40 })
       const deep = scoped.nodes.find((node) => node.name === 'Deep scoped target')
       assert.ok(deep, 'the scoped observe returns the deep target: ' + JSON.stringify(scoped.nodes.map((node) => node.name)))
       assert.equal(scoped.truncated, false, 'a subtree that fits must report truncated false')
       assert.equal(scoped.truncationReasons, undefined, 'no reasons when the subtree fits: ' + JSON.stringify(scoped.truncationReasons))
       assert.equal(scoped.maxNodes, 40, 'the applied budget keeps reporting')
-      assert.deepEqual(
-        scoped.scope,
-        { ref: container.ref, role: 'region', name: 'Deep container', tag: 'div' },
-        'the container-scoped observation echoes its root',
+      // Same tolerance as above: the driver's scope echo is verbatim, and
+      // Phase B adds an additive fresh rootRef (contract v9).
+      assert.equal(scoped.scope?.ref, container.ref, 'the scope echoes the passed within ref')
+      assert.equal(scoped.scope?.role, 'region')
+      assert.equal(scoped.scope?.name, 'Deep container')
+      assert.equal(scoped.scope?.tag, 'div')
+      assert.ok(
+        scoped.scope?.rootRef === undefined || typeof scoped.scope.rootRef === 'string',
+        'an additive rootRef (driver contract v9) is a string when present',
       )
       assert.equal(scoped.nodes.length, 32, 'the container subtree holds 32 semantic matches')
       assert.ok(!scoped.nodes.some((node) => node.name.startsWith('probe-')), 'the scoped view must contain subtree nodes only')

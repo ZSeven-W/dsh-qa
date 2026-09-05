@@ -181,7 +181,14 @@ export interface QaExportExclusion {
     | 'TARGET_HAS_NO_ACCESSIBLE_NAME'
     | 'TARGET_NOT_UNIQUE'
     | 'ASSERTION_NOT_PROVABLE'
-    | 'FRAGILE_PROOF_ONLY';
+    | 'FRAGILE_PROOF_ONLY'
+    /**
+     * QA-BL-054: the proof observation was SCOPED but its container predicate
+     * is not proven durable (not unique in a complete recorded baseline, or
+     * no usable baseline). The step is excluded — a scoped proof is never
+     * silently exported as a whole-page one.
+     */
+    | 'SCOPE_NOT_DURABLE';
   detail: string;
   receipt: QaActionReceipt | null;
 }
