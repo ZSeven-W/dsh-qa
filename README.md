@@ -36,6 +36,15 @@ dependency and never vendored) to that interface
 without weakening any driver safety semantics. `fixtures/web/index.html` is a
 self-contained loopback fixture that reproduces the 2026-08-25 acceptance flow.
 
+The native (Computer-driver) fixture `fixtures/native/` is **repository-only by
+decision (QA-BL-042, 2026-09-05)**: it is a signed macOS app bundle built from
+`main.swift` and is not in the published package. Build it from a checkout with
+`node fixtures/native/build-fixture.mjs`, launch
+`fixtures/native/build/DshQaFixture.app`, and stop it with
+`pkill -x dsh-qa-fixture`. It is the only isolated target for demonstrating the
+Computer driver's permanent secure-field rejection ("Secure password",
+`fixture.securePassword`) and is exercised by `test/computer-integration.test.mjs`.
+
 ## Replay (WP4)
 
 Declarative `QaScenario` files (lossless JSON, `{ meta, target, steps[],
