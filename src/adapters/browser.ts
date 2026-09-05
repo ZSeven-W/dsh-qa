@@ -62,6 +62,14 @@ export class BrowserAdapter implements QaDriverAdapter {
       // of falling back to a whole-page view. The refusal propagates verbatim
       // — this adapter never catches, retries, or reroutes it.
       ...(options?.withinRef === undefined ? {} : { within: options.withinRef }),
+      // v9 Phase C: the bounded coverage probe runs ONLY on the terminal
+      // absence-proof path (never on settle polls); the evidence travels
+      // verbatim into QaObservation.coverage.
+      ...(options?.verifyCoverage === true ? { verifyCoverage: true } : {}),
+      // v9 Phase B: the identity anchor for the element the driver last
+      // dispatched an action on; a request with no retained target REJECTS
+      // with ANCHOR_UNAVAILABLE and that refusal propagates verbatim.
+      ...(options?.anchorLastAction === true ? { anchorLastAction: true } : {}),
     };
     const observation = await this.#driver.observe(ownerId, driverOptions);
     return {
@@ -79,6 +87,14 @@ export class BrowserAdapter implements QaDriverAdapter {
       // pre-v8 driver that reports no scope). A scoped observation's budgets
       // and truncation are subtree-relative.
       ...(observation.scope === undefined || observation.scope === null ? {} : { scope: observation.scope }),
+      // v9 Phase C: per-observation coverage evidence, projected verbatim.
+      ...(observation.coverage === undefined ? {} : { coverage: observation.coverage }),
+      // v9 Phase B: the identity anchor, present exactly when requested.
+      ...(observation.anchor === undefined ? {} : { anchor: observation.anchor }),
+      // v9 gate diagnostics: hidden semantic-selector candidates the
+      // visibility gate skipped, and whether the count is a lower bound.
+      ...(observation.hiddenMatches === undefined ? {} : { hiddenMatches: observation.hiddenMatches }),
+      ...(observation.hiddenMatchesPartial === undefined ? {} : { hiddenMatchesPartial: observation.hiddenMatchesPartial }),
     };
   }
 

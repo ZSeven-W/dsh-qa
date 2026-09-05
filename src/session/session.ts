@@ -195,34 +195,69 @@ function scrollProofExtends(settled: QaObservation, escalated: QaObservation): b
   return true;
 }
 
-// QA-BL-055: the QA-BL-050 container-heuristic SCOPED escalation is RETIRED.
-// The audit (F4) showed the heuristic can pick a NON-ancestor container, and a
-// same-identity twin inside the wrong container can then satisfy the proof:
-// finding the container by role+name+tag across observations is not identity.
-// The ONE record-time scroll-proof escalation is the WHOLE-PAGE read again
-// (QA-BL-045/047), until contract v9's identity anchor (Phase B) restores the
-// capability. test/scroll-proof-scoped-escalation.test.mjs pins the ABSENCE of
-// any withinRef in an escalated observe.
+// B3 (contract v9, Phase B): the container roles the identity-anchored SCOPED
+// scroll-proof escalation may root a read at. The container itself is picked
+// by ANCESTRY — the target's parentRef chain in the BASELINE observation — and
+// the acceptance is decided by the driver's identity anchor, never by matching
+// role/name/tag across observations (the retired QA-BL-050 heuristic).
+const QA_CONTAINER_ROLES = new Set([
+  'region',
+  'main',
+  'navigation',
+  'list',
+  'table',
+  'form',
+  'group',
+  'complementary',
+  'article',
+  'section',
+]);
 
 /**
- * The ref that chains the NEXT scoped read: the re-collected scope root
- * node's fresh ref inside a scoped observation. The observation's scope.ref
- * echoes the ref the caller PASSED — which belonged to the observation this
- * read just replaced, so it never resolves again. The root node is found by
- * the scope echo's role+name+tag identity (the driver emits the root first,
- * and a caller can only have scoped to a node it observed, so the root is
- * selectable); undefined when the view is whole-page or the root is absent.
- *
- * Still used by observeSettled / #observeEscalated to re-key SETTLED scoped
- * reads (a caller-scoped read, not the retired escalation); kept for that.
+ * The target's nearest container-role ANCESTOR in the BASELINE observation:
+ * walk the target's parentRef chain (composed-tree ancestry, driver contract
+ * v9 — each parentRef names an EARLIER node of the same observation) to the
+ * first node whose role is a container role. parentRef compares as a
+ * RELATIONSHIP within the baseline view only, never as a raw string across
+ * observations. Undefined when the chain runs out (no container ancestor) or
+ * a parentRef does not resolve inside the baseline (fail closed — the caller
+ * then takes the whole-page escalation).
+ */
+function scrollProofContainer(baseline: QaObservation | null, targetIndex: number): QaSemanticNode | undefined {
+  if (baseline === null) return undefined;
+  const targetNode = baseline.nodes[targetIndex];
+  if (targetNode === undefined) return undefined;
+  const byRef = new Map(baseline.nodes.map((node) => [node.ref, node]));
+  let current = targetNode;
+  for (let hops = 0; hops < baseline.nodes.length; hops += 1) {
+    const parentRef = typeof current.parentRef === 'string' && current.parentRef !== ''
+      ? current.parentRef
+      : null;
+    if (parentRef === null) return undefined;
+    const parent = byRef.get(parentRef);
+    if (parent === undefined) return undefined;
+    if (QA_CONTAINER_ROLES.has(parent.role)) return parent;
+    current = parent;
+  }
+  return undefined;
+}
+
+/**
+ * The ref that chains the NEXT scoped read: the DRIVER's fresh scope.rootRef
+ * minted in THIS observation (driver contract v9, Phase B). The observation's
+ * scope.ref echoes the ref the caller PASSED — which belonged to the
+ * observation this read just replaced, so it never resolves again. rootRef
+ * binds the root even when the visibility gate excluded it from nodes, so a
+ * hidden root still chains. Undefined when the view is whole-page or the
+ * driver minted no rootRef (pre-v9) — and then the caller fails closed:
+ * re-matching the root by role+name+tag across observations is not identity
+ * (QA-BL-055) and is deliberately NOT done here.
  */
 function scopedRootRefOf(observation: QaObservation): string | undefined {
   const scope = observation.scope;
   if (scope === undefined) return undefined;
-  const root = observation.nodes.find(
-    (node) => node.role === scope.role && node.name === scope.name && node.tag === scope.tag,
-  );
-  return root?.ref;
+  const rootRef = scope.rootRef;
+  return typeof rootRef === 'string' && rootRef !== '' ? rootRef : undefined;
 }
 
 /** Field projection of one settle window result (no observation). */
@@ -322,15 +357,23 @@ export class QaSession {
     this.#assertStarted();
     // Scoped settled reads (browser driver contract v8): every poll REPLACES
     // the driver's current observation, so the within ref from the previous
-    // poll no longer resolves. Re-key it each poll to the re-collected scope
-    // root, found by the scope echo's role+name+tag identity in the fresh
-    // view (the caller can only have scoped to a node it OBSERVED, so the
-    // root is always selectable). A fresh view that no longer returns the
-    // root fails closed instead of silently re-narrowing to some other node.
+    // poll no longer resolves. Re-key it each poll to the DRIVER's fresh
+    // scope.rootRef (contract v9, Phase B) — never by role+name+tag
+    // re-matching, which is not identity. A fresh view whose driver minted
+    // no rootRef fails closed instead of silently re-narrowing to some other
+    // node. rootRef binds the root even when the visibility gate excluded it
+    // from nodes, so a root that hides mid-window still chains.
+    // Contract v9 Phase C: the bounded coverage probe NEVER runs on settle
+    // polls — when the caller requested verifyCoverage (the terminal absence
+    // decision), the polls run WITHOUT it and exactly ONE probed read is
+    // taken after the window settled; that probed view is the deciding
+    // observation.
+    const verifyCoverage = options?.verifyCoverage === true;
+    const pollOptions: QaObserveOptions = { ...(options ?? {}) };
+    if (verifyCoverage) delete pollOptions.verifyCoverage;
     let withinRef = options?.withinRef;
     const result = await observeUntilStable(
       async () => {
-        const pollOptions: QaObserveOptions = options ?? {};
         const observation = await this.#adapter.observe(
           this.#ownerId,
           { ...pollOptions, ...(withinRef === undefined ? {} : { withinRef }) },
@@ -339,7 +382,7 @@ export class QaSession {
           const rootRef = scopedRootRefOf(observation);
           if (rootRef === undefined) {
             throw new Error(
-              'the scoped observation no longer returns its scope root node, so the settled scoped read cannot continue; re-observe and retry',
+              'the scoped observation carries no rootRef, so its scope root cannot be re-chained; re-observe and retry',
             );
           }
           withinRef = rootRef;
@@ -350,8 +393,24 @@ export class QaSession {
       settle ?? {},
       this.#widenGate,
     );
-    this.#lastView = projectSemanticView(result.observation);
-    this.#lastObservation = result.observation;
+    let observation = result.observation;
+    if (verifyCoverage && result.stable) {
+      // ONE probed deciding read after the window: the probe runs exactly
+      // once for the whole terminal absence decision, on the deciding
+      // observation — never once per settle poll.
+      observation = await this.#adapter.observe(
+        this.#ownerId,
+        {
+          ...pollOptions,
+          verifyCoverage: true,
+          ...(withinRef === undefined ? {} : { withinRef }),
+        },
+      );
+    }
+    this.#lastView = projectSemanticView(observation);
+    this.#lastObservation = observation;
+    // The deciding (probed) observation is the one the window reports.
+    result.observation = observation;
     // Passive notification only (the Explore recorder binds the settled
     // observation here); a recorder failure can never alter session behavior.
     try {
@@ -395,11 +454,12 @@ export class QaSession {
     this.#assertStarted();
     // A scoped escalated read re-keys its within ref each poll exactly like
     // observeSettled: every scoped observe replaces the driver's current
-    // observation, so the previous poll's ref no longer resolves. A fresh
-    // view that no longer returns its scope root fails the window (the caller
-    // keeps the settled observation — fail closed, at most one escalation).
-    // The record-time scroll escalation itself is WHOLE-PAGE (QA-BL-055) and
-    // never passes a withinRef.
+    // observation, so the previous poll's ref no longer resolves. The chain
+    // key is the DRIVER's fresh scope.rootRef (contract v9, Phase B); a view
+    // whose driver minted no rootRef fails the window (the caller keeps the
+    // settled observation — fail closed, at most one escalation). The
+    // whole-page form of the record-time scroll escalation passes no
+    // withinRef at all.
     let withinRef = options?.withinRef;
     const result = await observeUntilStable(
       async () => {
@@ -412,7 +472,7 @@ export class QaSession {
           const rootRef = scopedRootRefOf(observation);
           if (rootRef === undefined) {
             throw new Error(
-              'the escalated scoped observation no longer returns its scope root node, so the proof re-read cannot continue',
+              'the escalated scoped observation carries no rootRef, so its scope root cannot be re-chained; the proof re-read cannot continue',
             );
           }
           withinRef = rootRef;
@@ -482,11 +542,15 @@ export class QaSession {
     // adapters only, see #escalateScrollProof): a target deep in DOM order is
     // simply outside the default node-budget window, and without the fuller
     // view export could never evaluate the node-in-viewport proof. The ONE
-    // escalation is the WHOLE-PAGE read (QA-BL-045/047; the QA-BL-050 scoped
-    // container escalation is RETIRED — QA-BL-055). At most one escalation per
-    // action; a refused one keeps the settled observation and, when the
-    // escalated read itself threw, is DISCLOSED as escalationRefused
-    // (QA-BL-058).
+    // escalation prefers the identity-anchored SCOPED read rooted at the
+    // target's nearest container-role ANCESTOR (contract v9, Phase B — B3,
+    // re-enabling QA-BL-050 without the retired heuristic) and falls back to
+    // the WHOLE-PAGE read (QA-BL-045/047) when no container is on the
+    // parentRef chain or it cannot be re-keyed. At most one escalation per
+    // action; a refused one keeps the settled observation and is DISCLOSED as
+    // escalationRefused (QA-BL-058: a thrown driver refusal such as
+    // ANCHOR_UNAVAILABLE, or an anchor that reports connected:false /
+    // contained:false / a null ref).
     let proofObservation = settled.observation;
     let escalatedSettle: QaSettleReport | null = null;
     let escalationRefused: { code?: string; reason: string } | undefined;
@@ -537,25 +601,23 @@ export class QaSession {
    * live assertion path already closes with its own bounded re-observation
    * (replay/assertions.ts decideAssertion).
    *
-   * QA-BL-055: the escalation is the WHOLE-PAGE read (QA-BL-045/047
-   * behaviour). The QA-BL-050 SCOPED container escalation is RETIRED: the
-   * nearest-container heuristic can pick a NON-ancestor (the driver exposes
-   * no ancestry), and a same-identity twin inside the wrong container can
-   * then satisfy the proof — matching by role+name+tag across observations
-   * is not identity. Phase B (contract v9) restores the capability with an
-   * identity-preserving anchor.
-   *
-   * Accepts the escalated observation as the action's proof ONLY when
-   *
-   *  1. its window settled (stable),
-   *  2. the escalated view stably EXTENDS the settled one (see
-   *     scrollProofExtends: same page URL/title and every settled node
-   *     unchanged at the front in the same order — the page is still the
-   *     exact state the settle window proved), AND
-   *  3. the escalated view returns the action target (matched by the
-   *     pre-action predicate) with inViewport === true — a fuller view that
-   *     still does not place the target in the viewport is a useless
-   *     escalation and is refused.
+   * B3 (contract v9, Phase B) — re-enables QA-BL-050 WITHOUT the retired
+   * heuristic: the container is picked by ANCESTRY, walking the target's
+   * parentRef chain in the BASELINE observation to the first node whose role
+   * is a container role (region/main/navigation/list/table/form/group/
+   * complementary/article/section), then re-keyed into the settled view by
+   * its unique role+name+tag match. The escalated read is SCOPED to that
+   * container and requests the driver's identity anchor (anchorLastAction).
+   * IDENTITY COMES FROM THE ANCHOR, never from matching role/name/tag: the
+   * read is accepted ONLY when its window settled AND the anchor reports the
+   * ORIGINAL acted element connected, contained in the within subtree, and
+   * emitted with a fresh ref whose node is in the viewport. No container on
+   * the chain, an un-re-keyable container (zero or twin matches in the
+   * settled view), and every refusal fall back to — or keep — the settled
+   * observation; the WHOLE-PAGE escalation (QA-BL-045/047) runs when no
+   * container applies, keeping its prefix-extension acceptance rule
+   * (scrollProofExtends), which is meaningless across scopes for the scoped
+   * form (the anchor replaces it there).
    *
    * The escalated read is taken SIDE-EFFECT-FREE (see #observeEscalated): it
    * never widens the session policy, never flips the widen gate, and never
@@ -567,9 +629,12 @@ export class QaSession {
    * page, a still-off-viewport target, or a missing pre-action target all
    * keep the settled observation — at most ONE escalation per action, no
    * loop, fail closed. QA-BL-058: an escalated read that THROWS (a driver
-   * refusal such as PAGE_CHANGED / REF_EXPIRED) is DISCLOSED through the
-   * returned `refusal` instead of being swallowed into a silent null — the
-   * fail-closed outcome is unchanged, only the observability is new.
+   * refusal such as ANCHOR_UNAVAILABLE / PAGE_CHANGED / REF_EXPIRED) — and a
+   * scoped read whose anchor reports connected:false, contained:false, or a
+   * null ref, or whose anchored node is not in the viewport — is DISCLOSED
+   * through the returned `refusal` instead of being swallowed into a silent
+   * null; the fail-closed outcome is unchanged, only the observability is
+   * new.
    */
   async #escalateScrollProof(
     action: QaAction,
@@ -594,8 +659,26 @@ export class QaSession {
       (candidate) => matchesNode(candidate, target) && candidate.inViewport === true,
     );
     if (alreadyInViewport) return null;
-    // The ONE whole-page escalated read (QA-BL-055: the scoped container
-    // escalation is retired — no withinRef is ever passed here).
+
+    // B3: pick the container by ANCESTRY in the BASELINE observation (walk
+    // parentRef links — composed-tree ancestors, never a DOM-order heuristic)
+    // to the FIRST container-role node.
+    const container = scrollProofContainer(baselineObservation, targetIndex);
+    if (container !== undefined) {
+      // Re-key the container into the settled view by its unique
+      // role+name+tag identity — a HINT to pick the within subtree; the
+      // proof itself is decided by the anchor, so a re-key can never turn a
+      // non-ancestor into a false proof. Zero or twin matches: not re-keyable.
+      const predicate = { role: container.role, name: container.name, tag: container.tag };
+      const settledMatches = settledObservation.nodes.filter((candidate) => matchesNode(candidate, predicate));
+      const containerRefInSettled = settledMatches.length === 1 ? (settledMatches[0] as QaSemanticNode).ref : undefined;
+      if (containerRefInSettled !== undefined) {
+        return this.#escalateScopedScrollProof(containerRefInSettled, actionId);
+      }
+    }
+    // The ONE whole-page escalated read (QA-BL-045/047, unchanged) — taken
+    // when no container-role ancestor exists or the container cannot be
+    // re-keyed into the settled view.
     try {
       const escalated = await this.#observeEscalated({ maxNodes: QA_ESCALATED_NODE_BUDGET });
       const targetInViewport = escalated.observation.nodes.some(
@@ -618,6 +701,78 @@ export class QaSession {
         accepted: false,
         refusal: {
           reason: message === '' ? 'the escalated re-observation was refused by the driver' : message,
+          ...(typeof code === 'string' && code !== '' ? { code } : {}),
+        },
+      };
+    }
+  }
+
+  /**
+   * The ONE identity-anchored SCOPED escalated read (B3): observe within the
+   * re-keyed container with anchorLastAction, and accept the read as the
+   * action's proof ONLY when its window settled AND the driver's identity
+   * anchor reports the ORIGINAL acted element connected, contained in the
+   * within subtree, and emitted with a fresh ref whose node is in the
+   * viewport. Identity comes from the anchor — the original handle the
+   * driver dispatched the scroll on — never from matching role/name/tag.
+   * Refusals (ANCHOR_UNAVAILABLE, connected:false, contained:false, a null
+   * anchor ref, an off-viewport anchored node) are DISCLOSED as
+   * escalationRefused and the proof stays the settled observation.
+   */
+  async #escalateScopedScrollProof(
+    withinRef: string,
+    actionId: string | null,
+  ): Promise<
+    | { accepted: true; observation: QaObservation; settle: QaSettleReport }
+    | { accepted: false; refusal: { code?: string; reason: string } }
+    | null
+  > {
+    try {
+      const escalated = await this.#observeEscalated({
+        withinRef,
+        anchorLastAction: true,
+        maxNodes: QA_ESCALATED_NODE_BUDGET,
+      });
+      if (!escalated.stable) {
+        // An unsettled escalated window is refused silently, exactly like the
+        // whole-page form (fail closed, the settled observation stays).
+        return null;
+      }
+      const anchor = escalated.observation.anchor;
+      const anchoredNode = anchor?.ref === null || anchor?.ref === undefined
+        ? undefined
+        : escalated.observation.nodes.find((candidate) => candidate.ref === anchor.ref);
+      let anchorFailure: string | undefined;
+      if (anchor === undefined) {
+        anchorFailure = 'the driver reported no identity anchor for the scoped read';
+      } else if (anchor.connected !== true) {
+        anchorFailure = 'the identity anchor reported the acted element no longer connected (connected: false)';
+      } else if (anchor.contained !== true) {
+        anchorFailure = 'the identity anchor reported the acted element outside the scoped container (contained: false)';
+      } else if (anchor.ref === null) {
+        anchorFailure = 'the identity anchor excluded the acted element from the scoped view (anchor ref null)';
+      } else if (anchoredNode === undefined || anchoredNode.inViewport !== true) {
+        anchorFailure = 'the anchored element is not in the viewport, so the scoped scroll proof is unproven';
+      }
+      if (anchorFailure !== undefined) {
+        // QA-BL-058 vocabulary: the refusal is DISCLOSED — the proof stays the
+        // settled observation, and the reason names the anchor truth.
+        return { accepted: false, refusal: { reason: anchorFailure } };
+      }
+      try {
+        this.#adapter.noteEscalatedScrollProof?.(this.#ownerId, actionId);
+      } catch { /* observational only */ }
+      return { accepted: true, observation: escalated.observation, settle: settleReportOf(escalated) };
+    } catch (error) {
+      // QA-BL-058: the scoped escalated read threw (a driver refusal such as
+      // ANCHOR_UNAVAILABLE — no retained action target — or REF_EXPIRED /
+      // PAGE_CHANGED). Disclose it; the proof stays the settled observation.
+      const message = error instanceof Error ? error.message : String(error);
+      const code = (error as Error & { code?: unknown }).code;
+      return {
+        accepted: false,
+        refusal: {
+          reason: message === '' ? 'the scoped escalated re-observation was refused by the driver' : message,
           ...(typeof code === 'string' && code !== '' ? { code } : {}),
         },
       };

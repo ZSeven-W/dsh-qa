@@ -1,5 +1,6 @@
 import { QA_COVERAGE_UNVERIFIED, QA_INCONCLUSIVE_TRUNCATED, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
 import type {
+  QaCoverageEvidence,
   QaObservation,
   QaObservationScope,
   QaObserveOptions,
@@ -144,10 +145,10 @@ export interface QaAssertionDecision {
  *
  * Coverage rule (QA-BL-052), equally not left to callers: a node-absent
  * claim can ALSO never pass on a COMPLETE observation whose boundaries the
- * driver has not verified (coverageVerified !== true) — scoped or whole-page
- * — because closed shadow roots and unresolved slot assignment can silently
- * hide nodes from a complete-looking view. It fails closed with
- * QA_COVERAGE_UNVERIFIED instead of a false "gone".
+ * driver has not verified (coverage.verified !== true) — scoped or
+ * whole-page — because closed shadow roots and unresolved slot assignment
+ * can silently hide nodes from a complete-looking view. It fails closed
+ * with QA_COVERAGE_UNVERIFIED instead of a false "gone".
  */
 export function evaluateAssertion(assertion: QaAssertion, observation: QaObservation): AssertionEval {
   const kind = assertion.kind;
@@ -169,18 +170,21 @@ export function evaluateAssertion(assertion: QaAssertion, observation: QaObserva
     if (observation.truncated) {
       // Absence is a claim about the WHOLE view: a truncated view cannot
       // support it, so it fails closed instead of silently passing
-      // (INCONCLUSIVE_TRUNCATED semantics, unchanged).
+      // (INCONCLUSIVE_TRUNCATED semantics, unchanged). A probe that found
+      // closed roots or did not run to completion arrives here AS a truncated
+      // view (the driver pushes closed-shadow-root / shadow-coverage-unverified
+      // as truncation reasons).
       return { passed: false, observed: null, inconclusive: true };
     }
-    if (observation.coverageVerified !== true) {
-      // QA-BL-052 containment (scoped AND whole-page views): a COMPLETE view
-      // still cannot prove absence while the driver has not verified the
-      // observation's boundaries. Closed shadow roots are neither pierced nor
-      // counted and slot assignment may be unresolved, so a complete-looking
-      // view can silently miss nodes — "no observable node matched" is
-      // UNPROVEN, never "absent". The gate is per-observation evidence
-      // (coverageVerified, driver contract v9 Phase C), never a driver
-      // version; no adapter reports it yet, so node-absent cannot pass today.
+    if (observation.coverage?.verified !== true) {
+      // QA-BL-052 (scoped AND whole-page views): a COMPLETE view still cannot
+      // prove absence while the driver has not verified the observation's
+      // boundaries (coverage.verified !== true — contract v9, Phase C).
+      // Closed shadow roots are neither pierced nor counted and slot
+      // assignment may be unresolved, so a complete-looking view can silently
+      // miss nodes — "no observable node matched" is UNPROVEN, never
+      // "absent". The gate is per-observation evidence, never a driver
+      // version.
       return { passed: false, observed: null, inconclusive: true, reason: QA_COVERAGE_UNVERIFIED };
     }
     return { passed: true, observed: null, inconclusive: false };
@@ -247,21 +251,21 @@ function readsNodes(kind: QaAssertionKind): boolean {
 }
 
 /**
- * The ref that chains the NEXT scoped read: the re-collected scope root node's
- * FRESH ref inside a scoped observation. The observation's scope.ref echoes
- * the ref the caller PASSED — which belonged to the observation the scoped
- * read just replaced, so it never resolves again. The root node is found by
- * the scope echo's role+name+tag identity (the driver emits the root first,
- * and a caller can only have scoped to a node it observed, so the root is
- * selectable); undefined when the view is whole-page or the root is absent.
+ * The ref that chains the NEXT scoped read: the DRIVER's fresh scope.rootRef
+ * minted in THIS observation (driver contract v9, Phase B). The observation's
+ * scope.ref echoes the ref the caller PASSED — which belonged to the
+ * observation the scoped read just replaced, so it never resolves again.
+ * rootRef binds the root even when the visibility gate excluded it from
+ * nodes, so the chain survives a hidden root. Undefined when the view is
+ * whole-page or the driver minted no rootRef (pre-v9) — and then the caller
+ * must fail closed: re-matching the root by role+name+tag across observations
+ * is not identity (QA-BL-055) and is deliberately NOT done here.
  */
 export function scopeRootRef(observation: QaObservation): string | undefined {
   const scope = observation.scope;
   if (scope === undefined) return undefined;
-  const root = observation.nodes.find(
-    (node) => node.role === scope.role && node.name === scope.name && node.tag === scope.tag,
-  );
-  return root?.ref;
+  const rootRef = scope.rootRef;
+  return typeof rootRef === 'string' && rootRef !== '' ? rootRef : undefined;
 }
 
 /**
@@ -282,6 +286,8 @@ function budgetLabel(nodeBudget: number | null): string {
 /** Everything the completeness detail needs, in one honest context. */
 interface CompletenessContext {
   kind: QaAssertionKind;
+  /** The predicate an absence claim was decided against (for the PASS wording). */
+  predicate: QaNodePredicate | undefined;
   deciding: AssertionEval;
   truncated: boolean;
   /** Budget the DECIDING observation actually applied (driver-reported). */
@@ -292,6 +298,12 @@ interface CompletenessContext {
   truncationReasons: readonly string[] | undefined;
   /** The scope of the deciding view when it was a scoped observation. */
   scope: QaObservationScope | undefined;
+  /** The deciding view's coverage evidence (contract v9, Phase C). */
+  coverage: QaCoverageEvidence | undefined;
+  /** Gate-skipped semantic-selector candidates in the deciding view (v9). */
+  hiddenMatches: number | undefined;
+  /** Whether the hidden candidate count is a lower bound (v9). */
+  hiddenMatchesPartial: boolean | undefined;
   escalated: boolean;
   escalationFailed: boolean;
 }
@@ -362,25 +374,74 @@ function scopeClause(scope: QaObservationScope | undefined): string {
   return 'the deciding view was scoped to the ' + scope.role + ' named "' + scope.name + '"; ';
 }
 
+/** Human-readable spelling of a node predicate, for the absence PASS wording. */
+function describePredicate(predicate: QaNodePredicate | undefined): string {
+  if (predicate === undefined) return '(no predicate)';
+  const parts: string[] = [];
+  if (predicate.role !== undefined) parts.push('role "' + predicate.role + '"');
+  if (predicate.name !== undefined) parts.push('name "' + predicate.name + '"');
+  if (predicate.tag !== undefined) parts.push('tag "' + predicate.tag + '"');
+  return parts.length === 0 ? '(no fields)' : parts.join(', ');
+}
+
+/**
+ * The Codex-consult PASS wording for a proven node-absent: names the
+ * projection, the scope, the coverage evidence (with the probed node count),
+ * and the gate-excluded hidden candidates. This is what report.md prints on
+ * the "view completeness" line of a passing absence.
+ */
+function absencePassDetail(context: CompletenessContext): string {
+  const scope = context.scope === undefined
+    ? 'the whole page'
+    : 'the ' + context.scope.role + ' named "' + context.scope.name + '"';
+  const probed = context.coverage?.probedNodes ?? 0;
+  let detail = 'No driver-observable semantic node matching ' + describePredicate(context.predicate)
+    + ' was found within ' + scope + '; coverage verified (' + String(probed) + ' nodes probed).';
+  if (context.hiddenMatches !== undefined) {
+    detail += ' ' + String(context.hiddenMatches) + ' hidden candidates excluded'
+      + (context.hiddenMatchesPartial === true ? ' (lower bound)' : '') + '.';
+  }
+  return detail;
+}
+
+/** The driver's coverage evidence, spelled for a human reading the detail. */
+function coverageClause(context: CompletenessContext): string {
+  const coverage = context.coverage;
+  if (coverage === undefined) return 'the driver reported no coverage evidence';
+  if (coverage.reason === undefined) {
+    return 'the driver reported coverage verified:false with ' + String(coverage.closedShadowRoots)
+      + ' closed shadow root(s) in the observed subtree';
+  }
+  return 'the driver reported coverage verified:false with reason \'' + coverage.reason + '\'';
+}
+
 function completenessDetail(
   kind: QaAssertionKind,
+  predicate: QaNodePredicate | undefined,
   deciding: AssertionEval,
   truncated: boolean,
   nodeBudget: number | null,
   priorBudget: number | null,
   truncationReasons: readonly string[] | undefined,
   scope: QaObservationScope | undefined,
+  coverage: QaCoverageEvidence | undefined,
+  hiddenMatches: number | undefined,
+  hiddenMatchesPartial: boolean | undefined,
   escalated: boolean,
   escalationFailed: boolean,
 ): string {
   const context: CompletenessContext = {
     kind,
+    predicate,
     deciding,
     truncated,
     nodeBudget,
     priorBudget,
     truncationReasons,
     scope,
+    coverage,
+    hiddenMatches,
+    hiddenMatchesPartial,
     escalated,
     escalationFailed,
   };
@@ -391,21 +452,39 @@ function completenessDetail(
     return 'the observation was truncated at its ' + budget
       + ' budget, but this assertion reads the page URL only and does not depend on node completeness.';
   }
+  // A PROVEN absence PASS reports its proof (the Codex-consult wording): the
+  // projection, the scope, the verified coverage with the probed count, and
+  // the gate-excluded hidden candidates.
+  if (kind === 'node-absent' && deciding.passed) {
+    return escalation + scoped + absencePassDetail(context);
+  }
   if (deciding.inconclusive) {
     if (deciding.reason === QA_COVERAGE_UNVERIFIED) {
       // QA-BL-052: the view is complete but its boundaries are unverified.
       // The detail must say, in plain words, that no observable node matched
-      // but the absence is UNPROVEN — never "not present".
+      // but the absence is UNPROVEN — never "not present" — and name the
+      // driver's coverage evidence.
       return escalation + scoped
         + 'no observable node matched the assertion, but the observation\'s boundaries '
-        + '(closed shadow roots, slot assignment) were not verified, so the absence is UNPROVEN — not "not present". '
-        + 'The driver must report coverageVerified before a node-absent assertion can pass.';
+        + '(closed shadow roots, slot assignment) were not verified (' + coverageClause(context)
+        + '), so the absence is UNPROVEN — not "not present". '
+        + 'The driver must report coverage.verified:true (its bounded closed-shadow-root probe) '
+        + 'before a node-absent assertion can pass.';
+    }
+    let coverageProbe = '';
+    if (hasReason(truncationReasons, 'closed-shadow-root')) {
+      coverageProbe = ' The coverage probe found a closed shadow root (reason \'closed-shadow-root\') '
+        + 'in the observed subtree — the content it renders is missing from the projection.';
+    } else if (hasReason(truncationReasons, 'shadow-coverage-unverified')) {
+      coverageProbe = ' The coverage probe did not run to completion (shadow-coverage-unverified; probe reason \''
+        + (coverage?.reason === undefined ? 'none reported' : coverage.reason)
+        + '\'), so closed-shadow-root absence is unproven.';
     }
     return escalation + scoped
       + 'the view was STILL truncated at its ' + budget + ' budget, so "' + kind
       + '" cannot be proven from it: a matching node may exist outside the returned window'
-      + (scope === undefined ? '' : ' of that container\'s subtree') + '. '
-      + 'This is not "not present" — ' + truncationAdvice(context) + ' then re-run.';
+      + (scope === undefined ? '' : ' of that container\'s subtree') + '.' + coverageProbe
+      + ' This is not "not present" — ' + truncationAdvice(context) + ' then re-run.';
   }
   if (truncated) {
     return escalation + scoped
@@ -429,10 +508,19 @@ function completenessDetail(
  * that never settled) is not fatal either: the decision falls back to the
  * original view, still fail-closed.
  *
- * QA-BL-052: a COMPLETE deciding view whose boundaries are unverified
- * (coverageVerified !== true) fails a node-absent claim CLOSED with
- * QA_COVERAGE_UNVERIFIED instead of passing — a bigger budget cannot add
- * coverage evidence, so no escalation is attempted for it.
+ * TERMINAL ABSENCE DECISION (contract v9, Phase C / C2): the ONE deciding
+ * re-observation a node-absent claim takes — the budget escalation above, or,
+ * when the initial view is already complete but unverified, the single
+ * bounded re-read that requests the coverage probe — carries
+ * verifyCoverage: true, so the deciding view reports per-observation coverage
+ * evidence. node-absent then PASSES iff nothing matched AND truncated:false
+ * AND coverage.verified === true; a probe that found closed shadow roots or
+ * did not run to completion arrives as a truncated view (the driver's
+ * closed-shadow-root / shadow-coverage-unverified reasons) and keeps the
+ * result INCONCLUSIVE_TRUNCATED, while a complete view whose coverage was
+ * skipped stays COVERAGE_UNVERIFIED — with the driver's reason named in
+ * completeness.detail and its reasons in truncationReasons. Ordinary settle
+ * polls NEVER request the probe: only this terminal re-read does.
  */
 export async function decideAssertion(
   assertion: QaAssertion,
@@ -440,13 +528,19 @@ export async function decideAssertion(
   reobserve: QaReobserve,
 ): Promise<QaAssertionDecision> {
   const first = evaluateAssertion(assertion, observation);
-  if (!observation.truncated && observation.scope === undefined && !first.inconclusive) {
+  if (
+    !observation.truncated
+    && observation.scope === undefined
+    && !first.inconclusive
+    && assertion.kind !== 'node-absent'
+  ) {
     // A decided complete WHOLE-PAGE view reports nothing to escalate or
     // explain. A complete SCOPED view still reports completeness: its scope
     // must be named, so a container-scoped absence is never read as a
-    // whole-page absence — and a coverage-unverified ABSENCE (QA-BL-052) is
-    // inconclusive even on a complete whole-page view, so it falls through
-    // to the completeness block below instead of reporting silently.
+    // whole-page absence. A node-absent PASS (or an unverified absence) is
+    // NOT short-circuited: the proven pass reports its Codex-consult wording,
+    // and a coverage-unverified ABSENCE (QA-BL-052) is inconclusive even on a
+    // complete whole-page view — both fall through to the completeness block.
     return {
       passed: first.passed,
       observed: first.observed,
@@ -460,22 +554,29 @@ export async function decideAssertion(
   let evaluation = first;
   let escalated = false;
   let escalationFailed = false;
-  if (observation.truncated && needsFullerView(assertion.kind, first)) {
+  // The terminal absence decision requests the coverage probe on its ONE
+  // bounded deciding re-observation — the budget escalation already taken for
+  // a truncated view, or (for a complete-but-unverified view) the single
+  // bounded re-read that exists precisely to carry the probe. No other
+  // assertion kind ever requests it.
+  const terminalAbsenceRead = assertion.kind === 'node-absent' && first.inconclusive;
+  if (first.inconclusive && (observation.truncated || terminalAbsenceRead)) {
     // A scoped decision escalates WITHIN the same scope: the escalated view is
     // a strictly fuller read of the same subtree (same container, bigger
     // budget), never a whole-page widening that would change what the claim
-    // is about. The chain key is the re-collected ROOT NODE's fresh ref (the
+    // is about. The chain key is the DRIVER's fresh scope.rootRef (the
     // scope.ref echo is the passed ref, which the scoped read just consumed).
     // An unscoped decision escalates exactly as before.
     const withinRef = scopeRootRef(observation);
     if (observation.scope !== undefined && withinRef === undefined) {
-      // The scoped view cannot be re-chained (its root is not among the
-      // returned nodes): decide against the scoped view, fail closed.
+      // The scoped view cannot be re-chained (the driver minted no rootRef):
+      // decide against the scoped view, fail closed.
       escalationFailed = true;
     } else {
       const escalationOptions: QaObserveOptions = {
         maxNodes: QA_ESCALATED_NODE_BUDGET,
         ...(withinRef === undefined ? {} : { withinRef }),
+        ...(terminalAbsenceRead ? { verifyCoverage: true } : {}),
       };
       try {
         const fuller = await reobserve(escalationOptions);
@@ -500,6 +601,11 @@ export async function decideAssertion(
   // report names the ACTUAL cause.
   const coverageUnverified = evaluation.inconclusive && evaluation.reason === QA_COVERAGE_UNVERIFIED;
 
+  // The predicate an absence claim names, for the PASS wording.
+  const predicate = assertion.kind === 'node-absent'
+    ? (assertion.expected as QaNodePredicate | undefined)
+    : undefined;
+
   const completeness: QaViewCompleteness = {
     truncated: deciding.truncated,
     nodeBudget,
@@ -509,17 +615,31 @@ export async function decideAssertion(
       ? {}
       : { scope: { role: deciding.scope.role, name: deciding.scope.name } }),
     ...(deciding.truncationReasons === undefined ? {} : { truncationReasons: deciding.truncationReasons }),
+    // Contract v9 gate diagnostics: the deciding view's hidden
+    // semantic-selector candidates and the lower-bound marker, when the
+    // driver reported them.
+    ...(deciding.hiddenMatches === undefined ? {} : { hiddenMatches: deciding.hiddenMatches }),
+    ...(deciding.hiddenMatchesPartial === undefined ? {} : { hiddenMatchesPartial: deciding.hiddenMatchesPartial }),
+    // The deciding coverage evidence, reported exactly for ABSENCE decisions
+    // (it is the gate that decides them); other kinds carry it only in prose.
+    ...(assertion.kind === 'node-absent' && deciding.coverage !== undefined
+      ? { coverage: deciding.coverage }
+      : {}),
     ...(evaluation.inconclusive
       ? { reason: coverageUnverified ? QA_COVERAGE_UNVERIFIED : QA_INCONCLUSIVE_TRUNCATED }
       : {}),
     detail: completenessDetail(
       assertion.kind,
+      predicate,
       evaluation,
       deciding.truncated,
       nodeBudget,
       priorBudget,
       deciding.truncationReasons,
       deciding.scope,
+      deciding.coverage,
+      deciding.hiddenMatches,
+      deciding.hiddenMatchesPartial,
       escalated,
       escalationFailed,
     ),

@@ -97,8 +97,8 @@ test('scoped observe reaches a deep target beyond the whole-page window and prov
       assert.ok(narrow.truncationReasons?.includes('iframe-not-traversed'), 'the iframe inside main must flag the main-scoped view: ' + JSON.stringify(narrow.truncationReasons))
 
       // Scope to the container: the whole subtree fits, truncated false with no
-      // reasons. (Absence inside it stays UNPROVEN until coverageVerified —
-      // QA-BL-052 — but the deep target is now REACHABLE.)
+      // reasons. (Absence inside it passes only with verified coverage —
+      // QA-BL-052 / C2 — but the deep target is now REACHABLE.)
       const scoped = await session.observe({ withinRef: container.ref, maxNodes: 40 })
       const deep = scoped.nodes.find((node) => node.name === 'Deep scoped target')
       assert.ok(deep, 'the scoped observe returns the deep target: ' + JSON.stringify(scoped.nodes.map((node) => node.name)))

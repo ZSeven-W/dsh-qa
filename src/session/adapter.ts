@@ -15,6 +15,14 @@ export interface QaPageRef {
 
 export interface QaSemanticNode {
   ref: string;
+  /**
+   * Browser-only (driver contract v9): the ref of the nearest ANCESTOR in the
+   * composed tree that is itself an emitted node in the SAME observation;
+   * null when none. Refs are re-minted per observation, so consumers compare
+   * ancestry as a RELATIONSHIP (the parent's index within the same view),
+   * never as raw ref strings across observations.
+   */
+  parentRef?: string | null;
   role: string;
   name: string;
   tag: string;
@@ -50,6 +58,47 @@ export interface QaComputerAppIdentity {
   pid: number;
   launchIdentity: string | null;
   name: string | null;
+}
+
+/**
+ * Per-observation coverage evidence (browser driver contract v9, Phase C):
+ * the outcome of the driver's bounded CDP closed-shadow-root probe.
+ *
+ * verified === true is the ONLY evidence on which a consumer may read
+ * truncated:false as "every semantic node of the observed subtree is in the
+ * projection" — and therefore the only evidence on which a node-absent
+ * assertion may PASS. It is true ONLY when the probe ran to completion
+ * within its budgets AND found zero closed shadow roots. The computer driver
+ * has no shadow DOM: its adapter reports this shape vacuously verified (see
+ * ComputerAdapter), never synthesized per call.
+ */
+export interface QaCoverageEvidence {
+  verified: boolean;
+  /** Closed shadow roots found in the observed subtree. */
+  closedShadowRoots: number;
+  /** DOM nodes the probe walked before it finished or stopped. */
+  probedNodes: number;
+  /**
+   * Why the probe is NOT verified evidence, absent on the two completed
+   * outcomes. "skipped": verifyCoverage was not requested (ordinary polls).
+   * "over-budget": the probe node (5,000) or time (250 ms) cap was hit.
+   * "cdp-unavailable" / "root-unresolved" / "error": the probe could not run.
+   */
+  reason?: 'skipped' | 'over-budget' | 'cdp-unavailable' | 'root-unresolved' | 'error';
+}
+
+/**
+ * Browser-only (driver contract v9): the identity anchor for the element the
+ * driver last dispatched an action on — the ORIGINAL handle used for
+ * dispatch, never a re-matched node. ref is that element's fresh ref in THIS
+ * observation when it was emitted (null when the gate or a budget excluded
+ * it); connected/contained stay truthful either way, and contained is null
+ * for a whole-page observation.
+ */
+export interface QaObservationAnchor {
+  ref: string | null;
+  connected: boolean;
+  contained: boolean | null;
 }
 
 /** Computer-only window identity, asserted (never assumed) on observation. */
@@ -106,12 +155,23 @@ export interface QaComputerEvidence {
  * ref (the driver echoes it back). Absent for whole-page observations and for
  * drivers that do not report a scope; when present, the observation's
  * truncation, budgets, and the iframe marker are SUBTREE-relative. NOTE
- * (QA-BL-052): subtree completeness alone no longer proves absence — the
- * observation must also carry `coverageVerified` (closed shadow roots, slot
- * assignment), otherwise a node-absent claim fails closed as UNPROVEN.
+ * (QA-BL-052 / C2): subtree completeness alone does not prove absence — the
+ * deciding observation must also carry `coverage.verified: true` (the
+ * bounded closed-shadow-root probe, contract v9 Phase C), otherwise a
+ * node-absent claim fails closed as UNPROVEN.
  */
 export interface QaObservationScope {
   ref: string;
+  /**
+   * Browser-only (driver contract v9): a ref minted in THIS observation for
+   * the root element — the ref that chains the NEXT scoped read. When the
+   * root was emitted it equals that node's ref (the root is always nodes[0]
+   * of a scoped view); when the visibility gate excluded the root, the root
+   * may be absent from nodes while rootRef still binds it. Honest-optional:
+   * absent on a pre-v9 driver — and then the QA layer can NOT re-chain the
+   * scoped read and fails closed instead of re-matching by role+name+tag.
+   */
+  rootRef?: string;
   role: string;
   name: string;
   tag: string;
@@ -151,17 +211,41 @@ export interface QaObservation {
   app?: QaComputerAppIdentity;
   window?: QaComputerWindowIdentity;
   /**
-   * ADDITIVE (driver contract v9, Phase C): AFFIRMATIVE evidence that this
-   * observation's boundaries were VERIFIED — closed shadow roots among all
-   * descendants (pierced or counted) and slot assignment resolved — so the
-   * view really contains every semantic node of its scope. Honest-optional:
-   * absent means the driver did NOT verify coverage, and a `node-absent`
-   * claim is then UNPROVEN (QA-BL-052: it fails closed with
-   * COVERAGE_UNVERIFIED even on a complete view, scoped or whole-page). NO
-   * adapter sets this field yet — that is deliberate containment until the
-   * driver gains the coverage probe.
+   * Browser/computer coverage evidence for THIS observation (driver contract
+   * v9, Phase C). This is the ONE source of truth for the absence gate:
+   * coverage.verified === true — no closed shadow root exists in the
+   * observed subtree — is the only evidence on which a node-absent assertion
+   * may PASS on a complete view (QA-BL-052). Honest-optional: ABSENT means
+   * the observation carries no coverage evidence at all (a pre-v9 driver, or
+   * a test double), and a node-absent claim is then UNPROVEN — it fails
+   * closed with COVERAGE_UNVERIFIED even on a complete view, scoped or
+   * whole-page. The browser adapter projects the driver evidence verbatim;
+   * the computer adapter reports it vacuously verified (no shadow DOM); the
+   * QA layer never synthesizes it from anything else.
    */
-  coverageVerified?: boolean;
+  coverage?: QaCoverageEvidence;
+  /**
+   * Browser-only (driver contract v9): the identity anchor of the element
+   * the driver last dispatched an action on, present exactly when the
+   * observe requested anchorLastAction. Honest-optional: absent means no
+   * anchor was requested or the driver reports none.
+   */
+  anchor?: QaObservationAnchor;
+  /**
+   * Browser-only (driver contract v9): count of semantic-selector matches
+   * the visibility gate skipped (visibility:hidden, display:none,
+   * opacity:0, zero/no client rects) within the scanned range. A diagnostic
+   * of the observable-node projection, never a truncation reason.
+   * Honest-optional: absent means the driver did not report a count.
+   */
+  hiddenMatches?: number;
+  /**
+   * Browser-only (driver contract v9): true whenever collection stopped
+   * early (scan window, node budget, byte budget), i.e. hiddenMatches is a
+   * LOWER BOUND of the subtree gate-skipped matches. False means the count
+   * is exact. Honest-optional, always paired with hiddenMatches.
+   */
+  hiddenMatchesPartial?: boolean;
 }
 
 export interface QaActionReceipt {
@@ -234,12 +318,29 @@ export interface QaObserveOptions {
    * whole-page view. Budgets, the byte ceiling, the scan window, and the
    * iframe marker become subtree-relative, so a subtree that fits reports
    * truncated:false and a deep target unreachable whole-page becomes
-   * reachable. NOTE (QA-BL-052): scoping does NOT currently make
-   * node-absent pass — absence is UNPROVEN until the observation carries
-   * coverageVerified. The computer driver does not support scoping: a
-   * withinRef there is REFUSED with a clear error, never silently ignored.
+   * reachable. NOTE (QA-BL-052): a complete scoped view only proves absence
+   * when the deciding observation also carries coverage.verified === true.
+   * The computer driver does not support scoping: a withinRef there is
+   * REFUSED with a clear error, never silently ignored.
    */
   withinRef?: string;
+  /**
+   * Browser-only (driver contract v9, Phase C), INTERNAL: run the bounded
+   * CDP closed-shadow-root coverage probe over the observed subtree and
+   * report per-observation coverage evidence. Only the TERMINAL absence
+   * decision requests this (its one bounded deciding re-observation);
+   * ordinary settle polls never carry it. The computer adapter IGNORES it
+   * explicitly (the accessibility tree has no shadow DOM).
+   */
+  verifyCoverage?: true;
+  /**
+   * Browser-only (driver contract v9), INTERNAL: request an identity anchor
+   * for the element the driver last dispatched an action on (the ORIGINAL
+   * handle). The record-time scoped scroll-proof escalation uses it; a
+   * request without a retained action target REJECTS with ANCHOR_UNAVAILABLE.
+   * The computer adapter IGNORES it explicitly.
+   */
+  anchorLastAction?: true;
 }
 
 export interface QaEvidenceOptions {

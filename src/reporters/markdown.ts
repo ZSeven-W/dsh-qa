@@ -52,6 +52,10 @@ function escapeLoneSurrogates(text: string): string {
  */
 function completenessLine(completeness: QaViewCompleteness): string {
   const reasons = completeness.truncationReasons;
+  const hidden = completeness.hiddenMatches === undefined
+    ? ''
+    : ', hidden semantic-selector candidates excluded: ' + String(completeness.hiddenMatches)
+      + (completeness.hiddenMatchesPartial === true ? ' (lower bound)' : '');
   return (completeness.reason === undefined ? '' : completeness.reason + ' — ')
     + (completeness.scope === undefined
       ? ''
@@ -59,6 +63,7 @@ function completenessLine(completeness: QaViewCompleteness): string {
     + 'view truncated: ' + String(completeness.truncated)
     + ', applied node budget: ' + (completeness.nodeBudget === null ? 'not reported by the driver' : String(completeness.nodeBudget))
     + ', truncation reasons: ' + (reasons === undefined || reasons.length === 0 ? 'not reported by the driver' : reasons.join(', '))
+    + hidden
     + ', budget escalated: ' + String(completeness.escalated)
     + ', outcome depends on a complete view: ' + String(completeness.outcomeDependsOnCompleteView)
     + '. ' + completeness.detail;

@@ -156,6 +156,19 @@ test('README driver-contract versions equal the constants in the sibling driver 
     return
   }
   const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
-  assert.match(readme, new RegExp('contract v' + browser + '\\b'), 'README must state the browser driver contract v' + browser)
-  assert.match(readme, new RegExp('contract v' + computer + '\\b'), 'README must state the computer driver contract v' + computer)
+  // TIGHTENED (QA-BL-060): the old pattern matched "contract v<number>" in ANY
+  // prose, so the README could pin v8 on the Drivers line while a later prose
+  // paragraph mentioned "contract v9" and the test passed vacuously. The pin
+  // now anchors on the exact Drivers line markup — backticked package name,
+  // the driver tag, and the contract version — for both drivers.
+  assert.match(
+    readme,
+    new RegExp('`@zseven-w/dsh-browser` \\(BU, contract v' + browser + '\\)'),
+    'README Drivers line must state the browser driver contract v' + browser,
+  )
+  assert.match(
+    readme,
+    new RegExp('`@zseven-w/dsh-computer` \\(CU, contract v' + computer + '\\)'),
+    'README Drivers line must state the computer driver contract v' + computer,
+  )
 })

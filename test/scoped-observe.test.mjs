@@ -24,6 +24,7 @@ import {
   QA_SCOPE_NOT_DURABLE,
   QA_TARGET_NOT_UNIQUE,
 } from '../src/contracts.ts'
+import { QaSession } from '../src/session/index.ts'
 
 // Scoped-observation unit suite (browser driver contract v8). The real-Chrome
 // twin lives in test/scoped-observe.integration.test.mjs.
@@ -48,7 +49,9 @@ function view(nodes, extra = {}) {
   return { page: { url: LAUNCH, title: 'scoped fixture' }, nodes, truncated: false, ...extra }
 }
 
-const CONTAINER_SCOPE = { ref: 'br-c', role: 'region', name: 'Deep container', tag: 'div' }
+// CHANGED (contract v9): the scope echo carries the fresh per-observation
+// rootRef that binds the root even when the visibility gate excludes it.
+const CONTAINER_SCOPE = { ref: 'br-c', rootRef: 'br-c', role: 'region', name: 'Deep container', tag: 'div' }
 
 // ---------------------------------------------------------------------------
 // 1. Adapter plumbing: withinRef -> within, driver scope -> QaObservation.scope
@@ -76,7 +79,7 @@ function fakeV8Driver() {
           return {
             ownerId, epoch: 2, fingerprint: 'fp2', expiresAt: 'x',
             page: { url: LAUNCH, title: 'scoped fixture', viewport: { width: 1, height: 1 } },
-            scope: { ref: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
+            scope: { ref: 'br-c', rootRef: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
             nodes: [node('br-c', 'region', 'Deep container', 'div'), node('br-s', 'status', 'READY', 'div')],
             truncated: false,
             limits: { maxNodes: 40, maxBytes: 4096 },
@@ -111,8 +114,8 @@ test('BrowserAdapter maps withinRef to the driver within and projects the driver
   assert.deepEqual(calls[0], { within: 'br-c', maxNodes: 40 }, 'withinRef must travel to the driver as within')
   assert.deepEqual(
     scoped.scope,
-    { ref: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
-    'the driver scope must be projected verbatim',
+    { ref: 'br-c', rootRef: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
+    'the driver scope (rootRef included, contract v9) must be projected verbatim',
   )
   assert.equal(scoped.truncated, false)
   assert.equal(scoped.maxNodes, 40)
@@ -148,7 +151,8 @@ test('ComputerAdapter refuses a withinRef instead of silently ignoring it', asyn
 // COMPLETE scoped view can no longer prove absence by itself. Closed shadow
 // roots inside the container and unresolved slot assignment are invisible to
 // the driver's projection, so "nothing matched" is UNPROVEN until the
-// observation carries coverageVerified — scoped AND whole-page views alike.
+// observation carries coverage.verified: true — scoped AND whole-page views
+// alike.
 test('node-absent on a COMPLETE scoped view is UNPROVEN without verified coverage', () => {
   const scopedComplete = view([], { scope: CONTAINER_SCOPE })
   const result = evaluateAssertion({ kind: 'node-absent', expected: { role: 'link' } }, scopedComplete)
@@ -157,10 +161,12 @@ test('node-absent on a COMPLETE scoped view is UNPROVEN without verified coverag
   assert.equal(result.reason, QA_COVERAGE_UNVERIFIED)
 })
 
-test('coverageVerified: true restores the node-absent PASS on a COMPLETE scoped view (the v9 restoration path)', () => {
-  const scopedVerified = view([], { scope: CONTAINER_SCOPE, coverageVerified: true })
+test('coverage.verified: true restores the node-absent PASS on a COMPLETE scoped view (the v9 restoration path)', () => {
+  // CHANGED (contract v9): the evidence is the driver's REAL per-observation
+  // coverage object, replacing the Phase A interim coverageVerified boolean.
+  const scopedVerified = view([], { scope: CONTAINER_SCOPE, coverage: { verified: true, closedShadowRoots: 0, probedNodes: 9 } })
   const result = evaluateAssertion({ kind: 'node-absent', expected: { role: 'link' } }, scopedVerified)
-  assert.equal(result.passed, true, 'coverageVerified restores the proven absence inside the container')
+  assert.equal(result.passed, true, 'coverage.verified restores the proven absence inside the container')
   assert.equal(result.inconclusive, false)
 })
 
@@ -181,13 +187,15 @@ test('decideAssertion names the scope whenever the deciding view was scoped — 
 
   const verified = await decideAssertion(
     { kind: 'node-absent', expected: { role: 'link' } },
-    view([], { scope: CONTAINER_SCOPE, coverageVerified: true }),
+    view([], { scope: CONTAINER_SCOPE, coverage: { verified: true, closedShadowRoots: 0, probedNodes: 9 } }),
     async () => { throw new Error('a complete view must never escalate') },
   )
-  assert.equal(verified.passed, true, 'coverageVerified restores the scoped absence pass')
+  assert.equal(verified.passed, true, 'coverage.verified restores the scoped absence pass')
   assert.ok(verified.completeness !== null, 'a scoped deciding view always carries completeness')
   assert.equal(verified.completeness.reason, undefined)
   assert.deepEqual(verified.completeness.scope, { role: 'region', name: 'Deep container' })
+  assert.match(verified.completeness.detail, /within the region named "Deep container"/)
+  assert.match(verified.completeness.detail, new RegExp('coverage verified \\(9 nodes probed\\)'))
 })
 
 test('node-absent on a TRUNCATED scoped view escalates WITHIN the scope and still fails closed INCONCLUSIVE_TRUNCATED', async () => {
@@ -211,8 +219,10 @@ test('node-absent on a TRUNCATED scoped view escalates WITHIN the scope and stil
     reobserve,
   )
   assert.equal(decision.passed, false)
+  // CHANGED (contract v9, C2): the terminal absence re-read also requests the
+  // coverage probe, inside the same scope.
   assert.deepEqual(escalationCalls, [
-    { maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'br-c' },
+    { maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'br-c', verifyCoverage: true },
   ], 'the one bounded escalation must stay inside the scope, never widen to the whole page')
   assert.equal(decision.completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
   assert.deepEqual(decision.completeness.scope, { role: 'region', name: 'Deep container' })
@@ -230,7 +240,11 @@ test('an UNscoped truncated view keeps its exact escalation and INCONCLUSIVE_TRU
       return view([], { truncated: true, maxNodes: 100, truncationReasons: ['node-budget-exceeded'] })
     },
   )
-  assert.deepEqual(escalationCalls, [{ maxNodes: QA_ESCALATED_NODE_BUDGET }], 'no withinRef for a whole-page escalation')
+  assert.deepEqual(
+    escalationCalls,
+    [{ maxNodes: QA_ESCALATED_NODE_BUDGET, verifyCoverage: true }],
+    'no withinRef for a whole-page escalation, and the terminal absence re-read requests coverage',
+  )
   assert.equal(decision.completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
   assert.equal(decision.completeness.scope, undefined, 'an unscoped deciding view never names a scope')
 })
@@ -250,13 +264,17 @@ test('a scoped decision whose deciding view is COMPLETE does not escalate furthe
     },
   )
   assert.equal(decision.passed, false, 'complete scoped escalation, unverified coverage: absence is UNPROVEN')
-  assert.deepEqual(escalationCalls, [{ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'br-c' }])
+  assert.deepEqual(
+    escalationCalls,
+    [{ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'br-c', verifyCoverage: true }],
+    'the terminal absence re-read requests the coverage probe inside the scope',
+  )
   assert.equal(decision.completeness.reason, QA_COVERAGE_UNVERIFIED)
   assert.deepEqual(decision.completeness.scope, { role: 'region', name: 'Deep container' })
   assert.match(decision.completeness.detail, /not "not present"/)
 })
 
-test('coverageVerified on the complete scoped escalation restores the pass inside the scope (the v9 restoration path)', async () => {
+test('coverage.verified on the complete scoped escalation restores the pass inside the scope (the v9 restoration path)', async () => {
   const scopedTruncatedFirst = view([node('br-c', 'region', 'Deep container', 'div')], { scope: CONTAINER_SCOPE, truncated: true, maxNodes: 40 })
   const escalationCalls = []
   const decision = await decideAssertion(
@@ -268,12 +286,15 @@ test('coverageVerified on the complete scoped escalation restores the pass insid
         scope: CONTAINER_SCOPE,
         truncated: false,
         maxNodes: QA_ESCALATED_NODE_BUDGET,
-        coverageVerified: true,
+        coverage: { verified: true, closedShadowRoots: 0, probedNodes: 8 },
       })
     },
   )
-  assert.equal(decision.passed, true, 'coverageVerified restores the proven scoped absence')
-  assert.deepEqual(escalationCalls, [{ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'br-c' }])
+  assert.equal(decision.passed, true, 'coverage.verified restores the proven scoped absence')
+  assert.deepEqual(
+    escalationCalls,
+    [{ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'br-c', verifyCoverage: true }],
+  )
   assert.equal(decision.completeness.reason, undefined)
   assert.deepEqual(decision.completeness.scope, { role: 'region', name: 'Deep container' })
 })
@@ -576,7 +597,10 @@ function scopedPageAdapter(extra = {}) {
   })
   const scoped = () => ({
     page: { url: LAUNCH, title: 'scoped fixture' },
-    scope: { ref: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
+    // CHANGED (contract v9): the scoped view carries the fresh rootRef the
+    // settled scoped read re-keys its polls through (no rootRef -> the
+    // settle fails closed).
+    scope: { ref: 'br-c', rootRef: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
     nodes: [
       node('br-c', 'region', 'Deep container', 'div'),
       node('br-a', 'button', 'anchor', 'button'),
@@ -731,7 +755,8 @@ function deepContainerAdapter(extra = {}) {
         if (options?.withinRef !== undefined) {
           return {
             page: { url: LAUNCH, title: 'scoped fixture' },
-            scope: { ref: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
+            // Contract v9: the fresh rootRef the settled scoped read re-keys through.
+            scope: { ref: 'br-c', rootRef: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
             nodes: [
               node('br-c', 'region', 'Deep container', 'div'),
               node('br-a', 'button', 'anchor', 'button'),
@@ -809,7 +834,8 @@ function oneMatchTruncatedAdapter(extra = {}) {
         if (options?.withinRef !== undefined) {
           return {
             page: { url: LAUNCH, title: 'scoped fixture' },
-            scope: { ref: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
+            // Contract v9: the fresh rootRef the settled scoped read re-keys through.
+            scope: { ref: 'br-c', rootRef: 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
             nodes: [
               node('br-c', 'region', 'Deep container', 'div'),
               node('br-a', 'button', 'anchor', 'button'),
@@ -860,4 +886,88 @@ test('one container match in a STILL-truncated escalated view refuses with INCON
   assert.match(report.failure?.message ?? '', /Deep container/, 'the refusal names the scope')
   assert.match(report.failure?.message ?? '', /INCONCLUSIVE_TRUNCATED/)
   assert.match(report.failure?.message ?? '', /twin container may exist outside the returned window/)
+})
+
+// ---------------------------------------------------------------------------
+// 6. Contract v9: the settled scoped read re-keys its polls through the
+//    DRIVER's fresh scope.rootRef — never by role+name+tag re-matching.
+// ---------------------------------------------------------------------------
+
+test('a scoped settle whose root hides mid-window still re-keys via scope.rootRef (the v9 chain)', async () => {
+  // Poll 1 returns the visible root (a fresh rootRef is minted). Polls 2+
+  // hide the root (the visibility gate excludes it from nodes) but the
+  // driver keeps minting a fresh rootRef for the SAME element, so the
+  // settle keeps re-keying. The retired role+name+tag .find() re-keying
+  // would fail closed here: the root node is ABSENT from nodes while the
+  // scope still binds it.
+  let reads = 0
+  const adapter = {
+    kind: 'browser',
+    async start() { return { page: { url: LAUNCH, title: 'scoped fixture' }, headless: true } },
+    async observe(_owner, options) {
+      reads += 1
+      assert.ok(
+        options?.withinRef !== undefined,
+        'every poll of the scoped settle must carry a within ref (read ' + reads + ')',
+      )
+      return {
+        page: { url: LAUNCH, title: 'scoped fixture' },
+        scope: {
+          ref: options.withinRef,
+          rootRef: 'br-c-r' + reads,
+          role: 'region',
+          name: 'Deep container',
+          tag: 'div',
+        },
+        nodes: reads === 1 ? [node('br-c', 'region', 'Deep container', 'div')] : [],
+        truncated: false,
+      }
+    },
+    async act() { return { status: 'confirmed', dispatched: true } },
+    async evidence() { return { console: [], network: [], bounded: true } },
+    async stop() { return { stopped: true, reason: 'requested' } },
+  }
+  const session = new QaSession(adapter, 'rootref-hidden', { settle: SETTLE })
+  await session.start({ url: LAUNCH })
+  try {
+    const settled = await session.observeSettled({ withinRef: 'br-c' })
+    assert.equal(settled.stable, true, 'the hidden root must not break the rootRef chain')
+    assert.ok(settled.passes >= 2, 'the window polled more than once')
+    assert.equal(settled.observation.nodes.length, 0, 'the hidden root stays out of nodes')
+    assert.equal(settled.observation.scope.rootRef, 'br-c-r' + reads, 'the deciding observation carries the last minted rootRef')
+  } finally {
+    await session.stop().catch(() => {})
+  }
+})
+
+test('a scoped settle whose root carries no rootRef (vanished / pre-v9) fails closed', async () => {
+  // The driver mints no rootRef for the re-collected root (a pre-v9 driver,
+  // or a root the driver could no longer bind): the settled scoped read must
+  // fail closed instead of silently narrowing to some other node.
+  const adapter = {
+    kind: 'browser',
+    async start() { return { page: { url: LAUNCH, title: 'scoped fixture' }, headless: true } },
+    async observe(_owner, options) {
+      return {
+        page: { url: LAUNCH, title: 'scoped fixture' },
+        scope: { ref: options?.withinRef ?? 'br-c', role: 'region', name: 'Deep container', tag: 'div' },
+        nodes: [node('br-x', 'link', 'Some other node', 'a')],
+        truncated: false,
+      }
+    },
+    async act() { return { status: 'confirmed', dispatched: true } },
+    async evidence() { return { console: [], network: [], bounded: true } },
+    async stop() { return { stopped: true, reason: 'requested' } },
+  }
+  const session = new QaSession(adapter, 'rootref-vanished', { settle: SETTLE })
+  await session.start({ url: LAUNCH })
+  try {
+    await assert.rejects(
+      session.observeSettled({ withinRef: 'br-c' }),
+      /scope root/,
+      'no rootRef: the settled scoped read must fail closed, never re-key by role+name+tag',
+    )
+  } finally {
+    await session.stop().catch(() => {})
+  }
 })

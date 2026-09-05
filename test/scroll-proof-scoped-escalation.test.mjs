@@ -1,21 +1,23 @@
-// QA-BL-050 -> QA-BL-055 (pinned ABSENCE): the heuristic SCOPED record-time
-// scroll-proof escalation is RETIRED. The audit (F4) showed the container
-// heuristic can pick a NON-ancestor, and a same-identity twin inside the wrong
-// container can then satisfy the proof (finding by role+name+tag across
-// observations is not identity). Until contract v9's identity anchor
-// (QA-BL-055, Phase B) restores the capability, the ONE record-time escalation
-// is the WHOLE-PAGE read again (QA-BL-045/047 behaviour, all QA-BL-047
-// acceptance properties intact).
+// QA-BL-050 re-enabled via B3 (contract v9 identity anchor): the record-time
+// scroll-proof escalation PREFERS a SCOPED read rooted at the scroll target's
+// nearest container-role ANCESTOR — found by walking the target's parentRef
+// chain in the BASELINE observation (no more DOM-order heuristic), re-keyed
+// into the settled view by its unique role+name+tag identity, and accepted
+// ONLY on the driver's identity anchor: anchorLastAction reports, in-page
+// against the ORIGINAL acted element's handle, that it is still connected,
+// lies inside the within subtree (contained), was emitted with a fresh ref,
+// and that anchored node is in the viewport. Identity comes from the anchor —
+// never from matching role/name/tag. Refusals (ANCHOR_UNAVAILABLE,
+// contained:false, connected:false, a null anchor ref) are DISCLOSED as
+// escalationRefused and the proof stays the settled observation.
 //
-// This suite CONVERTED the tests that pinned the heuristic into tests that pin
-// its ABSENCE: no escalated observe may carry a withinRef, whatever the
-// recorded baseline looks like (a scoped baseline, container-role
-// predecessors, a scope root without a container predecessor). The whole-page
-// acceptance properties themselves remain pinned in
-// test/scroll-proof-escalation.test.mjs. QA-BL-058: a refused escalation (the
-// escalated read threw) is now DISCLOSED on the act result as
-// escalationRefused — still fail-closed, the settled observation is kept.
-// The real-browser twin lives in
+// Every QA-BL-047 property stays: the escalated read is side-effect-free
+// (never widens the settle policy, never flips the widen gate, never replaces
+// the session baseline), the acceptance is re-bound by the EXACT recorded
+// action id, the refusal keeps the settled observation, and at most ONE
+// escalation runs per action (scoped OR whole-page, never both). The
+// whole-page form and its acceptance rule are unchanged and pinned in
+// test/scroll-proof-escalation.test.mjs. The real-Chrome twin lives in
 // test/explore-scroll-scoped-deep-target.integration.test.mjs.
 
 import test from 'node:test'
@@ -52,23 +54,25 @@ function view(nodes, truncated, extra = {}) {
 }
 
 const TARGET = { role: 'link', name: 'Deep Target' }
-const targetOffViewport = () => node('n-target', TARGET.role, TARGET.name, 'a', { inViewport: false })
-const targetInViewport = () => node('n-target', TARGET.role, TARGET.name, 'a', { inViewport: true })
+const targetOffViewport = (ref, parentRef) => node(ref, TARGET.role, TARGET.name, 'a', { inViewport: false, ...(parentRef === undefined ? {} : { parentRef }) })
+const targetInViewport = (ref, extra = {}) => node(ref, TARGET.role, TARGET.name, 'a', { inViewport: true, ...extra })
 const container = (ref, extra = {}) => node(ref, 'region', 'Deep zone', 'section', { interactive: false, inViewport: true, ...extra })
 const outerFiller = () => node('n-outer', 'link', 'Outer 01', 'a', { inViewport: true })
 
 /**
- * Synthetic scoped scroll page. before is the pre-action baseline (often a
- * SCOPED observation whose nodes include the target); after is the settled
- * whole-page post-action view; wholeEscalated models the ONE whole-page
- * escalated window's reads. Every escalated observe call is recorded in
- * escalatedCalls ({ maxNodes, withinRef }) so the tests can pin that NO call
- * ever carries a withinRef (the retired heuristic's absence).
+ * Synthetic scoped scroll page. before is the pre-action BASELINE (with the
+ * target plus its parentRef chain); after is the settled WHOLE-PAGE post-
+ * action view; scopedEscalated models the ONE escalated SCOPED window's
+ * reads (the adapter re-mints scope.rootRef per poll, exactly like the
+ * driver). Every escalated observe call is recorded in escalatedCalls
+ * ({ maxNodes, withinRef, anchorLastAction }) so the tests can pin what the
+ * escalated read carried.
  */
-function scopedScrollAdapter({ before, after, wholeEscalated = null, wholeEscalatedThrows = false } = {}) {
+function scopedScrollAdapter({ before, after, scopedEscalated = null, wholeEscalated = null, anchorThrows = null } = {}) {
   let acted = false
   let escalationWindows = 0
   let lastWasEscalated = false
+  let escalatedPoll = 0
   const escalatedCalls = []
   return {
     adapter: {
@@ -79,20 +83,36 @@ function scopedScrollAdapter({ before, after, wholeEscalated = null, wholeEscala
       async observe(_owner, observeOptions) {
         const escalatedCall = observeOptions?.maxNodes === QA_ESCALATED_NODE_BUDGET
         if (escalatedCall) {
-          escalatedCalls.push({ maxNodes: observeOptions.maxNodes, withinRef: observeOptions.withinRef })
           if (!lastWasEscalated) {
             escalationWindows += 1
+            escalatedPoll = 0
           }
-          if (wholeEscalatedThrows) {
-            const error = new Error('the driver refused the escalated read: the page changed')
+          escalatedPoll += 1
+          escalatedCalls.push({
+            maxNodes: observeOptions.maxNodes,
+            withinRef: observeOptions.withinRef,
+            anchorLastAction: observeOptions.anchorLastAction,
+          })
+          if (anchorThrows !== null) {
+            const error = new Error(anchorThrows)
             error.name = 'DriverIssue'
-            error.code = 'PAGE_CHANGED'
+            error.code = 'ANCHOR_UNAVAILABLE'
             throw error
           }
         }
         lastWasEscalated = escalatedCall
         if (!acted) return before
         if (!escalatedCall) return after
+        if (observeOptions?.withinRef !== undefined && scopedEscalated !== null) {
+          return {
+            ...scopedEscalated,
+            scope: {
+              ...scopedEscalated.scope,
+              ref: observeOptions.withinRef,
+              rootRef: 'n-zone-es-' + escalatedPoll,
+            },
+          }
+        }
         return wholeEscalated ?? after
       },
       async act(_owner, action) {
@@ -134,40 +154,56 @@ async function exploreScroll(options) {
   }
 }
 
-test('the heuristic is retired: a target beyond the whole-page window escalates WHOLE-PAGE only, never scoped (QA-BL-055)', async () => {
-  // The old QA-BL-050 expectation: this exact fixture produced a SCOPED
-  // escalated read rooted at the container. The converted expectation: the
-  // escalation is whole-page, no withinRef anywhere, and the proof (and its
-  // export) carries NO scope.
-  const before = view([
-    container('n-zone-before'),
-    node('n-inner', 'link', 'Inner 01', 'a', { inViewport: false }),
-    targetOffViewport(),
-  ], false, {
-    scope: { ref: 'n-zone-before', role: 'region', name: 'Deep zone', tag: 'section' },
-  })
+const ACCEPTED_SCOPED = view(
+  [
+    container('n-zone-es'),
+    targetInViewport('n-target-es'),
+  ],
+  false,
+  {
+    scope: { ref: 'n-zone-settled', rootRef: 'n-zone-es-1', role: 'region', name: 'Deep zone', tag: 'section' },
+    anchor: { ref: 'n-target-es', connected: true, contained: true },
+  },
+)
+
+test('B3: the container is picked by parentRef ANCESTRY and the anchor-verified SCOPED escalation is accepted', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      node('n-inner', 'link', 'Inner 01', 'a', { parentRef: 'n-zone-before', inViewport: false }),
+      targetOffViewport('n-target', 'n-inner'),
+    ],
+    false,
+  )
   const after = view([outerFiller(), container('n-zone-settled')], true)
-  const wholeEscalated = view([outerFiller(), container('n-zone-settled'), targetInViewport()], false)
 
   const { acted, exported, escalationWindows, escalatedCalls } = await exploreScroll({
     before,
     after,
-    wholeEscalated,
+    scopedEscalated: ACCEPTED_SCOPED,
   })
 
-  assert.equal(escalationWindows, 1, 'exactly ONE escalation, whole-page only')
+  assert.equal(escalationWindows, 1, 'exactly ONE escalation')
   assert.ok(escalatedCalls.length >= 2, 'the escalated window polls more than once: ' + JSON.stringify(escalatedCalls))
-  assert.ok(
-    escalatedCalls.every((call) => call.maxNodes === QA_ESCALATED_NODE_BUDGET && call.withinRef === undefined),
-    'NO escalated read may carry a withinRef — the scoped heuristic is gone: ' + JSON.stringify(escalatedCalls),
+  assert.deepEqual(
+    escalatedCalls[0],
+    { maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'n-zone-settled', anchorLastAction: true },
+    'the ONE escalated read is SCOPED to the container re-keyed into the settled view, with the identity anchor requested',
   )
+  for (let i = 1; i < escalatedCalls.length; i += 1) {
+    assert.equal(escalatedCalls[i].withinRef, 'n-zone-es-' + i, 'each poll re-keys through the previous rootRef')
+    assert.equal(escalatedCalls[i].anchorLastAction, true)
+  }
 
-  assert.equal(acted.proofEscalated, true, 'the whole-page escalation was accepted and is visible')
-  assert.equal(acted.observation.scope, undefined, 'the recorded proof observation is WHOLE-PAGE, never scoped')
+  assert.equal(acted.proofEscalated, true, 'the scoped escalation was accepted and is visible')
+  assert.equal(acted.observation.scope.name, 'Deep zone', 'the recorded proof observation is SCOPED')
+  assert.equal(acted.observation.scope.role, 'region')
   assert.equal(acted.observation.truncated, false, 'the recorded proof keeps its own honest truncated flag')
   const inView = acted.observation.nodes.find((item) => item.role === TARGET.role && item.name === TARGET.name)
   assert.ok(inView, 'the proof observation returns the target')
   assert.equal(inView.inViewport, true)
+  assert.ok(acted.escalatedSettle, 'the escalated window report rides along')
+  assert.equal(acted.escalatedSettle.stable, true)
 
   assert.equal(exported.ok, true, JSON.stringify(exported))
   assert.equal(exported.excludedActions.length, 0)
@@ -175,98 +211,59 @@ test('the heuristic is retired: a target beyond the whole-page window escalates 
   assert.equal(step.action.kind, 'scroll')
   assert.equal(step.assert.kind, 'node-in-viewport')
   assert.deepEqual(step.assert.expected, TARGET)
-  assert.equal(
+  assert.deepEqual(
     step.assert.scope,
-    undefined,
-    'the whole-page proof exports WITHOUT a scope (a scoped proof is never invented, a whole-page one never decorated)',
+    { role: 'region', name: 'Deep zone' },
+    'the scoped proof exports WITH its scope (a scoped proof is never silently exported whole-page)',
   )
 })
 
-test('a container-role predecessor in the baseline changes nothing: still whole-page (QA-BL-055)', async () => {
-  // The old heuristic picked the NEAREST preceding container-role node
-  // (navigation) over the scoped baseline root. The converted expectation:
-  // neither matters — the escalation never scopes.
-  const before = view([
-    node('n-zone-a', 'region', 'Zone A', 'section', { interactive: false, inViewport: true }),
-    node('n-mid', 'link', 'Middle link', 'a', { inViewport: true }),
-    node('n-nav', 'navigation', 'Primary nav', 'nav', { interactive: false, inViewport: true }),
-    targetOffViewport(),
-  ], false, {
-    scope: { ref: 'n-zone-a', role: 'region', name: 'Zone A', tag: 'section' },
-  })
+test('B3: the NEAREST container-role ancestor wins, skipping non-container ancestors', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      node('n-nav', 'navigation', 'Primary nav', 'nav', { interactive: false, inViewport: true, parentRef: 'n-zone-before' }),
+      node('n-generic', 'generic', 'Wrapper', 'div', { interactive: false, inViewport: true, parentRef: 'n-nav' }),
+      node('n-status', 'status', 'IDLE', 'div', { interactive: false, inViewport: true, parentRef: 'n-generic' }),
+      targetOffViewport('n-target', 'n-status'),
+    ],
+    false,
+  )
   const after = view([
-    node('n-zone-a-s', 'region', 'Zone A', 'section', { interactive: false, inViewport: true }),
+    outerFiller(),
     node('n-nav-s', 'navigation', 'Primary nav', 'nav', { interactive: false, inViewport: true }),
+    container('n-zone-settled'),
   ], true)
-  const wholeEscalated = view([
-    node('n-zone-a-s', 'region', 'Zone A', 'section', { interactive: false, inViewport: true }),
-    node('n-nav-s', 'navigation', 'Primary nav', 'nav', { interactive: false, inViewport: true }),
-    targetInViewport(),
-  ], false)
+  const scopedEscalated = {
+    ...ACCEPTED_SCOPED,
+    scope: { ref: 'n-nav-s', rootRef: 'n-zone-es-1', role: 'navigation', name: 'Primary nav', tag: 'nav' },
+    nodes: [
+      node('n-nav-es', 'navigation', 'Primary nav', 'nav', { interactive: false, inViewport: true }),
+      targetInViewport('n-target-es'),
+    ],
+  }
 
-  const { escalationWindows, escalatedCalls, exported } = await exploreScroll({
-    before,
-    after,
-    wholeEscalated,
-  })
+  const { escalatedCalls, exported } = await exploreScroll({ before, after, scopedEscalated })
 
-  assert.equal(escalationWindows, 1)
-  assert.ok(escalatedCalls.length > 0)
-  assert.ok(
-    escalatedCalls.every((call) => call.withinRef === undefined),
-    'the nearest-container heuristic is retired: no withinRef: ' + JSON.stringify(escalatedCalls),
+  assert.deepEqual(
+    escalatedCalls[0],
+    { maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: 'n-nav-s', anchorLastAction: true },
+    'the escalation roots at the NEAREST container-role ancestor (navigation), never a farther region or a non-container',
   )
   assert.equal(exported.ok, true, JSON.stringify(exported))
-  assert.equal(exported.scenario.steps[0].assert.scope, undefined)
+  assert.deepEqual(exported.scenario.steps[0].assert.scope, { role: 'navigation', name: 'Primary nav' })
 })
 
-test('a scoped baseline without a container predecessor changes nothing: still whole-page (QA-BL-055)', async () => {
-  // The old rule fell back to the scoped baseline's root as the container.
-  // The converted expectation: the escalation stays whole-page.
-  const before = view([
-    node('n-wrap', 'generic', 'Wrapper', 'div', { interactive: false, inViewport: true }),
-    targetOffViewport(),
-  ], false, {
-    scope: { ref: 'n-wrap', role: 'generic', name: 'Wrapper', tag: 'div' },
-  })
-  const after = view([node('n-wrap-s', 'generic', 'Wrapper', 'div', { interactive: false, inViewport: true })], true)
-  const wholeEscalated = view([
-    node('n-wrap-s', 'generic', 'Wrapper', 'div', { interactive: false, inViewport: true }),
-    targetInViewport(),
-  ], false)
-
-  const { escalationWindows, escalatedCalls, exported } = await exploreScroll({
-    before,
-    after,
-    wholeEscalated,
-  })
-
-  assert.equal(escalationWindows, 1)
-  assert.ok(
-    escalatedCalls.every((call) => call.withinRef === undefined),
-    'the scope-root fallback is retired: no withinRef: ' + JSON.stringify(escalatedCalls),
-  )
-  assert.equal(exported.ok, true, JSON.stringify(exported))
-  assert.equal(exported.scenario.steps[0].assert.scope, undefined)
-})
-
-test('an escalated view inconsistent with the settled one refuses whole-page — the retired scoped consistency rule never runs (QA-BL-055)', async () => {
-  const before = view([
-    container('n-zone-before'),
-    targetOffViewport(),
-  ], false, {
-    scope: { ref: 'n-zone-before', role: 'region', name: 'Deep zone', tag: 'section' },
-  })
-  const after = view([outerFiller(), container('n-zone-settled')], true)
-  // The escalated whole-page view is at ANOTHER URL: scrollProofExtends fails,
-  // so the escalation is refused (the old SCOPED consistency rule — same
-  // URL/title plus shared nodes unchanged — is retired together with the
-  // scoped escalation it guarded).
-  const wholeEscalated = view(
-    [outerFiller(), container('n-zone-settled'), targetInViewport()],
+test('B3: no container-role ancestor on the parentRef chain -> the WHOLE-PAGE escalation (unchanged)', async () => {
+  const before = view(
+    [
+      node('n-status', 'status', 'IDLE', 'div', { interactive: false, inViewport: true }),
+      targetOffViewport('n-target', 'n-status'),
+    ],
     false,
-    { page: { url: LAUNCH + 'other', title: 'scoped scroll fixture' } },
   )
+  const after = view([outerFiller()], true)
+  const wholeEscalated = view([outerFiller(), targetInViewport('n-target-es')], false)
 
   const { acted, exported, escalationWindows, escalatedCalls } = await exploreScroll({
     before,
@@ -274,104 +271,256 @@ test('an escalated view inconsistent with the settled one refuses whole-page —
     wholeEscalated,
   })
 
-  assert.equal(escalationWindows, 1, 'the escalation still ran exactly once')
-  assert.ok(escalatedCalls.every((call) => call.withinRef === undefined), 'the attempt was WHOLE-PAGE only')
-  assert.equal(acted.proofEscalated, undefined, 'a refused escalation is not visible as proofEscalated')
+  assert.equal(escalationWindows, 1, 'exactly ONE escalation')
+  assert.ok(escalatedCalls.length >= 2)
+  assert.ok(
+    escalatedCalls.every((call) => call.withinRef === undefined && call.anchorLastAction === undefined),
+    'no container on the chain: the whole-page form runs unchanged: ' + JSON.stringify(escalatedCalls),
+  )
+  assert.equal(acted.proofEscalated, true)
+  assert.equal(acted.observation.scope, undefined, 'the whole-page proof keeps no scope')
+  assert.equal(exported.ok, true, JSON.stringify(exported))
+  assert.equal(exported.scenario.steps[0].assert.scope, undefined)
+})
+
+test('B3: a container that cannot be re-keyed into the settled view falls back to the whole-page read', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
+  )
+  // The settled window no longer returns the container: no re-key possible.
+  const after = view([outerFiller()], true)
+  const wholeEscalated = view([outerFiller(), targetInViewport('n-target-es')], false)
+
+  const { escalatedCalls, exported } = await exploreScroll({ before, after, wholeEscalated })
+
+  assert.ok(
+    escalatedCalls.every((call) => call.withinRef === undefined),
+    'an un-re-keyable container never produces a scoped read: ' + JSON.stringify(escalatedCalls),
+  )
+  assert.equal(exported.ok, true, JSON.stringify(exported))
+  assert.equal(exported.scenario.steps[0].assert.scope, undefined)
+})
+
+test('B3: an AMBIGUOUS container re-key (twin match) falls back to the whole-page read', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
+  )
+  const after = view([container('n-zone-settled-a'), container('n-zone-settled-b')], true)
+  const wholeEscalated = view([container('n-zone-es-a'), container('n-zone-es-b'), targetInViewport('n-target-es')], false)
+
+  const { escalatedCalls } = await exploreScroll({ before, after, wholeEscalated })
+
+  assert.ok(
+    escalatedCalls.every((call) => call.withinRef === undefined),
+    'a twin container is never guessed: the whole-page form runs: ' + JSON.stringify(escalatedCalls),
+  )
+})
+
+test('B3: a contained:false anchor REFUSES the scoped escalation and is DISCLOSED (identity is the anchor)', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
+  )
+  const after = view([outerFiller(), container('n-zone-settled')], true)
+  const scopedEscalated = view(
+    [
+      container('n-zone-es'),
+      targetInViewport('n-target-es'),
+    ],
+    false,
+    {
+      scope: { ref: 'n-zone-settled', rootRef: 'n-zone-es-1', role: 'region', name: 'Deep zone', tag: 'section' },
+      // The acted element is NOT inside the scoped container (a wrong
+      // container was picked / the element moved): identity truth, never a
+      // re-matched twin.
+      anchor: { ref: null, connected: true, contained: false },
+    },
+  )
+
+  const { acted, exported, escalationWindows } = await exploreScroll({ before, after, scopedEscalated })
+
+  assert.equal(escalationWindows, 1, 'the ONE scoped escalation ran and was refused')
+  assert.equal(acted.proofEscalated, undefined, 'a refused escalation is never a proof')
+  assert.ok(acted.escalationRefused, 'the refusal is disclosed (QA-BL-058 vocabulary)')
+  assert.equal(acted.escalationRefused.code, undefined)
+  assert.match(acted.escalationRefused.reason, /contained/)
   assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
-  assert.equal(
-    acted.observation.nodes.some((item) => item.name === TARGET.name),
-    false,
-    'the refused escalation keeps the settled observation',
-  )
-  assert.equal(acted.observation.scope, undefined, 'the settled whole-page observation keeps no scope')
-
-  assert.equal(exported.ok, false, JSON.stringify(exported))
-  const exclusion = exported.excludedActions[0]
-  assert.equal(exclusion.reason, 'ASSERTION_NOT_PROVABLE')
-  assert.match(exclusion.detail, /truncated at the driver node budget and did not return the scroll target "Deep Target"/)
-})
-
-test('a whole-page escalation that returns the target but NOT in the viewport is refused (QA-BL-055)', async () => {
-  const before = view([
-    container('n-zone-before'),
-    targetOffViewport(),
-  ], false, {
-    scope: { ref: 'n-zone-before', role: 'region', name: 'Deep zone', tag: 'section' },
-  })
-  const after = view([outerFiller(), container('n-zone-settled')], true)
-  const wholeEscalated = view([outerFiller(), container('n-zone-settled'), targetOffViewport()], false)
-
-  const { acted, exported, escalationWindows, escalatedCalls } = await exploreScroll({
-    before,
-    after,
-    wholeEscalated,
-  })
-
-  assert.equal(escalationWindows, 1, 'the escalation still ran exactly once')
-  assert.ok(escalatedCalls.every((call) => call.withinRef === undefined), 'the attempt was WHOLE-PAGE only')
-  assert.equal(acted.proofEscalated, undefined, 'a useless escalation is refused')
   assert.equal(acted.observation.nodes.some((item) => item.name === TARGET.name), false)
 
   assert.equal(exported.ok, false, JSON.stringify(exported))
-  assert.match(
-    exported.excludedActions[0].detail,
-    /truncated at the driver node budget and did not return the scroll target "Deep Target"/,
-  )
+  assert.equal(exported.excludedActions[0].reason, 'ASSERTION_NOT_PROVABLE')
 })
 
-test('a refused (throwing) escalated read is DISCLOSED as escalationRefused and keeps the settled observation (QA-BL-058)', async () => {
-  // CHANGED (QA-BL-058): the catch that used to swallow a driver refusal into
-  // a silent "no escalation" now discloses it — the fail-closed behaviour is
-  // unchanged, only the observability is new.
-  const before = view([
-    container('n-zone-before'),
-    targetOffViewport(),
-  ], false, {
-    scope: { ref: 'n-zone-before', role: 'region', name: 'Deep zone', tag: 'section' },
-  })
+test('B3: a disconnected anchor (connected:false) REFUSES the scoped escalation and is DISCLOSED', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
+  )
+  const after = view([outerFiller(), container('n-zone-settled')], true)
+  const scopedEscalated = view(
+    [container('n-zone-es')],
+    false,
+    {
+      scope: { ref: 'n-zone-settled', rootRef: 'n-zone-es-1', role: 'region', name: 'Deep zone', tag: 'section' },
+      anchor: { ref: null, connected: false, contained: false },
+    },
+  )
+
+  const { acted, escalationWindows } = await exploreScroll({ before, after, scopedEscalated })
+
+  assert.equal(escalationWindows, 1)
+  assert.equal(acted.proofEscalated, undefined)
+  assert.ok(acted.escalationRefused, 'the refusal is disclosed')
+  assert.match(acted.escalationRefused.reason, /connected/)
+  assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
+})
+
+test('B3: ANCHOR_UNAVAILABLE (the scoped read rejected) is DISCLOSED with the driver code', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
+  )
   const after = view([outerFiller(), container('n-zone-settled')], true)
 
-  const { acted, exported, escalationWindows } = await exploreScroll({
+  const { acted, escalationWindows } = await exploreScroll({
     before,
     after,
-    wholeEscalatedThrows: true,
+    anchorThrows: 'no action target is retained (ANCHOR_UNAVAILABLE)',
   })
 
-  assert.equal(escalationWindows, 1, 'the one escalation still ran and was refused')
+  assert.equal(escalationWindows, 1, 'the one scoped escalation ran and was refused')
+  assert.equal(acted.proofEscalated, undefined)
   assert.deepEqual(
     acted.escalationRefused,
-    { code: 'PAGE_CHANGED', reason: 'the driver refused the escalated read: the page changed' },
+    { code: 'ANCHOR_UNAVAILABLE', reason: 'no action target is retained (ANCHOR_UNAVAILABLE)' },
     'the driver refusal is disclosed, never silently swallowed',
   )
-  assert.equal(acted.proofEscalated, undefined, 'a refused escalation is never a proof')
-  assert.equal(acted.outcome, 'ok', 'the receipt outcome is unchanged by the refused proof escalation')
   assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
-  assert.equal(acted.observation.nodes.some((item) => item.name === TARGET.name), false)
-
-  assert.equal(exported.ok, false, JSON.stringify(exported))
-  assert.equal(exported.excludedActions[0].reason, 'ASSERTION_NOT_PROVABLE')
 })
 
-test('exactly ONE whole-page escalation per action, never a second read (QA-BL-055)', async () => {
-  // The old "no suitable container" fallback test now pins the ONLY path:
-  // one whole-page read, refused, and no second attempt of any kind.
-  const before = view([outerFiller(), targetOffViewport()], true)
-  const after = view([outerFiller()], true)
-  const wholeEscalated = view([outerFiller()], true)
-
-  const { acted, exported, escalationWindows, escalatedCalls } = await exploreScroll({
-    before,
-    after,
-    wholeEscalated,
-  })
-
-  assert.equal(escalationWindows, 1, 'exactly ONE whole-page escalation')
-  assert.ok(escalatedCalls.length > 0)
-  assert.ok(
-    escalatedCalls.every((call) => call.withinRef === undefined),
-    'the whole-page read never carries a within ref: ' + JSON.stringify(escalatedCalls),
+test('B3: a null anchor ref (the acted element excluded from the view) REFUSES the scoped escalation', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
   )
-  assert.equal(acted.proofEscalated, undefined, 'a still-truncated escalated view is refused')
-  assert.equal(exported.ok, false, JSON.stringify(exported))
-  assert.equal(exported.excludedActions[0].reason, 'ASSERTION_NOT_PROVABLE')
+  const after = view([outerFiller(), container('n-zone-settled')], true)
+  const scopedEscalated = view(
+    [container('n-zone-es')],
+    false,
+    {
+      scope: { ref: 'n-zone-settled', rootRef: 'n-zone-es-1', role: 'region', name: 'Deep zone', tag: 'section' },
+      anchor: { ref: null, connected: true, contained: true },
+    },
+  )
+
+  const { acted, escalationWindows } = await exploreScroll({ before, after, scopedEscalated })
+
+  assert.equal(escalationWindows, 1)
+  assert.equal(acted.proofEscalated, undefined, 'a null anchor ref can never be the proof')
+  assert.ok(acted.escalationRefused, 'the refusal is disclosed')
+  assert.match(acted.escalationRefused.reason, /anchor/)
+  assert.equal(acted.observation.truncated, true)
+})
+
+test('B3: an anchored element that is NOT in the viewport refuses the scoped escalation', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
+  )
+  const after = view([outerFiller(), container('n-zone-settled')], true)
+  const scopedEscalated = view(
+    [
+      container('n-zone-es'),
+      targetOffViewport('n-target-es'),
+    ],
+    false,
+    {
+      scope: { ref: 'n-zone-settled', rootRef: 'n-zone-es-1', role: 'region', name: 'Deep zone', tag: 'section' },
+      anchor: { ref: 'n-target-es', connected: true, contained: true },
+    },
+  )
+
+  const { acted, escalationWindows } = await exploreScroll({ before, after, scopedEscalated })
+
+  assert.equal(escalationWindows, 1)
+  assert.equal(acted.proofEscalated, undefined, 'an anchored element off-viewport proves nothing')
+  assert.ok(acted.escalationRefused, 'the refusal is disclosed')
+  assert.match(acted.escalationRefused.reason, /viewport/)
+})
+
+test('B3: a scoped escalated window that never settles is refused silently (fail closed)', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
+  )
+  const after = view([outerFiller(), container('n-zone-settled')], true)
+  // Two alternating scoped reads: the escalated window churns until the
+  // budget and returns stable:false (the anchor never gets to decide).
+  let reads = 0
+  let acted = false
+  let escalationWindows = 0
+  let lastWasEscalated = false
+  const churnA = { ...ACCEPTED_SCOPED }
+  const churnB = view([container('n-zone-es')], false, {
+    scope: { ref: 'n-zone-settled', rootRef: 'n-zone-es-1', role: 'region', name: 'Deep zone', tag: 'section' },
+    anchor: { ref: null, connected: true, contained: true },
+  })
+  const { adapter } = scopedScrollAdapter({ before, after })
+  const churning = {
+    ...adapter,
+    observe: async (_owner, observeOptions) => {
+      const escalatedCall = observeOptions?.maxNodes === QA_ESCALATED_NODE_BUDGET
+      if (escalatedCall && !lastWasEscalated) escalationWindows += 1
+      lastWasEscalated = escalatedCall
+      if (!acted) return before
+      if (!escalatedCall) return after
+      reads += 1
+      return reads % 2 === 1 ? churnA : churnB
+    },
+    act: async (_owner, action) => {
+      if (action.kind === 'scroll') acted = true
+      return { status: 'confirmed', dispatched: true }
+    },
+  }
+  const recorder = new QaTrajectoryRecorder()
+  const session = new QaSession(new RecordingQaDriverAdapter(churning, recorder), 'scoped-scroll-churn', { settle: SETTLE })
+  await session.start({ url: LAUNCH })
+  try {
+    const beforeObs = await session.observeSettled()
+    const targetNode = beforeObs.observation.nodes.find((item) => item.role === TARGET.role && item.name === TARGET.name)
+    assert.ok(targetNode)
+    const acted = await session.act({ kind: 'scroll', ref: targetNode.ref })
+    assert.equal(escalationWindows, 1)
+    assert.equal(acted.proofEscalated, undefined, 'an unsettled escalated window is refused')
+    assert.equal(acted.escalationRefused, undefined, 'an unsettled window refusal is the silent fail-closed path')
+    assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
+  } finally {
+    await session.stop().catch(() => {})
+  }
 })

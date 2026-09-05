@@ -118,10 +118,11 @@ export interface QaAssertion {
    * budget ONCE and refuses a still-truncated view with
    * INCONCLUSIVE_TRUNCATED naming the scope, QA-BL-054), observes WITHIN it,
    * and decides the assertion against that scoped view. Budgets and the
-   * truncated flag are then subtree-relative. NOTE (QA-BL-052): even a
-   * complete scoped view cannot make node-absent pass until the driver
-   * verifies the observation's boundaries (coverageVerified). A scoped
-   * proof is never decided (or reported) as if it were a whole-page proof.
+   * truncated flag are then subtree-relative. NOTE (QA-BL-052 / C2): even a
+   * complete scoped view makes node-absent pass only when the deciding
+   * observation carries coverage.verified: true (the driver's bounded
+   * closed-shadow-root probe, contract v9 Phase C). A scoped proof is never
+   * decided (or reported) as if it were a whole-page proof.
    */
   scope?: QaScenarioAssertionScope;
 }
@@ -285,7 +286,7 @@ export const QA_TARGET_NOT_UNIQUE = 'TARGET_NOT_UNIQUE';
 /**
  * Stable reason code recorded when an otherwise-passing `node-absent` could
  * NOT be proven because the deciding observation carries no affirmative
- * coverage evidence (`QaObservation.coverageVerified !== true`).
+ * coverage evidence (`QaObservation.coverage.verified !== true`).
  *
  * QA-BL-052 containment: a COMPLETE view still cannot prove absence while the
  * driver has not verified the observation's boundaries — closed shadow roots
@@ -294,9 +295,14 @@ export const QA_TARGET_NOT_UNIQUE = 'TARGET_NOT_UNIQUE';
  * observable node matched" is therefore UNPROVEN, never "absent", and the
  * assertion fails closed with this code (scoped AND whole-page views alike).
  * A returned matching node still fails the assertion normally. The gate is
- * per-observation evidence, never a driver version: the moment the driver
- * reports `coverageVerified: true` (contract v9, Phase C) the proven-absence
- * pass returns.
+ * per-observation evidence, never a driver version: the moment the deciding
+ * observation reports `coverage.verified: true` (the driver's bounded
+ * closed-shadow-root probe, contract v9 Phase C) the proven-absence pass
+ * returns. A probe that did NOT complete (over-budget / cdp-unavailable /
+ * root-unresolved / error) or found roots marks the view truncated (the
+ * driver's shadow-coverage-unverified / closed-shadow-root reasons), so those
+ * outcomes fail closed as QA_INCONCLUSIVE_TRUNCATED instead; this code covers
+ * the COMPLETE-but-unverified case (reason "skipped" or no coverage field).
  */
 export const QA_COVERAGE_UNVERIFIED = 'COVERAGE_UNVERIFIED';
 
@@ -344,11 +350,42 @@ export interface QaViewCompleteness {
   /**
    * ADDITIVE: every reason the deciding view is partial, in the DRIVER's
    * vocabulary (iframe-not-traversed, scan-window-exceeded,
-   * node-budget-exceeded, byte-budget-exceeded, ...). Absent when the driver
-   * reported none — the QA layer never invents reasons, and the remedies
-   * differ per reason (a budget raise cannot fix an iframe).
+   * node-budget-exceeded, byte-budget-exceeded, closed-shadow-root,
+   * shadow-coverage-unverified, ...). Absent when the driver reported none —
+   * the QA layer never invents reasons, and the remedies differ per reason
+   * (a budget raise cannot fix an iframe or a closed shadow root).
    */
   truncationReasons?: string[];
+  /**
+   * ADDITIVE (driver contract v9): the deciding view's count of
+   * semantic-selector matches the visibility gate skipped (hidden or
+   * zero-rect elements) within the scanned range — a diagnostic of the
+   * observable-node projection, never a truncation reason. Absent when the
+   * driver reported none; report.md names it on the completeness line.
+   */
+  hiddenMatches?: number;
+  /**
+   * ADDITIVE (driver contract v9): true whenever collection stopped early
+   * (scan window, node budget, byte budget), i.e. hiddenMatches is a LOWER
+   * BOUND of the subtree's gate-skipped matches. Always paired with
+   * hiddenMatches.
+   */
+  hiddenMatchesPartial?: boolean;
+  /**
+   * ADDITIVE (driver contract v9, Phase C): the deciding view's per-
+   * observation coverage evidence (the bounded closed-shadow-root probe's
+   * outcome), present exactly for ABSENCE decisions — the gate that decides
+   * them. coverage.verified === true is the evidence a passing node-absent
+   * rests on; a probe that found roots or did not complete keeps the result
+   * INCONCLUSIVE_TRUNCATED / COVERAGE_UNVERIFIED with the driver's reason in
+   * detail and truncationReasons.
+   */
+  coverage?: {
+    verified: boolean;
+    closedShadowRoots: number;
+    probedNodes: number;
+    reason?: string;
+  };
   /** Whether one bounded budget escalation was performed before deciding. */
   escalated: boolean;
   /**
@@ -364,8 +401,9 @@ export interface QaViewCompleteness {
    * the assertion was decided inside. Present exactly when the deciding view
    * was scoped (complete or truncated); absent means the deciding view was
    * whole-page. This is what lets a reader tell "absent from this container"
-   * apart from "absent from the whole page" — and since QA-BL-052 NEITHER is
-   * provable until the driver verifies coverage (coverageVerified).
+   * apart from "absent from the whole page" — and since QA-BL-052 NEITHER
+   * passes until the deciding observation's coverage is verified
+   * (coverage.verified: true).
    */
   scope?: { role: string; name: string };
   /**

@@ -83,16 +83,19 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   budget and then fails closed with \`completeness.reason: "INCONCLUSIVE_TRUNCATED"\` rather than
   reporting a false "gone". Read \`completeness\` before believing any negative result: "we did not
   see it" is not "it is not there". A found node is sound evidence of presence either way.
-- Since QA-BL-052 even a COMPLETE view cannot currently prove an absence. \`node-absent\` means
-  "no driver-OBSERVABLE semantic node" (hidden and zero-rect elements are excluded from the
-  projection), and the driver does not yet verify the observation's boundaries: closed shadow
-  roots are neither pierced nor counted and slot assignment may be unresolved, so a
-  complete-looking view can silently miss nodes. Until the deciding observation carries
-  \`coverageVerified: true\` (driver contract v9, Phase C — no driver reports it yet), an
-  otherwise-passing absence fails closed with \`completeness.reason: "COVERAGE_UNVERIFIED"\`
-  (scoped AND whole-page views): no observable node matched, but the boundaries were not
-  verified, so the absence is UNPROVEN. Never report "absent"; report "not observed, and absence
-  cannot be proven". A returned matching node still fails \`node-absent\` normally.
+- Absence and coverage (contract v9, Phase C): \`node-absent\` means "no driver-OBSERVABLE
+  semantic node" (hidden and zero-rect elements are excluded from the projection), and it PASSES
+  only when nothing matched AND the deciding view is complete (\`truncated: false\`) AND
+  \`coverage.verified: true\` — the terminal absence decision requests the driver's bounded
+  closed-shadow-root probe on its ONE deciding re-observation (never on settle polls; ~5ms
+  scoped, possibly over-budget whole-page on very large pages, and then the absence is
+  UNPROVEN). A probe that found closed shadow roots or did not complete keeps the result
+  \`INCONCLUSIVE_TRUNCATED\` / \`COVERAGE_UNVERIFIED\`, naming \`closed-shadow-root\` /
+  \`shadow-coverage-unverified\` in \`completeness.detail\` and \`truncationReasons\`; a passing
+  absence prints "No driver-observable semantic node matching {predicate} was found within
+  {scope|the whole page}; coverage verified (N nodes probed). K hidden candidates excluded."
+  Never report "absent" without that evidence; report "not observed, and absence cannot be
+  proven". A returned matching node still fails \`node-absent\` normally.
   \`completeness.nodeBudget\` is the budget the DRIVER actually applied (each driver clamps the
   request to its own maximum: browser 100, computer 500 — a browser run never reports 500), and
   \`completeness.truncationReasons\` names WHY the view is partial: \`iframe-not-traversed\` means
@@ -106,12 +109,12 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   subtree rooted at that element. Budgets, the byte ceiling, the scan window, and the iframe
   marker become SUBTREE-relative, so a container whose subtree fits reports \`truncated: false\`
   with no \`truncationReasons\`, and a deep target unreachable in the whole-page window becomes
-  reachable. Absence inside it is STILL UNPROVEN until the driver reports \`coverageVerified\`
-  (QA-BL-052: the container's closed shadow roots and slot assignment are not verified, so a
-  missing node may just be invisible — \`node-absent\` fails closed with
-  \`COVERAGE_UNVERIFIED\` on a complete scoped view too). The observation's
-  \`scope\` field (\`{ ref, role, name, tag }\`) echoes the root the driver observed; it is absent
-  for whole-page observations. An unknown, expired, consumed, non-element, or detached ref
+  reachable. Absence inside it passes only with verified coverage (see the coverage rule: the
+  deciding re-read probes the SUBTREE). The observation's
+  \`scope\` field (\`{ ref, rootRef, role, name, tag }\`) echoes the root the driver observed;
+  \`rootRef\` (contract v9) is the fresh per-observation ref that chains the next scoped read —
+  it is absent for whole-page observations. An unknown, expired, consumed, non-element, or
+  detached ref
   REFUSES the call with its driver code (\`REF_UNKNOWN\` / \`REF_EXPIRED\` / \`TARGET_CHANGED\` /
   ...) — never a whole-page fallback and never a "not found". The computer driver does not
   support scoping and refuses \`within_ref\`. A scoped proof is exported as a scoped assertion
@@ -122,8 +125,14 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   \`TARGET_NOT_UNIQUE\` when ambiguous; one match in a truncated view is not proven unique and
   escalates once, a still-truncated view refuses with \`INCONCLUSIVE_TRUNCATED\` naming the
   scope) and decides inside the container; the completeness block names the scope, so "absent
-  from this container" is never read as "absent from the whole page" — and neither is provable
-  until \`coverageVerified\`.
+  from this container" is never read as "absent from the whole page" — and absence passes only
+  with verified coverage (\`coverage.verified: true\`).
+  A browser scroll-by-ref whose settled proof view is truncated and still lacks the target in
+  the viewport is re-read ONCE at record time, preferring an identity-anchored SCOPED read
+  rooted at the target's nearest container-role ancestor (walked on the target's \`parentRef\`
+  chain, contract v9): the escalated view is accepted only when the driver's identity anchor
+  reports the ORIGINAL acted element connected, contained in that container, and in the
+  viewport — identity comes from the anchor, never from matching role/name/tag.
 
 - The moment a problem appears, call \`qa_evidence\` before navigating away or changing state.
   Missing permissions, truncation, and driver rejection are boundaries, never green results.

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa coverage fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    section { border: 1px solid #ddd; margin: 12px 0; padding: 12px; }
+  </style>
+</head>
+<body>
+  <!--
+    Contract v9 Phase C fixture. Three regions:
+      - "Clean zone": no shadow DOM at all — a scoped node-absent against it
+        PASSES after the deciding re-read runs the bounded coverage probe
+        (coverage.verified:true, truncated:false, no reasons).
+      - "Closed zone": hosts an IMPERATIVE closed shadow root (created after
+        page start). Its rendered button is invisible to the in-page
+        projection; the probe detects the closed root on the non-semantic
+        host and the observation turns truncated:true with the
+        closed-shadow-root reason — the absence stays INCONCLUSIVE_TRUNCATED.
+      - "Declarative zone": a declarative <template shadowrootmode="closed">
+        root, detected the same way.
+    The whole page therefore also carries closed roots, so a whole-page
+    absence on this fixture can never pass.
+  -->
+  <h1>Coverage fixture</h1>
+  <section id="clean-zone" role="region" aria-label="Clean zone">
+    <h2>Clean zone</h2>
+    <button>clean-visible-button</button>
+  </section>
+  <section id="closed-zone" role="region" aria-label="Closed zone">
+    <h2>Closed zone</h2>
+    <div id="closed-host"></div>
+  </section>
+  <section id="declarative-zone" role="region" aria-label="Declarative zone">
+    <h2>Declarative zone</h2>
+    <div id="declarative-host">
+      <template shadowrootmode="closed">
+        <button>declarative-hidden-button</button>
+      </template>
+    </div>
+  </section>
+  <script>
+    const host = document.getElementById('closed-host');
+    const root = host.attachShadow({ mode: 'closed' });
+    root.innerHTML = '<button>hidden-in-closed-root</button>';
+  </script>
+</body>
+</html>

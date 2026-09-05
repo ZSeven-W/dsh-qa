@@ -33,11 +33,14 @@ test('evaluateAssertion node-present fails when nothing matches', () => {
 
 // CHANGED (QA-BL-052 / Codex Q4, deliberate semantics downgrade): a
 // complete view can no longer prove absence by itself. The deciding
-// observation must carry affirmative coverage evidence (coverageVerified:
-// true — driver contract v9, not yet reported by any driver), because
-// closed shadow roots and unresolved slot assignment can silently hide
-// nodes from a complete-looking view. A returned matching node still FAILS
-// the assertion normally (presence is sound evidence), never inconclusive.
+// observation must carry affirmative coverage evidence (coverage.verified:
+// true — the driver's bounded closed-shadow-root probe, contract v9 Phase C),
+// because closed shadow roots and unresolved slot assignment can silently
+// hide nodes from a complete-looking view. A returned matching node still
+// FAILS the assertion normally (presence is sound evidence), never
+// inconclusive. CHANGED (contract v9 consumption): the evidence shape is the
+// driver's real per-observation coverage object, not the Phase A interim
+// coverageVerified boolean.
 test('evaluateAssertion node-absent fails a match normally and gates every unverified absence', () => {
   const present = evaluateAssertion({ kind: 'node-absent', expected: { role: 'status' } }, observation);
   assert.equal(present.passed, false);
@@ -55,14 +58,42 @@ test('evaluateAssertion node-absent fails a match normally and gates every unver
   assert.equal(absent.observed, null);
 });
 
-test('coverageVerified: true restores the node-absent PASS on a complete view (the v9 restoration path)', () => {
+test('coverage.verified: true restores the node-absent PASS on a complete view (the v9 restoration path)', () => {
   // The restoration path must exist and stay pinned: per-observation
-  // affirmative coverage evidence brings back the proven absence.
-  const verified = { ...observation, coverageVerified: true };
+  // affirmative coverage evidence (the driver's REAL per-observation shape,
+  // contract v9 Phase C) brings back the proven absence. CHANGED: the
+  // Phase A interim coverageVerified boolean is replaced by the coverage
+  // object — coverage.verified === true is the single source of truth.
+  const verified = {
+    ...observation,
+    coverage: { verified: true, closedShadowRoots: 0, probedNodes: 12 },
+  };
   const absent = evaluateAssertion({ kind: 'node-absent', expected: { role: 'link' } }, verified);
   assert.equal(absent.passed, true);
   assert.equal(absent.inconclusive, false);
   assert.equal(absent.observed, null);
+});
+
+test('node-absent on a complete view with the probe skipped (coverage verified:false, reason skipped) stays UNPROVEN', () => {
+  const skipped = {
+    ...observation,
+    coverage: { verified: false, closedShadowRoots: 0, probedNodes: 0, reason: 'skipped' },
+  };
+  const absent = evaluateAssertion({ kind: 'node-absent', expected: { role: 'link' } }, skipped);
+  assert.equal(absent.passed, false, 'a skipped probe is never affirmative evidence');
+  assert.equal(absent.inconclusive, true);
+  assert.equal(absent.reason, QA_COVERAGE_UNVERIFIED);
+});
+
+test('node-absent on a view whose probe FAILED to run to completion stays UNPROVEN', () => {
+  const overBudget = {
+    ...observation,
+    coverage: { verified: false, closedShadowRoots: 0, probedNodes: 5001, reason: 'over-budget' },
+  };
+  const absent = evaluateAssertion({ kind: 'node-absent', expected: { role: 'link' } }, overBudget);
+  assert.equal(absent.passed, false, 'an over-budget probe is never affirmative evidence');
+  assert.equal(absent.inconclusive, true);
+  assert.equal(absent.reason, QA_COVERAGE_UNVERIFIED);
 });
 
 test('evaluateAssertion page-url matches exact and contains', () => {

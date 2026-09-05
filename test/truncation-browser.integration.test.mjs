@@ -126,10 +126,11 @@ test('a page larger than the node budget never yields a false "absent"', { timeo
     // -----------------------------------------------------------------
     // 3. The recovery: the scroll target outside the budget still resolves,
     //    the in-viewport claim is proven, and a present-claim outside the
-    //    initial budget passes. CHANGED (QA-BL-052 / Codex Q4, deliberate
-    //    semantics downgrade): the genuinely-absent claim NO LONGER passes —
-    //    the real browser never reports coverageVerified yet, so the absence
-    //    is UNPROVEN and the run fails closed with QA_COVERAGE_UNVERIFIED.
+    //    initial budget passes. CHANGED (contract v9, Phase C restoration):
+    //    the genuinely-absent claim on this CLEAN fixture page NOW PASSES —
+    //    the terminal absence decision re-reads once with verifyCoverage,
+    //    the driver's bounded probe verifies the (shadow-root-free) page, and
+    //    the whole run passes with the Codex absence-PASS wording.
     // -----------------------------------------------------------------
     const recovered = await runScenario(
       scenario(origin, [
@@ -139,19 +140,22 @@ test('a page larger than the node budget never yields a false "absent"', { timeo
       new BrowserAdapter(await newDriver()),
       { ownerId: 'node-budget-recovery', launchUrl: origin, headless: true },
     )
-    assert.notEqual(recovered.status, 'pass', 'an unverified absence must never pass the run')
+    assert.equal(recovered.status, 'pass', JSON.stringify(recovered.failure ?? {}))
     // The owner's scroll scenario: found without a human raising max_nodes.
     assert.equal(recovered.steps[0].assertionPassed, true)
     assert.equal(recovered.steps[0].completeness.escalated, true)
     assert.deepEqual(recovered.steps[0].observed, [{ role: 'button', name: 'Deep control', tag: 'button' }])
     // The PRESENT claim is asserted FIRST: it passes (found by escalation), so
-    // the runner still reaches the absence claim after it (a failed assertion
-    // stops the loop, so the ordering is part of the pin).
+    // the runner still reaches the absence claim after it (the ordering is
+    // part of the pin).
     assert.equal(recovered.assertions[0].passed, true, 'presence outside the initial budget is found by escalation')
-    assert.equal(recovered.assertions[1].passed, false, 'a genuinely absent node is UNPROVEN until the driver verifies coverage')
+    assert.equal(recovered.assertions[1].passed, true, 'a genuinely absent node PASSES once the coverage probe verified the clean page')
     assert.equal(recovered.assertions[1].completeness.truncated, false)
-    assert.equal(recovered.assertions[1].completeness.reason, QA_COVERAGE_UNVERIFIED)
-    assert.match(recovered.assertions[1].completeness.detail, /closed shadow roots, slot assignment/)
+    assert.equal(recovered.assertions[1].completeness.reason, undefined)
+    assert.equal(recovered.assertions[1].completeness.coverage.verified, true)
+    assert.equal(recovered.assertions[1].completeness.coverage.closedShadowRoots, 0)
+    assert.match(recovered.assertions[1].completeness.detail, /No driver-observable semantic node matching/)
+    assert.match(recovered.assertions[1].completeness.detail, /coverage verified/)
   } finally {
     for (const driver of drivers) await driver.dispose().catch(() => {})
     for (const rootDir of roots) await rm(rootDir, { recursive: true, force: true })

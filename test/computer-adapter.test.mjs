@@ -82,6 +82,27 @@ function receipt(overrides) {
   }
 }
 
+test('computer observations carry vacuous verified coverage and IGNORE the verifyCoverage/anchor requests (no shadow DOM)', async () => {
+  // The computer driver's accessibility projection has NO shadow-DOM boundary
+  // (nothing like a closed root can hide nodes from the OS accessibility
+  // tree), so the adapter IGNORES the browser-only verifyCoverage and
+  // anchorLastAction requests — explicitly, never by omission — and reports
+  // coverage as vacuously verified: the tree is the complete observable
+  // surface and its own truncated flag is the completeness gate.
+  const { driver, calls } = fakeDriver()
+  const adapter = new ComputerAdapter(driver)
+  await adapter.start('a', { bundleId: APP.bundleId })
+  const obs = await adapter.observe('a', { verifyCoverage: true, anchorLastAction: true })
+  assert.equal(calls[0][1].verifyCoverage, undefined, 'the computer driver never sees verifyCoverage')
+  assert.equal(calls[0][1].anchorLastAction, undefined, 'the computer driver never sees anchorLastAction')
+  assert.deepEqual(
+    obs.coverage,
+    { verified: true, closedShadowRoots: 0, probedNodes: 0 },
+    'no shadow-DOM boundary exists in the accessibility tree: coverage is vacuously verified',
+  )
+  assert.equal(obs.anchor, undefined, 'no identity anchor on a computer observation')
+})
+
 test('observe projects the APPLIED limits and never invents truncation reasons', async () => {
   const { driver } = fakeDriver()
   const adapter = new ComputerAdapter(driver)

@@ -110,6 +110,51 @@ test('BrowserAdapter carries the APPLIED budget and the driver-named truncation 
   assert.deepEqual(obs.truncationReasons, ['node-budget-exceeded', 'iframe-not-traversed'], 'every driver-named reason is carried verbatim')
 })
 
+test('BrowserAdapter maps contract v9 coverage, anchor, gate diagnostics, and the probe/anchor requests', async () => {
+  const calls = []
+  const driver = {
+    kind: 'browser',
+    contractVersion: 9,
+    async start() { return { ownerId: 'a', state: 'running', headless: true, browser: { channel: 'chrome', version: 'fixture' }, page: { url: 'about:blank', title: '' }, isolation: 'ephemeral-user-data', navigationPolicy: { mode: 'unrestricted', allowedOrigins: [] } } },
+    async observe(ownerId, options) {
+      calls.push(options)
+      return {
+        ownerId, epoch: 1, fingerprint: 'fp', expiresAt: 'x',
+        page: { url: 'about:blank', title: '', viewport: { width: 1, height: 1 } },
+        scope: { ref: 'br-scope', rootRef: 'br-root-fresh', role: 'region', name: 'Zone', tag: 'section' },
+        nodes: [{ ref: 'br_1', parentRef: null, role: 'region', name: 'Zone', tag: 'section', interactive: false, editable: false, disabled: false, inViewport: true }],
+        hiddenMatches: 3,
+        hiddenMatchesPartial: true,
+        anchor: { ref: 'br_1', connected: true, contained: true },
+        coverage: { verified: true, closedShadowRoots: 0, probedNodes: 9 },
+        truncated: false,
+        limits: { maxNodes: 60, maxBytes: 1 },
+      }
+    },
+    async act() { throw new Error('not exercised') },
+    async evidence() { return { ownerId: 'a', page: { url: 'about:blank', title: '' }, console: [], network: [], bounded: true, limits: { console: 1, network: 1 }, dropped: { console: 0, network: 0 } } },
+    async stop() { return { ownerId: 'a', stopped: true, reason: 'requested' } },
+    async dispose() {},
+  }
+  const adapter = new BrowserAdapter(driver)
+  const obs = await adapter.observe('a', { maxNodes: 60, verifyCoverage: true, anchorLastAction: true, withinRef: 'br-scope' })
+  assert.deepEqual(
+    calls[0],
+    { maxNodes: 60, verifyCoverage: true, anchorLastAction: true, within: 'br-scope' },
+    'the v9 probe/anchor requests and the within ref travel to the driver',
+  )
+  assert.deepEqual(
+    obs.coverage,
+    { verified: true, closedShadowRoots: 0, probedNodes: 9 },
+    'the per-observation coverage evidence is projected verbatim',
+  )
+  assert.deepEqual(obs.anchor, { ref: 'br_1', connected: true, contained: true }, 'the identity anchor travels')
+  assert.equal(obs.hiddenMatches, 3, 'the gate-skipped candidate count travels')
+  assert.equal(obs.hiddenMatchesPartial, true, 'the lower-bound marker travels')
+  assert.equal(obs.scope.rootRef, 'br-root-fresh', 'the fresh scope rootRef travels')
+  assert.equal(obs.nodes[0].parentRef, null, 'the node parentRef travels')
+})
+
 test('BrowserAdapter passes scroll/select/hover through and rejects computer verbs', async () => {
   const calls = []
   const page = { url: 'about:blank', title: '' }

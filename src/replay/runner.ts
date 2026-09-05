@@ -104,6 +104,23 @@ function describeScope(scope: QaScenarioAssertionScope): string {
   return parts.join(', ');
 }
 
+/** Options threading the scoped scroll-proof (provisional) resolution. */
+interface ScopeResolutionOptions {
+  /**
+   * True ONLY for a scoped SCROLL step whose proof is the exported
+   * node-in-viewport (the record side established it through the driver's
+   * identity anchor): a single container match in a STILL-truncated
+   * whole-page view is then accepted as the container to scope into. The
+   * whole page can never complete when the scroll target sits beyond the
+   * driver's clamped node budget, so the strict QA-BL-054 uniqueness refusal
+   * would make such exported scenarios unreplayable; the scoped assertion is
+   * still decided against the container's own view, and the record-time
+   * proof's identity safety came from the anchor, not from this resolution.
+   * Every other scoped assertion keeps the strict gate.
+   */
+  provisionalScope?: boolean;
+}
+
 /**
  * Observe WITHIN the container an assertion is scoped to (browser driver
  * contract v8). The container is resolved in the WHOLE-PAGE view by UNIQUE
@@ -120,13 +137,16 @@ function describeScope(scope: QaScenarioAssertionScope): string {
  * mechanism, the same settled way as action targets) before concluding; a
  * still-truncated view refuses with INCONCLUSIVE_TRUNCATED naming the scope
  * instead of scoping into a container it cannot identify. Two or more
- * matches are proven non-unique and never escalate.
+ * matches are proven non-unique and never escalate. The ONE exception is the
+ * scoped scroll-proof step (options.provisionalScope): see
+ * ScopeResolutionOptions.
  */
 async function observeScopeView(
   scope: QaScenarioAssertionScope,
   wholePage: QaObservation,
   session: QaSession,
   reobserve: QaReobserve,
+  options: ScopeResolutionOptions = {},
 ): Promise<QaObservation> {
   const predicate = scopePredicate(scope);
   const matchesIn = (view: QaObservation): typeof view.nodes =>
@@ -167,7 +187,7 @@ async function observeScopeView(
       + describeScope(scope) + '); the scoped container is not uniquely identifiable, so the assertion was not decided',
     );
   }
-  if (view.truncated) {
+  if (view.truncated && options.provisionalScope !== true) {
     // QA-BL-054: exactly ONE match in a STILL-truncated view is not proven
     // uniqueness — a twin container may sit outside the returned window.
     // Refuse, naming the scope and the code.
@@ -199,11 +219,12 @@ async function decideAssertionScoped(
   observation: QaObservation,
   reobserve: QaReobserve,
   session: QaSession,
+  options: ScopeResolutionOptions = {},
 ): Promise<QaRetriedDecision> {
   if (assertion.scope === undefined) {
     return decideAssertionWithRetry(assertion, observation, reobserve, session);
   }
-  const scopedView = await observeScopeView(assertion.scope, observation, session, reobserve);
+  const scopedView = await observeScopeView(assertion.scope, observation, session, reobserve, options);
   return decideAssertionWithRetry(assertion, scopedView, reobserve, session);
 }
 
@@ -333,11 +354,12 @@ async function resolveStepAction(
   wholePage: QaObservation,
   session: QaSession,
   reobserve: QaReobserve,
+  options: ScopeResolutionOptions = {},
 ): Promise<{ resolved: QaAction; observation: QaObservation }> {
   if (assert.scope === undefined) {
     return resolveActionWithBudget(action, wholePage, reobserve);
   }
-  const scopedView = await observeScopeView(assert.scope, wholePage, session, reobserve);
+  const scopedView = await observeScopeView(assert.scope, wholePage, session, reobserve, options);
   const target = targetOf(action);
   let view = scopedView;
   if (target !== null && !view.nodes.some((node) => matchesNode(node, target)) && view.truncated) {
@@ -363,6 +385,28 @@ async function resolveStepAction(
     throw new Error('no observable node matches the action target inside the scoped container');
   }
   return { resolved: resolveAction(action, view), observation: wholePage };
+}
+
+/** The exported scoped scroll-proof shape: a scroll-by-target step whose
+ * assertion is a SCOPED node-in-viewport. The record side proved it through
+ * the driver's identity anchor; the whole page can never complete when the
+ * target sits beyond the driver's clamped node budget, so such steps resolve
+ * and decide INSIDE the container with the provisional scope gate (see
+ * ScopeResolutionOptions) instead of the strict QA-BL-054 uniqueness refusal.
+ */
+function scopedScrollProofStep(step: {
+  action: QaScenarioAction;
+  assert: QaScenario['steps'][number]['assert'];
+}): boolean {
+  return step.action.kind === 'scroll'
+    && 'target' in step.action
+    && step.assert.kind === 'node-in-viewport'
+    && step.assert.scope !== undefined;
+}
+
+/** Same JSON shape (lossless scenario values), for predicate comparisons. */
+function sameJsonShape(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 interface StepBase {
@@ -615,19 +659,32 @@ export async function runScenario(
       };
     }
 
+    // The last exported scoped scroll-proof step (B3): the final assertion
+    // exported from it (scenario.assertions[0] === the last step's assert) is
+    // decided under the same provisional scope gate.
+    let lastScrollProofStep: { action: QaScenarioAction; assert: QaScenario['steps'][number]['assert'] } | null = null;
     for (let stepIndex = 0; stepIndex < scenario.steps.length; stepIndex += 1) {
       // Fail closed: an unsettled view before the first step proves nothing.
       if (failure !== null) break;
       const step = scenario.steps[stepIndex];
       if (step === undefined) continue;
       const base: StepBase = { index: step.index, intent: step.intent, action: step.action };
+      const scopedScrollProof = scopedScrollProofStep(step);
+      if (scopedScrollProof) lastScrollProofStep = step;
 
       let resolved: QaAction;
       try {
         // A step whose assertion carries a container scope resolves its action
         // target INSIDE that container (see resolveStepAction), so a target
         // beyond the whole-page node-budget window stays reachable.
-        const resolution = await resolveStepAction(step.action, step.assert, current, session, reobserve);
+        const resolution = await resolveStepAction(
+          step.action,
+          step.assert,
+          current,
+          session,
+          reobserve,
+          { provisionalScope: scopedScrollProof },
+        );
         resolved = resolution.resolved;
         current = resolution.observation;
       } catch (error) {
@@ -694,7 +751,13 @@ export async function runScenario(
       // page view; a driver refusal on the scoped read fails the run as itself.
       let decision: QaRetriedDecision;
       try {
-        decision = await decideAssertionScoped(step.assert, result.observation, reobserve, session);
+        decision = await decideAssertionScoped(
+          step.assert,
+          result.observation,
+          reobserve,
+          session,
+          { provisionalScope: scopedScrollProof },
+        );
       } catch (error) {
         stepResults.push(buildStepResult(base, step.assert, result.receipt, result.outcome, false, null));
         const code = failureCodeFor(error);
@@ -775,9 +838,26 @@ export async function runScenario(
       for (let i = 0; failure === null && i < scenario.assertions.length; i += 1) {
         const assertion = scenario.assertions[i];
         if (assertion === undefined) continue;
+        // The final assertion exported from the last scoped scroll-proof step
+        // (scenario.assertions[0] === that step's assert) is decided under
+        // the same provisional scope gate the step itself used.
+        const provisionalScope = lastScrollProofStep !== null
+          && assertion.kind === 'node-in-viewport'
+          && assertion.scope !== undefined
+          && sameJsonShape(assertion.scope, lastScrollProofStep.assert.scope)
+          && sameJsonShape(
+            assertion.expected,
+            (lastScrollProofStep.action as { kind: 'scroll'; target: QaNodePredicate }).target,
+          );
         let decision: QaRetriedDecision;
         try {
-          decision = await decideAssertionScoped(assertion, finalObservation, reobserve, session);
+          decision = await decideAssertionScoped(
+            assertion,
+            finalObservation,
+            reobserve,
+            session,
+            { provisionalScope },
+          );
         } catch (error) {
           const code = failureCodeFor(error);
           assertionResults.push({

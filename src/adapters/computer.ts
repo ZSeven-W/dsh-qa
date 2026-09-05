@@ -132,6 +132,16 @@ export class ComputerAdapter implements QaDriverAdapter {
         + 'observe the whole accessibility tree or narrow it with maxDepth instead',
       );
     }
+    // Browser driver contract v9 requests are handled EXPLICITLY (never by
+    // omission), and both are IGNORED on purpose: the accessibility tree has
+    // no shadow-DOM boundary — nothing like a closed root can hide a node
+    // from the OS accessibility walk, so there is nothing a coverage probe
+    // could verify that the tree itself does not already assert, and there is
+    // no browser element handle to anchor. Refusing them would only break the
+    // shared terminal-absence re-read; ignoring them keeps computer absence
+    // provable on complete views (see #projectObservation's vacuous coverage).
+    void options?.verifyCoverage;
+    void options?.anchorLastAction;
     const binding = this.#binding;
     const request: ComputerObserveRequest = {
       ...(binding !== null && (binding.bundleId !== undefined || binding.pid !== undefined)
@@ -372,6 +382,12 @@ export class ComputerAdapter implements QaDriverAdapter {
       maxNodes: observation.limits.maxNodes,
       observationId: observation.observationId,
       fingerprint: observation.fingerprint,
+      // Vacuously verified coverage (browser driver contract v9 shape):
+      // the computer driver's accessibility projection has NO shadow-DOM
+      // boundary, so zero closed shadow roots can hide content from it. The
+      // tree's own truncated flag remains the completeness gate. probedNodes
+      // is honestly 0 — no probe ever runs, and none is needed.
+      coverage: { verified: true, closedShadowRoots: 0, probedNodes: 0 },
       app: {
         bundleId: observation.app.bundleId,
         pid: observation.app.pid,
