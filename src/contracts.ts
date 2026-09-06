@@ -69,6 +69,26 @@ export interface QaNodePredicate {
   role?: string;
   name?: string;
   tag?: string;
+  /**
+   * ADDITIVE (QA-BL-064): the role the recorded live target carried when the
+   * exporter chose a NAME-only predicate because the accessible name was
+   * non-empty and unique in the recorded baseline view. Advisory only: the
+   * loader accepts it and replay IGNORES it for matching. Role drift on real
+   * pages (a server-rendered control replaced by a hydrated component that
+   * renders the same name under a different role — Wikipedia's search input
+   * textbox -> combobox) is exactly why the recorded role is a hint, never a
+   * binding constraint. schemaVersion stays 1.
+   */
+  roleHint?: string;
+}
+
+/** QA-BL-064 disclosure for an action target resolved by the name-only fallback. */
+export interface QaTargetResolutionDisclosure {
+  mode: 'name-only';
+  /** The role the recorded predicate pinned (may have drifted by the deciding view). */
+  recordedRole: string;
+  /** The role the uniquely-named node actually carried in the deciding view. */
+  observedRole: string;
 }
 
 /**
@@ -501,6 +521,29 @@ export interface QaStepResult {
    */
   attempts?: number;
   elapsedMs?: number;
+  /**
+   * ADDITIVE (QA-BL-064): how a drifted ACTION target was resolved. Present
+   * when the recorded role+name predicate had ZERO matches in the deciding
+   * view and EXACTLY ONE node carried the same non-empty accessible name
+   * under a different role (role drift: a server-rendered control replaced
+   * by a hydrated component — Wikipedia's search input textbox -> combobox):
+   * the runner fell back to that name-only match instead of failing, and
+   * discloses the drift here and in report.md. Absent for strict matches and
+   * for refusals (which carry the failure message instead). schemaVersion
+   * stays 1.
+   */
+  targetResolution?: QaTargetResolutionDisclosure;
+  /**
+   * ADDITIVE (QA-BL-064): true when the driver REFUSED the first dispatch
+   * with TARGET_CHANGED (the page replaced the bound element between target
+   * resolution and dispatch — the same hydration swap as the role drift, and
+   * the action was NOT dispatched) and the runner retried it ONCE: a fresh
+   * settled observation, a re-resolution of the SAME semantic target, and a
+   * second dispatch. Only the identity-staleness code TARGET_CHANGED is ever
+   * retried; every other rejection (safety/policy) stays a hard stop, and a
+   * second TARGET_CHANGED fails honestly. schemaVersion stays 1.
+   */
+  targetChangedRetry?: true;
 }
 
 export interface QaAssertionResult {

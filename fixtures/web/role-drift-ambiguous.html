@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>role-drift-ambiguous</title>
+</head>
+<body>
+  <h1>Role drift ambiguous fixture</h1>
+  <!--
+    QA-BL-064 fixture. TWO same-named nodes of DIFFERENT roles — a textbox
+    "Search site" and a button "Search site" — and NO combobox. A recorded
+    role+name target (role "combobox", name "Search site") therefore has zero
+    strict matches while the accessible name matches two nodes: the name-only
+    fallback must be REFUSED with the "present under a different role /
+    ambiguous" wording (TARGET_NOT_UNIQUE), never a guess.
+  -->
+  <input aria-label="Search site">
+  <button type="button" aria-label="Search site">Search site</button>
+  <script>
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' && event.target && event.target.closest
+          && event.target.closest('input')) {
+        var out = document.getElementById('out')
+        if (!out) {
+          out = document.createElement('p')
+          out.id = 'out'
+          out.setAttribute('role', 'status')
+          document.body.appendChild(out)
+        }
+        out.textContent = 'PRESSED'
+      }
+    })
+  </script>
+</body>
+</html>

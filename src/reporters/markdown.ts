@@ -220,6 +220,27 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     if (step.scopeRefusal !== undefined) {
       lines.push('  - scope refusal: ' + mdInline(step.scopeRefusal.reason));
     }
+    if (step.targetResolution !== undefined) {
+      // QA-BL-064: the action target was present under a drifted role and the
+      // name-only fallback resolved it — disclose the recorded and the
+      // observed role so the drift is visible in report.md, not only in
+      // report.json.
+      lines.push(
+        '  - target resolution: ' + mdInline(
+          step.targetResolution.mode + ' (recorded role "' + step.targetResolution.recordedRole
+          + '", observed role "' + step.targetResolution.observedRole + '")',
+        ),
+      );
+    }
+    if (step.targetChangedRetry === true) {
+      lines.push(
+        '  - target changed retry: ' + mdInline(
+          'the driver refused the first dispatch with TARGET_CHANGED (the page replaced the bound '
+          + 'element mid-flight); the runner re-observed, re-resolved the same semantic target, '
+          + 'and dispatched once more',
+        ),
+      );
+    }
     if (step.completeness !== undefined) {
       lines.push('  - view completeness: ' + mdInline(completenessLine(step.completeness)));
     }

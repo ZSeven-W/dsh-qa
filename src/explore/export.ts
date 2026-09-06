@@ -166,36 +166,55 @@ function durableAction(
       'Replay export requires a non-empty, unredacted role plus accessible name.',
     );
   }
-  if (countMatches(before, target) !== 1) {
+  // QA-BL-064 (mirrors QA-BL-039's name-only discriminator for drifted
+  // node-value assertions, now for the ACTION target): on a real page a
+  // server-rendered control can be replaced by a hydrated component that
+  // renders the same accessible name under a DIFFERENT role (Wikipedia's
+  // search input: textbox -> combobox once Vector's Vue typeahead mounts over
+  // it). A target pinned to the LIVE role can then match NOTHING on a fast
+  // replay even though the same control is present. Whenever the accessible
+  // name is non-empty and unique in the recorded baseline view, export the
+  // action target NAME-only and keep the live role only as an advisory
+  // roleHint (the loader accepts it and ignores it for matching). A name that
+  // is empty or not unique keeps the role+name form — and its uniqueness
+  // exclusion. The DurableAction.target stays the role+name predicate: proof
+  // synthesis (node-value discriminator, scroll proof) still anchors on it.
+  const name = target.name;
+  const role = target.role;
+  const nameOnly = name !== undefined && countMatches(before, { name }) === 1;
+  const exportedTarget: QaNodePredicate = nameOnly && role !== undefined
+    ? { name, roleHint: role }
+    : target;
+  if (!nameOnly && countMatches(before, target) !== 1) {
     return exclusion(
       recorded,
       QA_TARGET_NOT_UNIQUE,
       'Role plus accessible name did not uniquely identify the action target.',
     );
   }
-  if (action.kind === 'click') return { action: { kind: 'click', target }, target };
+  if (action.kind === 'click') return { action: { kind: 'click', target: exportedTarget }, target };
   if (action.kind === 'fill') {
     if (clean(action.text) === '') {
       return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay fill text must be non-empty.');
     }
-    return { action: { kind: 'fill', target, text: action.text }, target };
+    return { action: { kind: 'fill', target: exportedTarget, text: action.text }, target };
   }
   if (action.kind === 'select') {
     if (clean(action.option) === '') {
       return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay select option must be non-empty.');
     }
-    return { action: { kind: 'select', target, option: action.option }, target };
+    return { action: { kind: 'select', target: exportedTarget, option: action.option }, target };
   }
   if (action.kind === 'hover') {
-    return { action: { kind: 'hover', target }, target };
+    return { action: { kind: 'hover', target: exportedTarget }, target };
   }
   if (action.kind === 'scroll') {
-    return { action: { kind: 'scroll', target }, target };
+    return { action: { kind: 'scroll', target: exportedTarget }, target };
   }
   if (clean(action.key) === '') {
     return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay press key must be non-empty.');
   }
-  return { action: { kind: 'press', target, key: action.key }, target };
+  return { action: { kind: 'press', target: exportedTarget, key: action.key }, target };
 }
 
 /**

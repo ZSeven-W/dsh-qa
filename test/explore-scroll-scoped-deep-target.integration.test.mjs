@@ -165,7 +165,9 @@ test('explore a container-scoped deep scroll target -> scoped node-in-viewport s
     assert.equal(scrollStep.action.kind, 'scroll')
     assert.ok('target' in scrollStep.action, 'scroll is exported by target, not positionally')
     assert.equal(scrollStep.action.target.name, TARGET.name)
-    assert.equal(scrollStep.action.target.role, TARGET.role)
+    // QA-BL-064: NAME-only action target with the live role as an advisory hint.
+    assert.equal(scrollStep.action.target.role, undefined)
+    assert.equal(scrollStep.action.target.roleHint, TARGET.role)
     assert.equal(scrollStep.assert.kind, 'node-in-viewport')
     assert.deepEqual(scrollStep.assert.expected, TARGET)
     assert.deepEqual(

@@ -339,6 +339,60 @@ by the EXACT recorded action id carried on the receipt: a null or
 non-matching id (e.g. a concurrent act settled in between) is refused and
 recorded as a recording issue, never silently re-bound to the wrong action.
 
+## Role drift on real pages: server-rendered → hydrated (QA-BL-039 / QA-BL-064)
+
+A control's role is not stable over time on a real page. The canonical case is
+Wikipedia's search box: the server renders a plain `<input>` (`textbox`), and
+once Vector's Vue typeahead module mounts it replaces the control with a
+same-named component carrying `role="combobox"`. The owner's release blocker
+(QA-BL-064) pressed Enter while the combobox role was live; a fast replay loads
+the page quickly enough that step 2 still observes the server-rendered
+`textbox` — the node is **present in every observation under a drifted role**,
+not outside the observation window. Pin the LIVE role and a fast replay
+fails with a misleading "no observable node matches"; pin only the name and
+the same target resolves on both sides of the switch.
+
+The **name-only rule** therefore applies to BOTH selector families:
+
+- **Assertions (QA-BL-039).** The exporter synthesizes a drifted
+  `node-value` assertion on the name-only predicate (`{ name, value }`,
+  role omitted) when the target's role changed during the action and the
+  accessible name is unique among all nodes in the settled view; role+name is
+  kept only when the name alone is ambiguous. The same discriminator logic
+  drives every proof predicate on a role-drifted node.
+- **Action targets (QA-BL-064).** The exporter writes the action target
+  NAME-only whenever the accessible name is non-empty and unique in the
+  recorded BASELINE view, keeping the live role only as an advisory
+  `roleHint` (additive schema; the loader accepts it and replay IGNORES it
+  for matching). A name that is empty or not unique keeps the role+name form
+  and its `TARGET_NOT_UNIQUE` exclusion.
+- **Replay fallback.** When a recorded role+name action target has ZERO
+  matches in the DECIDING view (after the existing one escalated read when
+  that view is truncated), the runner falls back to a NAME-only match **iff
+  exactly one node in that view carries the same non-empty name**, and
+  discloses `targetResolution: { mode: "name-only", recordedRole,
+  observedRole }` on the step result and in report.md. The fallback is a
+  refusal, never a guess, when the name is empty or matches two or more
+  nodes: two or more same-named nodes fail closed with `TARGET_NOT_UNIQUE`
+  and the wording "the action target is present under a different role:
+  recorded X, observed Y — N nodes carry the accessible name, so the
+  name-only fallback was refused rather than guessed". A zero-match failure
+  otherwise distinguishes the other two cases honestly: "the target is
+  absent from the returned window" (the view was still truncated —
+  `INCONCLUSIVE_TRUNCATED`, the target may exist outside it) from "the
+  target is absent from a complete view" (the absence is proven). Existing
+  scenario files with role+name targets keep replaying through the same
+  fallback.
+- **Dispatch-time drift.** The same hydration swap can land BETWEEN target
+  resolution and dispatch: the driver then REFUSES the action with
+  `TARGET_CHANGED` (identity staleness — the page replaced the bound element
+  mid-flight, and NOTHING was dispatched). Only that one code is retried, and
+  exactly ONCE: a fresh settled observation, a re-resolution of the SAME
+  semantic target, and a second dispatch. The step discloses
+  `targetChangedRetry: true` in report.json/report.md. Every other
+  rejection (a safety/policy refusal) stays a hard stop, and a second
+  `TARGET_CHANGED` fails honestly — the retry never loops.
+
 ## Budget
 
 `QA_ESCALATED_NODE_BUDGET` is a named constant in src/replay/assertions.ts.

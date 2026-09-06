@@ -158,7 +158,9 @@ test('trajectory recording is passive, ordered, redacted, and exports fresh-obse
     })
     assert.equal(exported.ok, true)
     assert.equal(exported.scenario.steps.length, 2)
-    assert.deepEqual(exported.scenario.steps[0].action.target, { role: 'textbox', name: 'Release name' })
+    // QA-BL-064: the action target is NAME-only (the name is non-empty and
+    // unique in the recorded baseline view); the live role rides as roleHint.
+    assert.deepEqual(exported.scenario.steps[0].action.target, { name: 'Release name', roleHint: 'textbox' })
     assert.deepEqual(exported.scenario.steps[0].assert.expected, { role: 'status', name: 'READY' })
     assert.deepEqual(exported.scenario.steps[1].assert.expected, { role: 'status', name: 'PASS' })
     assert.equal(exported.excludedActions.length, 0)

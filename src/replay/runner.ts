@@ -16,6 +16,7 @@ import type {
   QaScenarioAssertionScope,
   QaSettleWidening,
   QaStepResult,
+  QaTargetResolutionDisclosure,
   QaViewCompleteness,
 } from '../contracts.ts';
 import type { QaAction, QaActionReceipt, QaDriverAdapter, QaEvidence, QaObservation, QaObserveOptions, QaSemanticNode, QaVisualCapture } from '../session/adapter.ts';
@@ -349,6 +350,113 @@ async function decideAssertionScoped(
   return { ...decision, scopeResolution: 'proven' };
 }
 
+/**
+ * QA-BL-064 role-drift fallback for ACTION targets. On a real page a
+ * server-rendered control can be replaced by a hydrated component that renders
+ * the same accessible name under a DIFFERENT role (Wikipedia's search input:
+ * textbox -> combobox once Vector's Vue typeahead mounts over it). A recorded
+ * role+name predicate then matches NOTHING on a fast replay even though the
+ * same control is present — the node is present under a drifted role, not
+ * outside the observation window. When the strict predicate has ZERO matches
+ * in the deciding view (after the existing one escalated read when that view
+ * is truncated), fall back to a NAME-only match iff exactly ONE node in that
+ * view carries the same non-empty name. The fallback is a refusal, never a
+ * guess, when the name is empty or matches two or more nodes.
+ */
+type ActionTargetMatch =
+  | {
+      kind: 'matched';
+      /** The predicate to resolve the ref with (name-only when the fallback fired). */
+      predicate: QaNodePredicate;
+      /** The node the predicate matched (the fallback's single name match). */
+      node: QaSemanticNode;
+      disclosure: QaTargetResolutionDisclosure | null;
+    }
+  | {
+      kind: 'absent';
+      /** Nodes carrying the target's name (>= 2 proves the ambiguity refusal). */
+      nameMatches: QaSemanticNode[];
+    };
+
+function matchActionTarget(target: QaNodePredicate, view: QaObservation): ActionTargetMatch {
+  const strict = view.nodes.filter((node) => matchesNode(node, target));
+  if (strict.length > 0) {
+    const first = strict[0];
+    if (first === undefined) return { kind: 'absent', nameMatches: [] };
+    return { kind: 'matched', predicate: target, node: first, disclosure: null };
+  }
+  const name = target.name;
+  if (name === undefined || name === '') return { kind: 'absent', nameMatches: [] };
+  const nameMatches = view.nodes.filter((node) => node.name === name);
+  if (nameMatches.length === 1) {
+    const drifted = nameMatches[0];
+    if (drifted === undefined) return { kind: 'absent', nameMatches: [] };
+    return {
+      kind: 'matched',
+      predicate: { name },
+      node: drifted,
+      disclosure: {
+        mode: 'name-only',
+        recordedRole: target.role ?? '',
+        observedRole: drifted.role,
+      },
+    };
+  }
+  return { kind: 'absent', nameMatches };
+}
+
+/**
+ * QA-BL-064: the three honest zero-match failure wordings for an action
+ * target, so a human triaging the failure can tell role drift from window
+ * truncation from a proven absence:
+ * (a) the target IS present, but under a different (and ambiguous) role —
+ *     the name-only fallback was refused because >= 2 nodes share the name
+ *     (TARGET_NOT_UNIQUE, never a guess);
+ * (b) the target is absent from the RETURNED WINDOW — the deciding view was
+ *     still truncated, so the target may exist outside it
+ *     (INCONCLUSIVE_TRUNCATED);
+ * (c) the target is absent from a COMPLETE view — the absence is proven.
+ */
+function absentActionTargetError(
+  target: QaNodePredicate,
+  nameMatches: QaSemanticNode[],
+  truncated: boolean,
+  budgetText: string,
+  container: boolean,
+): Error {
+  if (nameMatches.length >= 2) {
+    const recordedRole = target.role ?? '(no role recorded)';
+    const observedRoles = [...new Set(nameMatches.map((node) => node.role))]
+      .map((role) => '"' + role + '"')
+      .join(', ');
+    return new QaCodeError(
+      QA_TARGET_NOT_UNIQUE,
+      QA_TARGET_NOT_UNIQUE + ': the action target (' + describeTarget(target)
+        + ') is present under a different role: recorded "' + recordedRole + '", observed '
+        + observedRoles + ' — ' + String(nameMatches.length)
+        + ' nodes carry the accessible name, so the name-only fallback was refused rather than guessed'
+        + (container ? ' inside the scoped container' : ''),
+    );
+  }
+  if (truncated) {
+    return new Error(
+      'no observable node matches the action target'
+      + (container ? ' inside the scoped container' : '')
+      + ': the target is absent from the returned window'
+      + (container ? ' of that container' : '')
+      + ' — the view was still truncated at ' + budgetText + ' (' + QA_INCONCLUSIVE_TRUNCATED
+      + '), so the target may exist outside the returned '
+      + (container ? 'subtree ' : '') + 'window rather than be missing from the page',
+    );
+  }
+  return new Error(
+    'no observable node matches the action target'
+    + (container ? ' inside the scoped container' : '')
+    + ': the target is absent from a complete view'
+    + (container ? ' of that container' : ''),
+  );
+}
+
 function resolveRef(target: QaNodePredicate, observation: QaObservation): string {
   const matches = observation.nodes.filter((node) => matchesNode(node, target));
   if (matches.length === 0) {
@@ -395,7 +503,7 @@ async function resolveActionWithBudget(
   action: QaScenarioAction,
   observation: QaObservation,
   reobserve: QaReobserve,
-): Promise<{ resolved: QaAction; observation: QaObservation }> {
+): Promise<{ resolved: QaAction; observation: QaObservation; targetResolution: QaTargetResolutionDisclosure | null }> {
   const target = targetOf(action);
   let view = observation;
   let escalated = false;
@@ -409,37 +517,48 @@ async function resolveActionWithBudget(
       // No fuller view: fall through and report honestly against the truncated one.
     }
   }
-  if (missing(view)) {
-    if (view.truncated) {
-      // Same honesty rule as the completeness block: name the budget the
-      // driver APPLIED (its own clamp), never the requested constant.
-      const applied = escalated
-        ? view.maxNodes === undefined
-          ? 'the escalated budget (the driver did not report the budget it applied)'
-          : 'the applied ' + String(view.maxNodes) + '-node escalated budget'
-        : 'the driver-default budget';
-      throw new Error(
-        'no observable node matches the action target, and the view was still truncated at '
-        + applied + ' (' + QA_INCONCLUSIVE_TRUNCATED
-        + '): the target may exist outside the returned window rather than be missing from the page',
-      );
-    }
-    throw new Error('no observable node matches the action target');
+  if (target === null || !missing(view)) {
+    return { resolved: resolveAction(action, view), observation: view, targetResolution: null };
   }
-  return { resolved: resolveAction(action, view), observation: view };
+  // QA-BL-064: zero strict matches in the DECIDING view (the escalated one
+  // when an escalation ran). The target may be present under a drifted role.
+  const match = matchActionTarget(target, view);
+  if (match.kind === 'matched') {
+    const override = match.disclosure === null ? undefined : match.predicate;
+    return {
+      resolved: resolveAction(action, view, override),
+      observation: view,
+      targetResolution: match.disclosure,
+    };
+  }
+  // Same honesty rule as the completeness block: name the budget the
+  // driver APPLIED (its own clamp), never the requested constant.
+  const applied = escalated
+    ? view.maxNodes === undefined
+      ? 'the escalated budget (the driver did not report the budget it applied)'
+      : 'the applied ' + String(view.maxNodes) + '-node escalated budget'
+    : 'the driver-default budget';
+  throw absentActionTargetError(target, match.nameMatches, view.truncated, applied, false);
 }
 
-function resolveAction(action: QaScenarioAction, observation: QaObservation): QaAction {
+function resolveAction(
+  action: QaScenarioAction,
+  observation: QaObservation,
+  targetOverride?: QaNodePredicate,
+): QaAction {
+  // QA-BL-064: the override is the name-only fallback predicate; the original
+  // role+name predicate stays untouched (and echoed on the step result).
+  const target = (recorded: QaNodePredicate): string => resolveRef(targetOverride ?? recorded, observation);
   if (action.kind === 'navigate') return { kind: 'navigate', url: action.url };
-  if (action.kind === 'click') return { kind: 'click', ref: resolveRef(action.target, observation) };
+  if (action.kind === 'click') return { kind: 'click', ref: target(action.target) };
   if (action.kind === 'fill') {
-    return { kind: 'fill', ref: resolveRef(action.target, observation), text: action.text };
+    return { kind: 'fill', ref: target(action.target), text: action.text };
   }
   if (action.kind === 'press') {
-    return { kind: 'press', ref: resolveRef(action.target, observation), key: action.key };
+    return { kind: 'press', ref: target(action.target), key: action.key };
   }
   if (action.kind === 'scroll') {
-    if ('target' in action) return { kind: 'scroll', ref: resolveRef(action.target, observation) };
+    if ('target' in action) return { kind: 'scroll', ref: target(action.target) };
     return {
       kind: 'scroll',
       direction: action.direction,
@@ -447,9 +566,9 @@ function resolveAction(action: QaScenarioAction, observation: QaObservation): Qa
     };
   }
   if (action.kind === 'select') {
-    return { kind: 'select', ref: resolveRef(action.target, observation), option: action.option };
+    return { kind: 'select', ref: target(action.target), option: action.option };
   }
-  return { kind: 'hover', ref: resolveRef(action.target, observation) };
+  return { kind: 'hover', ref: target(action.target) };
 }
 
 /**
@@ -476,7 +595,7 @@ async function resolveStepAction(
   session: QaSession,
   reobserve: QaReobserve,
   options: ScopeResolutionOptions = {},
-): Promise<{ resolved: QaAction; observation: QaObservation }> {
+): Promise<{ resolved: QaAction; observation: QaObservation; targetResolution: QaTargetResolutionDisclosure | null }> {
   if (assert.scope === undefined) {
     return resolveActionWithBudget(action, wholePage, reobserve);
   }
@@ -497,16 +616,20 @@ async function resolveStepAction(
     view = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef });
   }
   if (target !== null && !view.nodes.some((node) => matchesNode(node, target))) {
-    if (view.truncated) {
-      throw new Error(
-        'no observable node matches the action target inside the scoped container, and the scoped view was still '
-        + 'truncated at the applied budget (' + QA_INCONCLUSIVE_TRUNCATED
-        + '): the target may exist outside the returned subtree window rather than be missing from the page',
-      );
+    // QA-BL-064: zero strict matches in the deciding (in-scope) view — the
+    // same name-only fallback as the whole-page path, inside the container.
+    const match = matchActionTarget(target, view);
+    if (match.kind === 'matched') {
+      const override = match.disclosure === null ? undefined : match.predicate;
+      return {
+        resolved: resolveAction(action, view, override),
+        observation: wholePage,
+        targetResolution: match.disclosure,
+      };
     }
-    throw new Error('no observable node matches the action target inside the scoped container');
+    throw absentActionTargetError(target, match.nameMatches, view.truncated, 'the applied budget', true);
   }
-  return { resolved: resolveAction(action, view), observation: wholePage };
+  return { resolved: resolveAction(action, view), observation: wholePage, targetResolution: null };
 }
 
 /** The exported scoped scroll-proof shape: a scroll-by-target step whose
@@ -575,11 +698,12 @@ function verifyScopedScrollAnchor(
 
 /** Outcome of the scoped scroll-proof decision (QA-BL-062). */
 type ScopedScrollProofOutcome =
-  | { kind: 'pass'; observed: unknown; completeness: QaViewCompleteness }
+  | { kind: 'pass'; observed: unknown; completeness: QaViewCompleteness; targetResolution: QaTargetResolutionDisclosure | null }
   | {
       kind: 'inconclusive';
       observed: unknown;
       completeness: QaViewCompleteness;
+      targetResolution: QaTargetResolutionDisclosure | null;
       refusal?: { reason: string };
     }
   | { kind: 'failure'; error: Error };
@@ -617,26 +741,20 @@ function decideScopedScrollProof(
     ...(view.truncationReasons === undefined ? {} : { truncationReasons: view.truncationReasons }),
   };
   const matches = view.nodes.filter((node) => matchesNode(node, target));
+  let targetNode: QaSemanticNode;
+  let targetResolution: QaTargetResolutionDisclosure | null = null;
   if (matches.length === 0) {
-    if (view.truncated) {
-      return {
-        kind: 'failure',
-        error: new Error(
-          'no observable node matches the scroll target inside the scoped container, and the scoped view was still '
-          + 'truncated at the applied budget (' + QA_INCONCLUSIVE_TRUNCATED
-          + '): the target may exist outside the returned subtree window rather than be missing from the page',
-        ),
-      };
+    // QA-BL-064: zero strict matches in the verifying scoped view — the same
+    // name-only fallback as the whole-page action target, bound to the same
+    // identity anchor (the anchor verifies the element replay SELECTED, so a
+    // unique name match here is never a guess).
+    const fallback = matchActionTarget(target, view);
+    if (fallback.kind === 'absent') {
+      throw absentActionTargetError(target, fallback.nameMatches, view.truncated, 'the applied budget', true);
     }
-    return {
-      kind: 'failure',
-      error: new Error(
-        'the scoped scroll-proof assertion found no observable node matching the target (' + describeTarget(target)
-        + ') inside the complete scoped container',
-      ),
-    };
-  }
-  if (matches.length > 1) {
+    targetNode = fallback.node;
+    targetResolution = fallback.disclosure;
+  } else if (matches.length > 1) {
     // Counted BEFORE the inViewport filter: a KNOWN twin refuses, never a guess.
     return {
       kind: 'failure',
@@ -646,10 +764,15 @@ function decideScopedScrollProof(
         + describeTarget(target) + ') inside the scoped container, so the replayed target is not uniquely identifiable',
       ),
     };
-  }
-  const targetNode = matches[0];
-  if (targetNode === undefined) {
-    return { kind: 'failure', error: new Error('no observable node matches the scroll target') };
+  } else {
+    const only = matches[0];
+    if (only === undefined) {
+      return {
+        kind: 'failure',
+        error: new Error('no observable node matches the action target inside the scoped container'),
+      };
+    }
+    targetNode = only;
   }
   // The assertion is still evaluated against the scoped view so the report
   // shows what WAS observed — but only the anchor + resolution decide PASS.
@@ -664,6 +787,7 @@ function decideScopedScrollProof(
         detail: 'the scoped scroll proof was REFUSED by the identity anchor: ' + anchor.reason
           + ' (' + QA_INCONCLUSIVE_SCOPE + ').',
       },
+      targetResolution,
       refusal: { reason: anchor.reason },
     };
   }
@@ -678,6 +802,7 @@ function decideScopedScrollProof(
         detail: 'the container was resolved in a complete whole-page view (proven), the scoped subtree is complete '
           + 'with verified coverage, and the identity anchor confirmed the asserted target is the anchored node in the viewport.',
       },
+      targetResolution,
     };
   }
   const why = scoped.resolution === 'provisional'
@@ -692,6 +817,7 @@ function decideScopedScrollProof(
       ...completenessBase,
       detail: why + ': the scoped scroll proof cannot earn a pass (' + QA_INCONCLUSIVE_SCOPE + ').',
     },
+    targetResolution,
   };
 }
 
@@ -716,6 +842,8 @@ function buildStepResult(
     scopeResolution?: 'proven' | 'provisional';
     scopeRefusal?: { code?: string; reason: string };
   } = {},
+  targetResolution: QaTargetResolutionDisclosure | null = null,
+  targetChangedRetry = false,
 ): QaStepResult {
   return {
     index: base.index,
@@ -735,6 +863,9 @@ function buildStepResult(
     ...(attempts === undefined || attempts <= 1 ? {} : { attempts, elapsedMs: elapsedMs ?? 0 }),
     ...(scope.scopeResolution === undefined ? {} : { scopeResolution: scope.scopeResolution }),
     ...(scope.scopeRefusal === undefined ? {} : { scopeRefusal: scope.scopeRefusal }),
+    // QA-BL-064: disclosed only when the name-only fallback resolved the action target.
+    ...(targetResolution === null ? {} : { targetResolution }),
+    ...(targetChangedRetry ? { targetChangedRetry: true as const } : {}),
   };
 }
 
@@ -974,6 +1105,11 @@ export async function runScenario(
       if (scopedScrollProof) lastScrollProofStep = step;
 
       let resolved: QaAction;
+      // QA-BL-064: disclosed on the step when the name-only fallback resolved
+      // a drifted action target (see resolveStepAction), and when a
+      // TARGET_CHANGED refusal was retried once (see the act block).
+      let targetResolution: QaTargetResolutionDisclosure | null = null;
+      let targetChangedRetry = false;
       try {
         // A step whose assertion carries a container scope resolves its action
         // target INSIDE that container (see resolveStepAction), so a target
@@ -988,6 +1124,7 @@ export async function runScenario(
         );
         resolved = resolution.resolved;
         current = resolution.observation;
+        targetResolution = resolution.targetResolution;
       } catch (error) {
         stepResults.push(buildStepResult(base, step.assert, null, 'failed', false, null));
         const code = failureCodeFor(error);
@@ -1003,6 +1140,51 @@ export async function runScenario(
       let result: QaActResult;
       try {
         result = await session.act(resolved);
+        // QA-BL-064: the hydration swap can also land BETWEEN target
+        // resolution and dispatch — the driver then refuses the action with
+        // TARGET_CHANGED (identity staleness: the page replaced the bound
+        // element mid-flight, and NOTHING was dispatched). That is the same
+        // re-render the name-only fallback exists for, so retry the dispatch
+        // ONCE: a fresh settled observation, a re-resolution of the SAME
+        // semantic target, and a second dispatch. Only the
+        // identity-staleness code TARGET_CHANGED is ever retried — every
+        // other rejection (a safety/policy refusal) stays a hard stop — and
+        // a second TARGET_CHANGED fails honestly like before.
+        if (result.outcome === 'failed' && result.receipt.code === 'TARGET_CHANGED') {
+          targetChangedRetry = true;
+          const refresh = await session.observeSettled();
+          if (settleWidened === null && refresh.widened !== null) {
+            settleWidened = { ...refresh.widened, at: step.index };
+          }
+          if (!refresh.stable) {
+            stepResults.push(
+              buildStepResult(
+                base, step.assert, result.receipt, result.outcome, false, null,
+                null, undefined, undefined, undefined, {}, null, targetChangedRetry,
+              ),
+            );
+            failure = {
+              stepIndex: step.index,
+              message: unsettledMessage('post-TARGET_CHANGED refresh', refresh.budgetMs),
+              code: QA_INCONCLUSIVE_UNSTABLE,
+              reproduction: toReproduction(stepResults),
+            };
+            break;
+          }
+          const retryResolution = await resolveStepAction(
+            step.action,
+            step.assert,
+            refresh.observation,
+            session,
+            reobserve,
+            { provisionalScope: scopedScrollProof },
+          );
+          resolved = retryResolution.resolved;
+          if (retryResolution.targetResolution !== null) {
+            targetResolution = retryResolution.targetResolution;
+          }
+          result = await session.act(resolved);
+        }
       } catch (error) {
         stepResults.push(buildStepResult(base, step.assert, null, 'failed', false, null));
         failure = {
@@ -1017,7 +1199,12 @@ export async function runScenario(
       }
 
       if (result.outcome === 'failed' || result.observation === null) {
-        stepResults.push(buildStepResult(base, step.assert, result.receipt, result.outcome, false, null));
+        stepResults.push(
+          buildStepResult(
+            base, step.assert, result.receipt, result.outcome, false, null,
+            null, undefined, undefined, undefined, {}, null, targetChangedRetry,
+          ),
+        );
         failure = {
           stepIndex: step.index,
           message:
@@ -1079,6 +1266,7 @@ export async function runScenario(
           );
           const outcome = decideScopedScrollProof(step.assert, target, verifying);
           if (outcome.kind === 'failure') throw outcome.error;
+          if (outcome.targetResolution !== null) targetResolution = outcome.targetResolution;
           decision = {
             passed: outcome.kind === 'pass',
             observed: outcome.observed,
@@ -1132,6 +1320,8 @@ export async function runScenario(
             ...(decision.scopeResolution === undefined ? {} : { scopeResolution: decision.scopeResolution }),
             ...(decision.scopeRefusal === undefined ? {} : { scopeRefusal: decision.scopeRefusal }),
           },
+          targetResolution,
+          targetChangedRetry,
         ),
       );
       if (scopedScrollProof) lastScrollProofDecision = decision;
@@ -1205,13 +1395,14 @@ export async function runScenario(
         if (lastScrollProofStep !== null && lastScrollProofDecision !== null) {
           const scrollProofStep = lastScrollProofStep;
           const stepDecision = lastScrollProofDecision;
+          // QA-BL-064: the copy is matched against the step's ASSERTION
+          // expectation, never against the action target — the exported action
+          // target is now the NAME-only predicate (+ roleHint) while the
+          // scoped node-in-viewport expectation keeps the recorded role+name.
           const isCopy = assertion.kind === 'node-in-viewport'
             && assertion.scope !== undefined
             && sameJsonShape(assertion.scope, scrollProofStep.assert.scope)
-            && sameJsonShape(
-              assertion.expected,
-              (scrollProofStep.action as { kind: 'scroll'; target: QaNodePredicate }).target,
-            );
+            && sameJsonShape(assertion.expected, scrollProofStep.assert.expected);
           if (isCopy) {
             assertionResults.push({
               kind: assertion.kind,
@@ -1234,14 +1425,14 @@ export async function runScenario(
         // The final assertion exported from the last scoped scroll-proof step
         // (scenario.assertions[0] === that step's assert) is decided under
         // the same provisional scope gate the step itself used.
+        // QA-BL-064: same as the copy check — compare the final assertion
+        // against the step's ASSERTION expectation, not the NAME-only action
+        // target.
         const provisionalScope = lastScrollProofStep !== null
           && assertion.kind === 'node-in-viewport'
           && assertion.scope !== undefined
           && sameJsonShape(assertion.scope, lastScrollProofStep.assert.scope)
-          && sameJsonShape(
-            assertion.expected,
-            (lastScrollProofStep.action as { kind: 'scroll'; target: QaNodePredicate }).target,
-          );
+          && sameJsonShape(assertion.expected, lastScrollProofStep.assert.expected);
         let decision: QaRetriedDecision;
         try {
           decision = await decideAssertionScoped(

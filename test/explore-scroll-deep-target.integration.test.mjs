@@ -112,7 +112,9 @@ test('explore a deep scroll target -> export node-in-viewport step -> replay PAS
     assert.equal(scrollStep.action.kind, 'scroll')
     assert.ok('target' in scrollStep.action, 'scroll is exported by target, not positionally')
     assert.equal(scrollStep.action.target.name, 'Deep Target')
-    assert.equal(scrollStep.action.target.role, 'link')
+    // QA-BL-064: NAME-only action target with the live role as an advisory hint.
+    assert.equal(scrollStep.action.target.role, undefined)
+    assert.equal(scrollStep.action.target.roleHint, 'link')
     assert.equal(scrollStep.assert.kind, 'node-in-viewport')
     assert.deepEqual(scrollStep.assert.expected, { role: 'link', name: 'Deep Target' })
     assert.match(

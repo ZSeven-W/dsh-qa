@@ -176,8 +176,16 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 - Call \`qa_record_export\` with the same \`owner\` and an \`output_path\` ending in \`.json\`. Its
   parent must already exist under the current workspace or temporary directory.
 - Selector durability is strict: only a target uniquely identified in the preceding observation by
-  non-empty **role + accessible name** is exported. Unnamed, duplicate, coordinate/index-based,
-  ephemeral-ref-only, redacted, or Replay-unsupported actions are excluded with a reason.
+  non-empty **role + accessible name** is exported. Role drift on real pages — a server-rendered
+  control replaced by a hydrated component that renders the same accessible name under a
+  DIFFERENT role (Wikipedia's search input: \`textbox\` -> \`combobox\` once the typeahead
+  mounts) — makes the LIVE role a fragile identity, so the exported ACTION target is written
+  NAME-only whenever the accessible name is non-empty and unique in the recorded baseline view,
+  keeping the live role only as an advisory \`roleHint\` (the loader accepts it and ignores it
+  for matching; assertions follow the same name-only rule through the QA-BL-039 value
+  discriminator). A name that is empty or not unique keeps the role+name form. Unnamed, duplicate,
+  coordinate/index-based, ephemeral-ref-only, redacted, or Replay-unsupported actions are excluded
+  with a reason.
 - Every exported step receives an assertion synthesized from and evaluated against the immediate
   fresh observation after that action. Rejected/failed actions and actions without that observation
   never become steps. A fill is proven by its own target's value (\`node-value\`); otherwise an
@@ -201,6 +209,19 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   \`INCONCLUSIVE_UNSTABLE\` (a view that never settled) and \`TARGET_NOT_UNIQUE\` (an ambiguous
   action target) — so you never have to parse prose to tell them from an ordinary assertion
   failure.
+- Role drift on replay (QA-BL-064): a recorded role+name ACTION target that matches NOTHING in the
+  deciding view (after the one escalated read when that view is truncated) falls back to a NAME-only
+  match iff exactly one node carries the same non-empty accessible name — the node is present under
+  a drifted role, not outside the window — and the step discloses
+  \`targetResolution: { mode: "name-only", recordedRole, observedRole }\` in report.json/report.md.
+  The fallback is a refusal, never a guess, when the name is empty or matches two or more nodes
+  (\`TARGET_NOT_UNIQUE\` with "present under a different role: recorded X, observed Y"); a
+  zero-match failure otherwise distinguishes "the target is absent from the returned window"
+  (truncated, \`INCONCLUSIVE_TRUNCATED\`) from "the target is absent from a complete view".
+  The same hydration swap can land BETWEEN resolution and dispatch: a \`TARGET_CHANGED\` refusal
+  (identity staleness — nothing was dispatched) is retried ONCE (fresh settled observation, same
+  semantic target, second dispatch; \`targetChangedRetry: true\` on the step); every other
+  rejection stays a hard stop and a second \`TARGET_CHANGED\` fails honestly.
 - \`qa_session_stop\` releases the owner scope. Stop on success and failure; the trajectory remains
   exportable until another session starts for that owner or the plugin disposes.
 

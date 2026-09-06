@@ -103,7 +103,11 @@ const ASSERTION_SCOPE_FIELDS = ['role', 'name', 'tag', 'path'] as const;
 const ASSERTION_SCOPE_PATH_ITEM_FIELDS = ['role', 'name'] as const;
 const NODE_VALUE_EXPECTATION_FIELDS = ['role', 'name', 'tag', 'value'] as const;
 const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
-const PREDICATE_FIELDS = ['role', 'name', 'tag'] as const;
+// QA-BL-064: roleHint is the advisory live role the exporter recorded beside
+// a NAME-only action target (role drift on real pages). The loader accepts it
+// and replay IGNORES it for matching; it never counts toward the
+// "at least one of role/name/tag" requirement.
+const PREDICATE_FIELDS = ['role', 'name', 'tag', 'roleHint'] as const;
 
 function isDriverKind(value: unknown): value is QaDriverKind {
   return typeof value === 'string' && DRIVER_KINDS.includes(value as QaDriverKind);
@@ -217,6 +221,9 @@ function validatePredicate(value: unknown, position: string): QaNodePredicate {
   if (obj.role !== undefined) out.role = expectNonEmptyString(obj.role, position + '.role');
   if (obj.name !== undefined) out.name = expectNonEmptyString(obj.name, position + '.name');
   if (obj.tag !== undefined) out.tag = expectNonEmptyString(obj.tag, position + '.tag');
+  // QA-BL-064: validated as a non-empty string and CARRIED on the predicate,
+  // but never used for matching (matchesNode reads role/name/tag only).
+  if (obj.roleHint !== undefined) out.roleHint = expectNonEmptyString(obj.roleHint, position + '.roleHint');
   if (out.role === undefined && out.name === undefined && out.tag === undefined) {
     fail(position, 'expected at least one of role/name/tag');
   }

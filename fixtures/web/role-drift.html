@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>role-drift</title>
+</head>
+<body>
+  <h1>Role drift fixture</h1>
+  <!--
+    QA-BL-064 fixture. The server-rendered search <input> carries the implicit
+    role "textbox". swapMs milliseconds after load a hydrated component
+    REPLACES it with a same-named control whose role attribute is "combobox"
+    (the Wikipedia Vector typeahead story: textbox -> combobox). The swap
+    delay is configurable via the query string (?swapMs=300), so a replay can
+    resolve the target BEFORE the swap (textbox only: the recorded combobox
+    predicate has zero strict matches and the name-only fallback must fire)
+    or AFTER it (strict match, no disclosure).
+  -->
+  <input id="search" data-search-host aria-label="Search site">
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search)
+      var swapMs = Number(params.get('swapMs') || '300')
+      // A path-based slow swap for Explore recording: the recorded launch URL
+      // must carry NO query string (the recorder rejects query/fragment URLs),
+      // so Explore drives the slow drift through /slow.
+      if (window.location.pathname.indexOf('/slow') !== -1) swapMs = 10000
+      document.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter' && event.target && event.target.closest
+            && event.target.closest('[data-search-host]')) {
+          // The driver scrubs query/fragment from the REPORTED page URL, so
+          // the press proof is a visible status node instead of a hash.
+          var out = document.getElementById('out')
+          if (!out) {
+            out = document.createElement('p')
+            out.id = 'out'
+            out.setAttribute('role', 'status')
+            document.body.appendChild(out)
+          }
+          out.textContent = 'PRESSED'
+        }
+      })
+      window.setTimeout(function () {
+        var old = document.getElementById('search')
+        if (!old) return
+        var next = document.createElement('input')
+        next.id = 'search'
+        next.setAttribute('data-search-host', '')
+        next.setAttribute('role', 'combobox')
+        next.setAttribute('aria-label', 'Search site')
+        next.setAttribute('aria-expanded', 'false')
+        old.replaceWith(next)
+      }, swapMs)
+    })()
+  </script>
+</body>
+</html>
