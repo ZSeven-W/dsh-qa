@@ -286,9 +286,22 @@ test('TWO target predicate matches inside the scope (counted BEFORE inViewport) 
 })
 
 test('a TRUNCATED verifying subtree cannot earn pass even with a proven container (uniqueness unproven)', async () => {
+  // CHANGED (QA-BL-069): the container is now resolved through the recorded
+  // ancestor path WALK — the Page region's scoped read (the container level's
+  // parent view) must be COMPLETE for the container level to stay proven,
+  // while the CONTAINER's own verifying read stays truncated (the test's
+  // original intent: a proven container with a truncated verifying subtree
+  // can still never earn a pass).
   const { adapter } = replayAdapter({
     wholePage: () => completeWholePage(false),
-    scopedFor: (options, acted) => acceptedScoped(options, acted, { truncated: true }),
+    // The CONTAINER's own verifying read requests anchorLastAction; the
+    // walk's intermediate Page-region read does not. Branching on the anchor
+    // (not the withinRef, which the settle re-keys per poll) keeps the
+    // container level PROVEN in a complete parent view while the verifying
+    // subtree stays truncated.
+    scopedFor: (options, acted) => (options.anchorLastAction === true
+      ? acceptedScoped(options, acted, { truncated: true })
+      : acceptedScoped(options, acted)),
   })
   const report = await runScenario(scopedScrollScenario(), adapter, { ownerId: 'unit-subtree-truncated', settle: SETTLE })
   assert.equal(report.status, 'inconclusive', JSON.stringify(report.failure ?? report))
@@ -317,6 +330,10 @@ test('a COMPLETE but coverage-unverified verifying subtree cannot earn pass', as
 })
 
 test('TWO path-matching container candidates refuse with TARGET_NOT_UNIQUE (a KNOWN twin is never guessed)', async () => {
+  // CHANGED (QA-BL-069): uniqueness is judged PER LEVEL inside the parent's
+  // view — the container level is now matched inside the Page region's SCOPED
+  // view, so the twin must live THERE for the refusal to fire (the whole-page
+  // twin check moved with the walk; the refusal itself is unchanged).
   const { adapter } = replayAdapter({
     wholePage: () => completeWholePage(false, {
       nodes: [
@@ -326,12 +343,25 @@ test('TWO path-matching container candidates refuse with TARGET_NOT_UNIQUE (a KN
         node('r-status', 'status', 'IDLE', 'div', { inViewport: true }),
       ],
     }),
-    scopedFor: (options, acted) => acceptedScoped(options, acted),
+    // The Page region's scoped read (no anchorLastAction) returns BOTH
+    // zones; the container's verifying read requests the anchor.
+    scopedFor: (options, acted) => (options.anchorLastAction === true
+      ? acceptedScoped(options, acted)
+      : {
+          page: page(),
+          scope: { ref: 'r-page', rootRef: 'r-page-scoped', role: 'region', name: 'Page', tag: 'section' },
+          nodes: [
+            node('r-page-scoped', 'region', 'Page', 'section', { inViewport: true }),
+            node('r-zone', 'region', 'Deep zone', 'section', { parentRef: 'r-page-scoped', inViewport: true }),
+            node('r-zone-twin', 'region', 'Deep zone', 'section', { parentRef: 'r-page-scoped', inViewport: true }),
+          ],
+          truncated: false,
+        }),
   })
   const report = await runScenario(scopedScrollScenario(), adapter, { ownerId: 'unit-container-twin', settle: SETTLE })
   assert.equal(report.status, 'fail')
   assert.equal(report.failure?.code, QA_TARGET_NOT_UNIQUE)
-  assert.match(report.failure?.message ?? '', /2 nodes match the assertion scope/)
+  assert.match(report.failure?.message ?? '', /2 nodes match path level 2/)
 })
 
 test('a container whose ancestor PATH differs from the recorded path matches nothing', async () => {
@@ -347,7 +377,11 @@ test('a container whose ancestor PATH differs from the recorded path matches not
   })
   const report = await runScenario(scopedScrollScenario(), adapter, { ownerId: 'unit-path-mismatch', settle: SETTLE })
   assert.equal(report.status, 'fail')
-  assert.match(report.failure?.message ?? '', /no observable node matches the assertion scope/)
+  // CHANGED (QA-BL-069): the walk fails at the TOP level — the recorded
+  // 'Page' ancestor is absent from the COMPLETE whole-page view, so the
+  // container can never be there. Still a definite failure; the wording
+  // names the path level instead of the flat container scope.
+  assert.match(report.failure?.message ?? '', /no observable node matches path level 1/)
 })
 
 test('three-state aggregation: a proven step plus a provisional step is INCONCLUSIVE, never pass, never fail', async () => {
@@ -391,7 +425,7 @@ test('three-state aggregation: a proven step plus a provisional step is INCONCLU
   assert.equal(report.failure, undefined)
 })
 
-test('the loader validates scope.path fail-closed (non-empty items, role required, no extra fields)', () => {
+test('the loader validates scope.path fail-closed (non-empty items, role required, no extra fields; QA-BL-069: name optional, tag allowed)', () => {
   const valid = validateAssertion({
     kind: 'node-in-viewport',
     expected: { role: 'link', name: 'x' },
@@ -402,6 +436,24 @@ test('the loader validates scope.path fail-closed (non-empty items, role require
     name: 'Deep zone',
     path: [{ role: 'region', name: 'Page' }, { role: 'main', name: '' }],
   }, 'the recorded ancestor path round-trips (an empty ancestor name is an exact-match value)')
+
+  // CHANGED (QA-BL-069 path durability): a path item may now OMIT the name
+  // ({ role, tag } only for content-named ancestors whose aggregated name is
+  // order-fragile or empty) and may carry a tag — both round-trip.
+  const durable = validateAssertion({
+    kind: 'node-in-viewport',
+    expected: { role: 'link', name: 'x' },
+    scope: {
+      role: 'navigation',
+      name: 'Navbox291',
+      path: [{ role: 'navigation', tag: 'nav' }, { role: 'navigation' }],
+    },
+  })
+  assert.deepEqual(durable.scope, {
+    role: 'navigation',
+    name: 'Navbox291',
+    path: [{ role: 'navigation', tag: 'nav' }, { role: 'navigation' }],
+  }, 'name-less path items (with and without a tag) round-trip')
 
   assert.throws(
     () => validateAssertion({ kind: 'node-absent', expected: { role: 'x' }, scope: { role: 'region', name: 'x', path: [] } }),
@@ -419,8 +471,15 @@ test('the loader validates scope.path fail-closed (non-empty items, role require
     () => validateAssertion({ kind: 'node-absent', expected: { role: 'x' }, scope: { role: 'region', name: 'x', path: [{ role: '', name: 'Page' }] } }),
     ScenarioValidationError,
   )
+  // CHANGED (QA-BL-069): a TAG on a path item is now ACCEPTED (it is the
+  // discriminator that replaces the omitted fragile name); what stays
+  // rejected is an EMPTY tag (a non-discriminating value) and unknown fields.
   assert.throws(
-    () => validateAssertion({ kind: 'node-absent', expected: { role: 'x' }, scope: { role: 'region', name: 'x', path: [{ role: 'region', name: 'Page', tag: 'div' }] } }),
+    () => validateAssertion({ kind: 'node-absent', expected: { role: 'x' }, scope: { role: 'region', name: 'x', path: [{ role: 'region', name: 'Page', tag: '' }] } }),
+    ScenarioValidationError,
+  )
+  assert.throws(
+    () => validateAssertion({ kind: 'node-absent', expected: { role: 'x' }, scope: { role: 'region', name: 'x', path: [{ role: 'region', name: 'Page', extra: 1 }] } }),
     ScenarioValidationError,
   )
 })

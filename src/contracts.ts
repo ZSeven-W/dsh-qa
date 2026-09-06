@@ -161,17 +161,60 @@ export interface QaScenarioAssertionScope {
   name: string;
   tag?: string;
   /**
-   * ADDITIVE (QA-BL-062): the container's semantic ancestor PATH from
-   * record-time ancestry — the parentRef chain of an observation that
-   * contained the container as a NON-root node (typically the whole-page
-   * baseline), outermost first. A stronger replay locator: a container
-   * candidate matches only when its own parentRef chain yields the same
-   * { role, name } sequence (relationships compared, never refs). NEVER
-   * manufactured from a scoped root's parentRef:null — that means "no
-   * emitted ancestor in this scoped view", not "document top". Omitted when
-   * no recorded observation has real ancestry for the container.
+   * ADDITIVE (QA-BL-062, amended QA-BL-069): the container's semantic
+   * ancestor PATH from record-time ancestry — the parentRef chain of an
+   * observation that contained the container as a NON-root node (typically
+   * the whole-page baseline), outermost first. Replay resolves it
+   * TOP-DOWN: the outermost ancestor in the whole-page view, then each
+   * next item inside a settled scoped view of its parent, then the
+   * container itself (see TRUNCATION.md). A path is a DISCRIMINATOR,
+   * never a proof: it can only ever locate a container; uniqueness must be
+   * proven per level at replay time.
+   *
+   * QA-BL-069 path durability: an item may OMIT `name` — it is then
+   * matched by role (+ tag when recorded) only. Export omits the name
+   * exactly when the ancestor is a CONTENT-NAMED container role
+   * (search/region/list/listbox/group/navigation/main/form/table/menu)
+   * whose aggregated name exceeds 80 chars (it concatenates descendant
+   * text and changes with collapse state / render timing), or when the
+   * name is empty; otherwise the item records { role, name } and `tag`
+   * rides only where the name is omitted (an extra discriminator, never
+   * required). NEVER manufactured from a scoped root's parentRef:null —
+   * that means "no emitted ancestor in this scoped view", not "document
+   * top". Omitted when no recorded observation has real ancestry for the
+   * container.
    */
-  path?: { role: string; name: string }[];
+  path?: QaScopePathItem[];
+}
+
+/**
+ * One hop of a recorded semantic ancestor path (QA-BL-062/069): a
+ * DISCRIMINATOR, never a proof. `role` is always required; `name` is
+ * compared only when recorded (export omits it for content-named
+ * containers whose aggregated name is order-fragile or empty — see
+ * QaScenarioAssertionScope.path); `tag` is compared only when recorded.
+ */
+export interface QaScopePathItem {
+  role: string;
+  name?: string;
+  tag?: string;
+}
+
+/**
+ * ADDITIVE (QA-BL-069): one level of the scoped path walk. `level` is
+ * 1-based (1 = outermost recorded ancestor; the last level is the
+ * container itself — for a scope without a path the container is the only
+ * level). `what` is the human-readable discriminator matched at that
+ * level. `resolution`: 'proven' = exactly one match in a COMPLETE parent
+ * view; 'provisional' = exactly one match in a still-truncated parent
+ * view (or, at export time, a level no recorded view could verify);
+ * 'not-located' = zero matches in a still-truncated parent view (the walk
+ * stops there; the step is INCONCLUSIVE_TRUNCATED, never a failure).
+ */
+export interface QaScopeWalkLevel {
+  level: number;
+  what: string;
+  resolution: 'proven' | 'provisional' | 'not-located';
 }
 
 /**
@@ -280,13 +323,16 @@ export interface QaScenario {
 }
 
 /**
- * Three-state run status (QA-BL-062, Codex consult #2 decision (b)): 'pass'
- * requires every required step AND final assertion to be fully proven;
- * 'inconclusive' means at least one result is PROVISIONAL (scopeResolution:
- * 'provisional' / INCONCLUSIVE_SCOPE) while nothing definitely failed; 'fail'
- * is everything else that is not 'blocked'. PASS is reserved for proven
- * resolution: a provisionally resolved container can never produce a green,
- * because replay may have selected the wrong counterpart.
+ * Three-state run status (QA-BL-062, Codex consult #2 decision (b), amended
+ * QA-BL-069): 'pass' requires every required step AND final assertion to be
+ * fully proven; 'inconclusive' means at least one result is PROVISIONAL
+ * (scopeResolution: 'provisional' / INCONCLUSIVE_SCOPE) OR a scoped
+ * container could not be located in a still-truncated view
+ * (INCONCLUSIVE_TRUNCATED from the scope resolution — nothing definitely
+ * failed) while nothing definitely failed; 'fail' is everything else that
+ * is not 'blocked'. PASS is reserved for proven resolution: a provisionally
+ * resolved container can never produce a green, because replay may have
+ * selected the wrong counterpart.
  */
 export type QaRunStatus = 'pass' | 'inconclusive' | 'fail' | 'blocked';
 
@@ -490,7 +536,13 @@ export interface QaViewCompleteness {
 export interface QaStepResult {
   index: number;
   intent: string;
-  /** Three-state (QA-BL-062): 'inconclusive' when the result is provisional (INCONCLUSIVE_SCOPE), never passed. */
+  /**
+   * Three-state (QA-BL-062, amended QA-BL-069): 'inconclusive' when the
+   * result is provisional (INCONCLUSIVE_SCOPE) OR the scoped container
+   * could not be located in a still-truncated view
+   * (INCONCLUSIVE_TRUNCATED with scopeNotLocated: true — nothing
+   * definitely failed), never passed.
+   */
   status: 'pass' | 'inconclusive' | 'fail';
   action: QaScenarioAction;
   receipt: QaActionReceipt | null;
@@ -504,14 +556,36 @@ export interface QaStepResult {
   /** Completeness of the deciding view; present only when truncation touched the decision. */
   completeness?: QaViewCompleteness;
   /**
-   * ADDITIVE (QA-BL-062): how the scoped container was resolved for this
-   * step. 'proven' = exactly one predicate/path match in a COMPLETE
-   * whole-page view (uniqueness proven). 'provisional' = exactly one match
-   * in a still-truncated whole-page view (uniqueness unproven) — the step
-   * then carries reason INCONCLUSIVE_SCOPE and can never be passed:true.
-   * Present exactly when the step's assertion carried a container scope.
+   * ADDITIVE (QA-BL-062, amended QA-BL-069): how the scoped container was
+   * resolved for this step. With a recorded ancestor path, resolution is
+   * judged PER LEVEL (see QaScopeWalkLevel): 'proven' only when EVERY
+   * level was matched exactly once in a COMPLETE parent view;
+   * 'provisional' when every level matched exactly once but at least one
+   * parent view was still truncated (on a >100-node page the whole-page
+   * top level always is) — the step then carries reason
+   * INCONCLUSIVE_SCOPE and can never be passed:true. Without a path the
+   * flat rule applies: 'proven' = exactly one predicate match in a
+   * COMPLETE whole-page view. Present exactly when the step's assertion
+   * carried a container scope AND the container was located.
    */
   scopeResolution?: 'proven' | 'provisional';
+  /**
+   * ADDITIVE (QA-BL-069): per-level resolution of the scoped path walk
+   * (see QaScopeWalkLevel) — outermost ancestor first, the container last.
+   * Present exactly when the step's assertion carried a container scope;
+   * for a scope without a recorded path it carries the single container
+   * level. report.md names each level's resolution.
+   */
+  scopeLevels?: QaScopeWalkLevel[];
+  /**
+   * ADDITIVE (QA-BL-069): true when the scoped container could NOT be
+   * located because zero matches occurred in a still-truncated view (at
+   * some level of the path walk): the container may exist outside the
+   * returned window, so NOTHING definitely failed — the step is
+   * 'inconclusive' with reason INCONCLUSIVE_TRUNCATED, never a failure.
+   * Mutually exclusive with scopeResolution.
+   */
+  scopeNotLocated?: true;
   /**
    * ADDITIVE (QA-BL-062): escalationRefused-style disclosure recorded on the
    * step when the replayed scoped scroll's identity anchor REFUSED the proof
@@ -587,12 +661,26 @@ export interface QaAssertionResult {
   /** Completeness of the deciding view; present only when truncation touched the decision or the view was scoped. */
   completeness?: QaViewCompleteness;
   /**
-   * ADDITIVE (QA-BL-062): how the scoped container was resolved for this
-   * assertion. A final assertion copied from a provisionally resolved scoped
-   * scroll-proof step INHERITS the step's 'provisional' marking (and its
-   * INCONCLUSIVE_SCOPE reason) — it can never report passed:true.
+   * ADDITIVE (QA-BL-062, amended QA-BL-069): how the scoped container was
+   * resolved for this assertion — per-level for a recorded ancestor path,
+   * flat otherwise (see QaStepResult.scopeResolution). A final assertion
+   * copied from a provisionally resolved scoped scroll-proof step
+   * INHERITS the step's 'provisional' marking (and its INCONCLUSIVE_SCOPE
+   * reason) — it can never report passed:true.
    */
   scopeResolution?: 'proven' | 'provisional';
+  /**
+   * ADDITIVE (QA-BL-069): per-level resolution of the scoped path walk
+   * (see QaScopeWalkLevel). See QaStepResult.scopeLevels; report.md names
+   * each level's resolution.
+   */
+  scopeLevels?: QaScopeWalkLevel[];
+  /**
+   * ADDITIVE (QA-BL-069): true when the scoped container could NOT be
+   * located because zero matches occurred in a still-truncated view — the
+   * result is inconclusive (INCONCLUSIVE_TRUNCATED), never a failure.
+   */
+  scopeNotLocated?: true;
   /**
    * ADDITIVE (QA-BL-062): the identity-anchor refusal disclosure inherited
    * from the step this final assertion copies (see QaStepResult.scopeRefusal).

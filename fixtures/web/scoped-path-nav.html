@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa scoped path navigation fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 6px 0; }
+    #series li { padding: 2px 0; }
+  </style>
+</head>
+<body>
+  <!--
+    QA-BL-069 Wikipedia-shaped COLLAPSIBLE-SIDEBAR fixture: the
+    "Part of a series on the History of China" sidebar (role navigation) has
+    NO aria-label — its accessible name is the CONCATENATION of its children's
+    text (the h2, the hide/show toggle, and the series links), exactly like
+    Wikipedia's collapsible sidebar. The /collapsed PATH flips the toggle to
+    "show" and hides the series list between page loads (the recorder's
+    replay-URL projection rejects query strings), so the aggregated name
+    DIFFERS per load (both states stay > 80 chars) — an exact-name ancestor
+    path recorded against one state fails against the other. The deep
+    container (role navigation div, aria-label "Navbox291") sits INSIDE the
+    sidebar and holds the target link "Qing dynasty" BEYOND the clamped
+    100-node whole-page window (expanded state), reachable only by scoping.
+
+    Emitted totals, default (expanded) state: h1 (1) + 81 outer links (2..82)
+    + sidebar (83) + sidebar h2 (84) + toggle (85) + 14 series links (86..99)
+    + Navbox291 (100) + navbox h2 (101) + 12 inner links (102..113) + target
+    (114) + status (115) = 115 > 100. The sidebar sits inside every window
+    (83); the container is the 100th node and the target the 114th — beyond
+    the window. Collapsed: the series links vanish (display:none), so the
+    totals drop by 14: 101 nodes — still > 100, the container at 86 and the
+    target at 100. ?small=1 keeps only 18 outer links: 52 (expanded) / 38
+    (collapsed) nodes — a COMPLETE whole-page view in both states.
+    The sidebar subtree fits the default window in every state (33 nodes
+    expanded), so scoping into it yields a complete view.
+  -->
+  <h1>Scoped path navigation fixture</h1>
+  <ul id="outer-fillers">
+    <li><a href="#outer-01">Outer 01</a></li>
+    <li><a href="#outer-02">Outer 02</a></li>
+    <li><a href="#outer-03">Outer 03</a></li>
+    <li><a href="#outer-04">Outer 04</a></li>
+    <li><a href="#outer-05">Outer 05</a></li>
+    <li><a href="#outer-06">Outer 06</a></li>
+    <li><a href="#outer-07">Outer 07</a></li>
+    <li><a href="#outer-08">Outer 08</a></li>
+    <li><a href="#outer-09">Outer 09</a></li>
+    <li><a href="#outer-10">Outer 10</a></li>
+    <li><a href="#outer-11">Outer 11</a></li>
+    <li><a href="#outer-12">Outer 12</a></li>
+    <li><a href="#outer-13">Outer 13</a></li>
+    <li><a href="#outer-14">Outer 14</a></li>
+    <li><a href="#outer-15">Outer 15</a></li>
+    <li><a href="#outer-16">Outer 16</a></li>
+    <li><a href="#outer-17">Outer 17</a></li>
+    <li><a href="#outer-18">Outer 18</a></li>
+    <li><a href="#outer-19">Outer 19</a></li>
+    <li><a href="#outer-20">Outer 20</a></li>
+    <li><a href="#outer-21">Outer 21</a></li>
+    <li><a href="#outer-22">Outer 22</a></li>
+    <li><a href="#outer-23">Outer 23</a></li>
+    <li><a href="#outer-24">Outer 24</a></li>
+    <li><a href="#outer-25">Outer 25</a></li>
+    <li><a href="#outer-26">Outer 26</a></li>
+    <li><a href="#outer-27">Outer 27</a></li>
+    <li><a href="#outer-28">Outer 28</a></li>
+    <li><a href="#outer-29">Outer 29</a></li>
+    <li><a href="#outer-30">Outer 30</a></li>
+    <li><a href="#outer-31">Outer 31</a></li>
+    <li><a href="#outer-32">Outer 32</a></li>
+    <li><a href="#outer-33">Outer 33</a></li>
+    <li><a href="#outer-34">Outer 34</a></li>
+    <li><a href="#outer-35">Outer 35</a></li>
+    <li><a href="#outer-36">Outer 36</a></li>
+    <li><a href="#outer-37">Outer 37</a></li>
+    <li><a href="#outer-38">Outer 38</a></li>
+    <li><a href="#outer-39">Outer 39</a></li>
+    <li><a href="#outer-40">Outer 40</a></li>
+    <li><a href="#outer-41">Outer 41</a></li>
+    <li><a href="#outer-42">Outer 42</a></li>
+    <li><a href="#outer-43">Outer 43</a></li>
+    <li><a href="#outer-44">Outer 44</a></li>
+    <li><a href="#outer-45">Outer 45</a></li>
+    <li><a href="#outer-46">Outer 46</a></li>
+    <li><a href="#outer-47">Outer 47</a></li>
+    <li><a href="#outer-48">Outer 48</a></li>
+    <li><a href="#outer-49">Outer 49</a></li>
+    <li><a href="#outer-50">Outer 50</a></li>
+    <li><a href="#outer-51">Outer 51</a></li>
+    <li><a href="#outer-52">Outer 52</a></li>
+    <li><a href="#outer-53">Outer 53</a></li>
+    <li><a href="#outer-54">Outer 54</a></li>
+    <li><a href="#outer-55">Outer 55</a></li>
+    <li><a href="#outer-56">Outer 56</a></li>
+    <li><a href="#outer-57">Outer 57</a></li>
+    <li><a href="#outer-58">Outer 58</a></li>
+    <li><a href="#outer-59">Outer 59</a></li>
+    <li><a href="#outer-60">Outer 60</a></li>
+    <li><a href="#outer-61">Outer 61</a></li>
+    <li><a href="#outer-62">Outer 62</a></li>
+    <li><a href="#outer-63">Outer 63</a></li>
+    <li><a href="#outer-64">Outer 64</a></li>
+    <li><a href="#outer-65">Outer 65</a></li>
+    <li><a href="#outer-66">Outer 66</a></li>
+    <li><a href="#outer-67">Outer 67</a></li>
+    <li><a href="#outer-68">Outer 68</a></li>
+    <li><a href="#outer-69">Outer 69</a></li>
+    <li><a href="#outer-70">Outer 70</a></li>
+    <li><a href="#outer-71">Outer 71</a></li>
+    <li><a href="#outer-72">Outer 72</a></li>
+    <li><a href="#outer-73">Outer 73</a></li>
+    <li><a href="#outer-74">Outer 74</a></li>
+    <li><a href="#outer-75">Outer 75</a></li>
+    <li><a href="#outer-76">Outer 76</a></li>
+    <li><a href="#outer-77">Outer 77</a></li>
+    <li><a href="#outer-78">Outer 78</a></li>
+    <li><a href="#outer-79">Outer 79</a></li>
+    <li><a href="#outer-80">Outer 80</a></li>
+    <li><a href="#outer-81">Outer 81</a></li>
+  </ul>
+  <nav id="series-sidebar" role="navigation">
+    <h2>Part of a series on the History of China: timeline, dynasties, historiography, prehistoric China, neolithic China</h2>
+    <a id="toggle" href="#series-sidebar" role="button">hide</a>
+    <ul id="series">
+      <li><a href="#series-timeline">Timeline</a></li>
+      <li><a href="#series-dynasties">Dynasties</a></li>
+      <li><a href="#series-historiography">Historiography</a></li>
+      <li><a href="#series-prehistoric">Prehistoric</a></li>
+      <li><a href="#series-paleolithic">Paleolithic</a></li>
+      <li><a href="#series-neolithic">Neolithic</a></li>
+      <li><a href="#series-bronze">Bronze Age</a></li>
+      <li><a href="#series-imperial">Imperial</a></li>
+      <li><a href="#series-qin">Qin</a></li>
+      <li><a href="#series-han">Han</a></li>
+      <li><a href="#series-tang">Tang</a></li>
+      <li><a href="#series-song">Song</a></li>
+      <li><a href="#series-ming">Ming</a></li>
+      <li><a href="#series-qing">Qing</a></li>
+    </ul>
+    <div id="navbox291" role="navigation" aria-label="Navbox291">
+      <h2>Navbox291</h2>
+      <ul id="inner-fillers">
+        <li><a href="#inner-01">Inner 01</a></li>
+        <li><a href="#inner-02">Inner 02</a></li>
+        <li><a href="#inner-03">Inner 03</a></li>
+        <li><a href="#inner-04">Inner 04</a></li>
+        <li><a href="#inner-05">Inner 05</a></li>
+        <li><a href="#inner-06">Inner 06</a></li>
+        <li><a href="#inner-07">Inner 07</a></li>
+        <li><a href="#inner-08">Inner 08</a></li>
+        <li><a href="#inner-09">Inner 09</a></li>
+        <li><a href="#inner-10">Inner 10</a></li>
+        <li><a href="#inner-11">Inner 11</a></li>
+        <li><a href="#inner-12">Inner 12</a></li>
+      </ul>
+      <a id="deep-target" href="#deep-target">Qing dynasty</a>
+    </div>
+  </nav>
+  <div id="result" role="status" aria-live="polite">IDLE</div>
+  <script>
+    (function () {
+      // The state rides in the PATH (the recorder's replay-URL projection
+      // rejects query strings): /collapsed flips the sidebar toggle and hides
+      // the series list between page loads; /small keeps only 18 outer
+      // filler links so the whole page fits the observation window.
+      var path = location.pathname || '';
+      var collapsed = path.indexOf('/collapsed') >= 0;
+      var small = path.indexOf('/small') >= 0;
+      if (small) {
+        var fillers = document.getElementById('outer-fillers');
+        while (fillers.children.length > 18) {
+          fillers.removeChild(fillers.lastElementChild);
+        }
+      }
+      if (collapsed) {
+        document.getElementById('series').style.display = 'none';
+        document.getElementById('toggle').textContent = 'show';
+      }
+    })();
+  </script>
+</body>
+</html>

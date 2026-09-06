@@ -795,17 +795,29 @@ test('replay escalates the whole-page read ONCE to find a scope container outsid
   )
 })
 
-test('a scope container still missing after the escalation fails closed naming INCONCLUSIVE_TRUNCATED', async () => {
-  // The escalated whole-page read also omits the container (it is beyond the
-  // driver maximum): the runner must say so, never claim the container is gone.
+test('a scope container still missing after the escalation is INCONCLUSIVE_TRUNCATED, never a failure (QA-BL-069, C)', async () => {
+  // CHANGED (QA-BL-069, C): the escalated whole-page read also omits the
+  // container (it is beyond the driver maximum) — the runner must say so,
+  // never claim the container is gone, and must NOT misclassify it as a
+  // definite step failure: nothing definitely failed, so the step and the
+  // run are INCONCLUSIVE with the honest wording (the action is not
+  // dispatched — its container could not be located).
   const { adapter } = deepContainerAdapter({ neverEscalated: true })
   const report = await runScenario(validateScenario(SCOPED_SCENARIO), adapter, {
     ownerId: 'scoped-still-truncated',
     settle: SETTLE,
   })
-  assert.notEqual(report.status, 'pass')
-  assert.match(report.failure?.message ?? '', /no observable node matches the assertion scope, and the view was still truncated/)
-  assert.match(report.failure?.message ?? '', /INCONCLUSIVE_TRUNCATED/)
+  assert.equal(report.status, 'inconclusive', JSON.stringify(report.failure ?? report))
+  const step = report.steps[0]
+  assert.equal(step.status, 'inconclusive')
+  assert.equal(step.assertionPassed, false)
+  assert.equal(step.reason, QA_INCONCLUSIVE_TRUNCATED)
+  assert.equal(step.scopeNotLocated, true)
+  assert.match(
+    step.completeness?.detail ?? '',
+    /the container could not be located in the truncated view; it may exist outside the returned window/,
+  )
+  assert.equal(report.failure, undefined, 'nothing definitely failed: no failure block')
 })
 
 /** A page whose scope container matches ONCE in a truncated whole-page view. */

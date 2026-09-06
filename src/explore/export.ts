@@ -584,20 +584,47 @@ function proofWasTruncated(before: QaObservation | null, after: QaObservation): 
   return before?.truncated === true || after.truncated === true;
 }
 
-/** One { role, name } hop of a recorded semantic ancestor path (QA-BL-062). */
+/** One hop of a recorded semantic ancestor path (QA-BL-062, amended QA-BL-069). */
 interface ScopePathItem {
   role: string;
-  name: string;
+  /** Omitted for content-named ancestors whose aggregated name is order-fragile or empty (see pathItemFor). */
+  name?: string;
+  /** Rides as an extra discriminator exactly when the name is omitted (and is non-empty). */
+  tag?: string;
+}
+
+/**
+ * QA-BL-069 path durability: the recorded shape of ONE ancestor hop.
+ *
+ * A path is a DISCRIMINATOR, never a proof — it can only ever locate the
+ * container; uniqueness is proven per level at replay time. To stay durable
+ * across page loads, the name is OMITTED exactly when it cannot be relied
+ * on: a CONTENT-NAMED container role (search/region/list/listbox/group/
+ * navigation/main/form/table/menu — the same FRAGILE_PROOF_ONLY rule) whose
+ * aggregated name exceeds 80 chars concatenates its children's text and
+ * changes with collapse state / render timing, and an EMPTY name discriminates
+ * nothing. Both record { role, tag } only; every other ancestor records
+ * { role, name } (its authored label).
+ */
+function pathItemFor(ancestor: QaSemanticNode): ScopePathItem {
+  const role = clean(ancestor.role);
+  const name = clean(ancestor.name);
+  const tag = clean(ancestor.tag);
+  const omitName = name === '' || (CONTENT_NAMED_CONTAINER_ROLES.has(role) && name.length > FRAGILE_PROOF_NAME_CAP);
+  if (omitName) return { role, ...(tag === '' ? {} : { tag }) };
+  return { role, name };
 }
 
 /**
  * The semantic ancestor path of `node` inside `view`: every EMITTED ancestor
  * on its parentRef chain (composed-tree ancestry, driver contract v9),
- * outermost first. Null when the node has NO emitted ancestor in this view —
- * a parentRef:null root means "no emitted ancestor here", never "document
- * top", so a path is NEVER manufactured from it — or when any hop does not
- * resolve inside the SAME observation (fail closed: a partial chain is not
- * faithful ancestry).
+ * outermost first, each hop recorded through pathItemFor (QA-BL-069: the
+ * name of a content-named container whose aggregated name is order-fragile
+ * or empty is omitted). Null when the node has NO emitted ancestor in this
+ * view — a parentRef:null root means "no emitted ancestor here", never
+ * "document top", so a path is NEVER manufactured from it — or when any hop
+ * does not resolve inside the SAME observation (fail closed: a partial chain
+ * is not faithful ancestry).
  */
 function ancestorPathOf(view: QaObservation, node: QaSemanticNode): ScopePathItem[] | null {
   const byRef = new Map(view.nodes.map((candidate) => [candidate.ref, candidate]));
@@ -610,7 +637,7 @@ function ancestorPathOf(view: QaObservation, node: QaSemanticNode): ScopePathIte
     }
     const parent = byRef.get(parentRef);
     if (parent === undefined) return null;
-    chain.push({ role: clean(parent.role), name: clean(parent.name) });
+    chain.push(pathItemFor(parent));
     current = parent;
   }
   return null;
@@ -626,13 +653,20 @@ function ancestorPathOf(view: QaObservation, node: QaSemanticNode): ScopePathIte
  * resolve is skipped. Null when no recorded observation has real ancestry
  * for the container — the export then omits scope.path.
  */
-function recordedContainerPath(
+/**
+ * The FIRST recorded observation that contains the container as a NON-root
+ * node with a fully resolvable parentRef chain (the same search
+ * recordedContainerPath uses, exposed for the QA-BL-069 per-level durability
+ * walk): this is the container level's parent-view evidence — never the
+ * container's own subtree, whose root is trivially itself.
+ */
+function recordedContainerEvidence(
   observations: Readonly<Record<string, QaObservation>>,
   baseline: QaObservation | null,
   role: string,
   name: string,
   tag: string,
-): ScopePathItem[] | null {
+): { view: QaObservation; node: QaSemanticNode } | null {
   const seen = new Set<QaObservation>();
   const sources = [baseline, ...Object.values(observations)];
   for (const observation of sources) {
@@ -641,11 +675,22 @@ function recordedContainerPath(
     for (const node of observation.nodes) {
       if (node.role !== role || node.name !== name) continue;
       if (tag !== '' && node.tag !== tag) continue;
-      const path = ancestorPathOf(observation, node);
-      if (path !== null) return path;
+      if (ancestorPathOf(observation, node) !== null) return { view: observation, node };
     }
   }
   return null;
+}
+
+function recordedContainerPath(
+  observations: Readonly<Record<string, QaObservation>>,
+  baseline: QaObservation | null,
+  role: string,
+  name: string,
+  tag: string,
+): ScopePathItem[] | null {
+  const evidence = recordedContainerEvidence(observations, baseline, role, name, tag);
+  if (evidence === null) return null;
+  return ancestorPathOf(evidence.view, evidence.node);
 }
 
 /**
@@ -684,25 +729,35 @@ function scopePathFor(
 
 /**
  * The durability verdict for a scoped proof observation's container
- * (QA-BL-054).
+ * (QA-BL-054, amended QA-BL-062/069).
  *
- * A scoped proof is exported as DURABLE only when the container predicate is
- * PROVEN unique: role+name (plus tag when needed to disambiguate) must match
- * EXACTLY ONE node in the recorded BASELINE observation, that baseline must
- * be complete (truncated:false), and the baseline must NOT be the container's
- * OWN scoped subtree — a scoped baseline whose root is the container proves
- * nothing, because the container is trivially its own root there (the
- * scoped-complete-baseline trick QA-BL-062 closes). An empty accessible NAME
- * is a legitimate predicate value and is kept LITERALLY (`name: ''`).
+ * Without a recorded ancestor path the flat rule applies: a scoped proof is
+ * exported as DURABLE only when the container predicate (role+name, plus tag
+ * when needed to disambiguate) matches EXACTLY ONE node in the recorded
+ * BASELINE observation, that baseline is complete (truncated:false), and the
+ * baseline is NOT the container's OWN scoped subtree — a scoped baseline
+ * whose root is the container proves nothing, because the container is
+ * trivially its own root there (the scoped-complete-baseline trick
+ * QA-BL-062 closes). An empty accessible NAME is a legitimate predicate
+ * value and is kept LITERALLY (`name: ''`).
  *
- * QA-BL-062: when uniqueness is UNPROVEN and the recorded action is an
- * identity-anchored scroll proof (see anchoredScrollProof), the scope is
- * exported EXPLICITLY PROVISIONAL instead — the assertion carries the scope
- * (with the recorded ancestor path when available) and the step intent
- * carries the provisional weakness, so replay reports INCONCLUSIVE_SCOPE
- * unless it proves the container unique at replay time. Every other scoped
- * assertion with unproven uniqueness is EXCLUDED with SCOPE_NOT_DURABLE — a
- * scoped proof is never silently exported as if it were a whole-page proof.
+ * QA-BL-069: WITH a recorded ancestor path, durability is judged PER LEVEL
+ * from the recorded evidence, the same top-down walk replay performs:
+ * level 1 in a whole-page recorded view, each next level inside a recorded
+ * observation scoped within its parent item, and the container inside the
+ * first recorded view that contained it as a NON-root node (its own subtree
+ * never counts — the trick stays closed). A container unique inside its
+ * ancestor's COMPLETE scoped view is durable at that level; the export is
+ * PROVISIONAL only where a level stays unproven (on a >100-node page the
+ * whole-page top level always is, per Codex consult #2 decision (b)) — the
+ * scope (with the path) is still exported, so the owner's explicit scoped
+ * assertion is no longer excluded as SCOPE_NOT_DURABLE merely because the
+ * whole-page baseline was truncated; an AMBIGUOUS or definitely-absent
+ * level is excluded with SCOPE_NOT_DURABLE, never guessed. QA-BL-062: an
+ * identity-anchored scroll proof with unproven uniqueness is exported
+ * EXPLICITLY PROVISIONAL either way — the assertion carries the scope and
+ * the step intent carries the provisional weakness, so replay reports
+ * INCONCLUSIVE_SCOPE unless it proves the container unique at replay time.
  *
  * Null means the proof is whole-page (no scope to carry) — only then is the
  * assertion exported unscoped.
@@ -715,11 +770,48 @@ type ProofScopeVerdict =
       provisional: { scope: QaScenarioAssertionScope; weakness: string } | null;
     };
 
+/** How ONE walk level resolved against RECORDED evidence (QA-BL-069). */
+type ExportLevelResolution = 'proven' | 'provisional' | 'ambiguous' | 'absent';
+
+/** Does one semantic node match one recorded path item (role + recorded name/tag)? */
+function pathItemMatchesNode(item: ScopePathItem, node: QaSemanticNode): boolean {
+  if (clean(node.role) !== item.role) return false;
+  if (item.name !== undefined && clean(node.name) !== item.name) return false;
+  if (item.tag !== undefined && clean(node.tag) !== item.tag) return false;
+  return true;
+}
+
+/** Does a recorded observation's scope echo match one recorded path item? */
+function scopeEchoesPathItem(view: QaObservation, item: ScopePathItem): boolean {
+  const scope = view.scope;
+  if (scope === undefined) return false;
+  if (clean(scope.role) !== item.role) return false;
+  if (item.name !== undefined && clean(scope.name) !== item.name) return false;
+  if (item.tag !== undefined && clean(scope.tag) !== item.tag) return false;
+  return true;
+}
+
+/** Classify one level's match count inside its parent's recorded view. */
+function classifyPathLevel(count: number, truncated: boolean): ExportLevelResolution {
+  if (count >= 2) return 'ambiguous';
+  if (count === 1) return truncated ? 'provisional' : 'proven';
+  return truncated ? 'provisional' : 'absent';
+}
+
+/** Human-readable spelling of one recorded path item (export-side level naming). */
+function describePathItemExport(item: ScopePathItem): string {
+  const parts = ['role "' + item.role + '"'];
+  if (item.name !== undefined) parts.push('name "' + item.name + '"');
+  if (item.tag !== undefined) parts.push('tag "' + item.tag + '"');
+  return parts.join(', ');
+}
+
 function proofScope(
   proof: QaObservation | null,
   baseline: QaObservation | null,
   anchored: boolean,
   path: ScopePathItem[] | null,
+  observations: Readonly<Record<string, QaObservation>>,
 ): ProofScopeVerdict | null {
   if (proof === null || proof.scope === undefined) return null;
   const echo = proof.scope;
@@ -745,10 +837,13 @@ function proofScope(
     ...(withTag ? { tag } : {}),
     ...(path === null ? {} : { path }),
   });
-  const provisionalWeakness = (why: string): string =>
+  const provisionalWeakness = (why: string, anchoredStep: boolean): string =>
     'the scope is PROVISIONAL: ' + why
-    + ' The step is an identity-anchored scroll proof, so the scope is exported explicitly provisional;'
-    + ' replay reports INCONCLUSIVE_SCOPE (scopeResolution provisional) unless it proves the container unique at replay time.';
+    + (anchoredStep
+      ? ' The step is an identity-anchored scroll proof, so the scope is exported explicitly provisional;'
+        + ' replay reports INCONCLUSIVE_SCOPE (scopeResolution provisional) unless it proves the container unique at replay time.'
+      : ' The scope is exported explicitly provisional (QA-BL-069: a level of the recorded ancestor path stayed unproven);'
+        + ' replay reports INCONCLUSIVE_SCOPE (scopeResolution provisional) unless it proves the container unique at replay time.');
   const unproven = (why: string): ProofScopeVerdict => {
     if (!anchored) {
       return {
@@ -760,9 +855,108 @@ function proofScope(
     return {
       durable: false,
       detail: why + ' — uniqueness is unproven.',
-      provisional: { scope: scopeValue(false), weakness: provisionalWeakness(why) },
+      provisional: { scope: scopeValue(false), weakness: provisionalWeakness(why, true) },
     };
   };
+  if (path !== null && path.length > 0) {
+    // QA-BL-069: judge durability PER LEVEL from the recorded evidence, the
+    // same top-down walk replay performs (see the ProofScopeVerdict doc).
+    const orderedViews = (): QaObservation[] => {
+      const seen = new Set<QaObservation>();
+      const out: QaObservation[] = [];
+      if (baseline !== null && !seen.has(baseline)) {
+        seen.add(baseline);
+        out.push(baseline);
+      }
+      for (const observation of Object.values(observations)) {
+        if (!seen.has(observation)) {
+          seen.add(observation);
+          out.push(observation);
+        }
+      }
+      return out;
+    };
+    const views = orderedViews();
+    const levels: { what: string; resolution: ExportLevelResolution }[] = [];
+    const wholePage = views.find((view) => view.scope === undefined);
+    const itemLevel = (item: ScopePathItem, view: QaObservation | undefined): ExportLevelResolution => {
+      // No recorded view inside the parent item: the level is UNVERIFIED —
+      // unproven, never silently durable.
+      if (view === undefined) return 'provisional';
+      return classifyPathLevel(
+        view.nodes.filter((node) => pathItemMatchesNode(item, node)).length,
+        view.truncated,
+      );
+    };
+    const firstItem = path[0];
+    if (firstItem !== undefined) {
+      levels.push({ what: describePathItemExport(firstItem), resolution: itemLevel(firstItem, wholePage) });
+      for (let index = 1; index < path.length; index += 1) {
+        const item = path[index];
+        const parentItem = path[index - 1];
+        if (item === undefined || parentItem === undefined) continue;
+        const parentView = views.find((view) => scopeEchoesPathItem(view, parentItem));
+        levels.push({ what: describePathItemExport(item), resolution: itemLevel(item, parentView) });
+      }
+    }
+    // The container level: the FIRST recorded view that contained the
+    // container as a NON-root node with resolvable ancestry (the same search
+    // recordedContainerPath uses); counting its own subtree would be the
+    // scoped-complete-baseline trick again.
+    const evidence = recordedContainerEvidence(observations, baseline, role, name, tag);
+    const containerCount = (view: QaObservation | undefined, withTag: boolean): number => {
+      if (view === undefined) return 0;
+      return view.nodes.filter(
+        (node) => node.role === role && node.name === name && (!withTag || node.tag === tag),
+      ).length;
+    };
+    let containerResolution = classifyPathLevel(
+      containerCount(evidence?.view, false),
+      evidence === null ? true : evidence.view.truncated,
+    );
+    let withTag = false;
+    if (containerResolution === 'ambiguous' && tag !== '') {
+      const tagged = classifyPathLevel(
+        containerCount(evidence?.view, true),
+        evidence === null ? true : evidence.view.truncated,
+      );
+      if (tagged !== 'ambiguous') {
+        containerResolution = tagged;
+        withTag = true;
+      }
+    }
+    levels.push({ what: describe, resolution: containerResolution });
+    const ambiguous = levels.find((level) => level.resolution === 'ambiguous');
+    if (ambiguous !== undefined) {
+      return {
+        durable: false,
+        detail: 'the recorded ancestor path is ambiguous: level (' + ambiguous.what
+          + ') matches more than one node in the recorded evidence — uniqueness is unproven, so the scope is never silently dropped.',
+        provisional: null,
+      };
+    }
+    const absent = levels.find((level) => level.resolution === 'absent');
+    if (absent !== undefined) {
+      return {
+        durable: false,
+        detail: 'the recorded ancestor path is contradicted by the recorded evidence: level (' + absent.what
+          + ') matches nothing in a COMPLETE recorded view, so the scope is never silently dropped.',
+        provisional: null,
+      };
+    }
+    if (levels.every((level) => level.resolution === 'proven')) {
+      return { durable: true, scope: scopeValue(withTag), weakness: null };
+    }
+    const why = levels
+      .filter((level) => level.resolution === 'provisional')
+      .map((level) => level.what + ' is UNPROVEN in the recorded evidence')
+      .join('; ');
+    return {
+      durable: false,
+      detail: why + ' — uniqueness is unproven per level.',
+      provisional: { scope: scopeValue(withTag), weakness: provisionalWeakness(why, anchored) },
+    };
+  }
   if (baseline === null || baseline.truncated) {
     return unproven(baseline === null
       ? 'no recorded baseline observation precedes the scoped proof, so the uniqueness of ' + describe + ' cannot be proven'
@@ -812,9 +1006,10 @@ function withProofScope(
   baseline: QaObservation | null,
   anchored: boolean,
   path: ScopePathItem[] | null,
+  observations: Readonly<Record<string, QaObservation>>,
 ): { assertion: QaAssertion; notDurable: string | null; weakness: string | null } {
   if (assertion.kind === 'page-url') return { assertion, notDurable: null, weakness: null };
-  const verdict = proofScope(proof, baseline, anchored, path);
+  const verdict = proofScope(proof, baseline, anchored, path, observations);
   if (verdict === null) return { assertion, notDurable: null, weakness: null };
   if (verdict.durable) return { assertion: { ...assertion, scope: verdict.scope }, notDurable: null, weakness: null };
   if (verdict.provisional === null) return { assertion, notDurable: verdict.detail, weakness: null };
@@ -1156,7 +1351,7 @@ function buildScenario(
       const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
       const anchored = anchoredScrollProof(recorded, candidate.after);
       const scopePath = scopePathFor(trajectory, candidate.after, candidate.before);
-      const scopedStep = withProofScope(resolved.assert, candidate.after, candidate.before, anchored, scopePath);
+      const scopedStep = withProofScope(resolved.assert, candidate.after, candidate.before, anchored, scopePath, trajectory.observations);
       if (scopedStep.notDurable !== null) {
         // QA-BL-054: a scoped proof whose container is not proven durable (and
         // is not an identity-anchored scroll proof) is EXCLUDED, never
@@ -1247,7 +1442,7 @@ function buildScenario(
     const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
     const anchored = anchoredScrollProof(recorded, after);
     const scopePath = scopePathFor(trajectory, after, candidate.before);
-    const scopedStep = withProofScope(synthesized.assertion.assertion, after, candidate.before, anchored, scopePath);
+    const scopedStep = withProofScope(synthesized.assertion.assertion, after, candidate.before, anchored, scopePath, trajectory.observations);
     if (scopedStep.notDurable !== null) {
       // QA-BL-054: a scoped proof whose container is not proven durable (and
       // is not an identity-anchored scroll proof) is EXCLUDED, never
@@ -1306,7 +1501,7 @@ function buildScenario(
       ? null
       : trajectory.observations[recorded.baselineObservationId] ?? null;
     const scopePath = scopePathFor(trajectory, deciding, baseline);
-    const scoped = withProofScope(recorded.assertion, deciding, baseline, false, scopePath);
+    const scoped = withProofScope(recorded.assertion, deciding, baseline, false, scopePath, trajectory.observations);
     if (scoped.notDurable !== null) {
       // QA-BL-054: a scoped proof whose container is not proven durable is
       // EXCLUDED, never silently exported as an unscoped assertion.

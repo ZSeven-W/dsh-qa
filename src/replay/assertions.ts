@@ -35,6 +35,7 @@ import type {
   QaAssertionKind,
   QaNodePredicate,
   QaObservedNode,
+  QaScopeWalkLevel,
   QaViewCompleteness,
 } from '../contracts.ts';
 
@@ -672,13 +673,30 @@ export interface QaRetriedDecision extends QaAssertionDecision {
   /** The widening this retry performed (once), or null when none happened. */
   widened: QaSettleWidened | null;
   /**
-   * ADDITIVE (QA-BL-062): how the scoped container was resolved for this
-   * decision. 'provisional' means exactly one predicate/path match in a
-   * still-truncated whole-page view — uniqueness unproven, the decision
-   * carries reason INCONCLUSIVE_SCOPE and can never report passed:true.
-   * Present exactly when the assertion carried a container scope.
+   * ADDITIVE (QA-BL-062, amended QA-BL-069): how the scoped container was
+   * resolved for this decision — per-level for a recorded ancestor path,
+   * flat otherwise. 'provisional' means every level matched exactly once
+   * but at least one parent view was still truncated — uniqueness unproven,
+   * the decision carries reason INCONCLUSIVE_SCOPE and can never report
+   * passed:true. Present exactly when the assertion carried a container
+   * scope AND the container was located.
    */
   scopeResolution?: 'proven' | 'provisional';
+  /**
+   * ADDITIVE (QA-BL-069): per-level resolution of the scoped path walk
+   * (see QaScopeWalkLevel in contracts.ts) — outermost ancestor first, the
+   * container last; for a scope without a recorded path it carries the
+   * single container level.
+   */
+  scopeLevels?: QaScopeWalkLevel[];
+  /**
+   * ADDITIVE (QA-BL-069): true when the scoped container could NOT be
+   * located because zero matches occurred in a still-truncated view: the
+   * container may exist outside the returned window, so the decision is
+   * INCONCLUSIVE_TRUNCATED (inconclusive), never a failure. Mutually
+   * exclusive with scopeResolution.
+   */
+  scopeNotLocated?: true;
   /**
    * ADDITIVE (QA-BL-062): escalationRefused-style disclosure recorded when
    * the replayed scoped scroll's identity anchor REFUSED the proof (a lost

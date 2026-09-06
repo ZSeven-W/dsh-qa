@@ -215,7 +215,14 @@ test('scoped-baseline scroll on a COMPLETE page is PROVEN inside the baseline sc
       'the scoped proof exports WITH its scope and the recorded ancestor path',
     )
     assert.equal(step.escalationRefused, undefined, 'no refusal rides on an accepted proof step')
-    assert.match(step.intent, /PROVISIONAL/, "uniqueness was never proven at record time (the baseline is the container's own subtree)")
+    // CHANGED (QA-BL-069): export durability is now judged PER LEVEL from the
+    // recorded evidence (the same top-down walk replay performs), so this
+    // COMPLETE page proves the wrapper ancestor unique in the whole-page view
+    // and the container unique inside the wrapper's scoped view — the export
+    // is DURABLE, no longer provisional merely because the action's baseline
+    // was the container's own subtree (that flat judgment is superseded by
+    // the per-level walk).
+    assert.doesNotMatch(step.intent, /PROVISIONAL/, 'every level is proven on this complete page: the export is durable (QA-BL-069)',)
     const loaded = loadScenarioFromPath(scenarioPath)
     assert.deepEqual(loaded, exported.scenario)
 

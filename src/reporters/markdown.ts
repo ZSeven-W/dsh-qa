@@ -205,7 +205,10 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     lines.push('  - outcome: ' + mdInline(step.outcome));
     lines.push(
       '  - assertion: ' + mdInline(step.assertion.kind) + ' -> '
-      + (step.assertionPassed ? 'PASS' : step.reason === QA_INCONCLUSIVE_SCOPE ? 'INCONCLUSIVE' : 'FAIL'),
+      // QA-BL-062/069 three-state: the step status already names the honest
+      // marking (a provisional result and a container the truncated view
+      // could not locate are both INCONCLUSIVE, never FAIL).
+      + (step.assertionPassed ? 'PASS' : step.status === 'inconclusive' ? 'INCONCLUSIVE' : 'FAIL'),
     );
     lines.push('  - observed: ' + mdCode(inline(step.observed, roots)));
     if (step.attempts !== undefined) {
@@ -216,6 +219,19 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     }
     if (step.scopeResolution !== undefined) {
       lines.push('  - scope resolution: ' + mdInline(step.scopeResolution));
+    }
+    if (step.scopeLevels !== undefined) {
+      // QA-BL-069: name EACH level's resolution — the path is a
+      // discriminator, never a proof, so a reader sees exactly which level
+      // was proven and which stayed provisional.
+      lines.push('  - scope levels: ' + mdInline(step.scopeLevels.map((level) => (
+        'level ' + String(level.level) + ' (' + level.what + '): ' + level.resolution
+      )).join('; ')));
+    }
+    if (step.scopeNotLocated === true) {
+      lines.push('  - scope not located: ' + mdInline(
+        'the container could not be located in the truncated view; it may exist outside the returned window',
+      ));
     }
     if (step.scopeRefusal !== undefined) {
       lines.push('  - scope refusal: ' + mdInline(step.scopeRefusal.reason));
@@ -261,7 +277,12 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
   for (const assertion of report.assertions) {
     lines.push(
       '- ' + mdInline(assertion.kind) + ' -> '
-      + (assertion.passed ? 'PASS' : assertion.reason === QA_INCONCLUSIVE_SCOPE ? 'INCONCLUSIVE' : 'FAIL')
+      // QA-BL-062/069: provisional (INCONCLUSIVE_SCOPE) and container-
+      // not-located (INCONCLUSIVE_TRUNCATED) results are INCONCLUSIVE,
+      // never FAIL.
+      + (assertion.passed
+        ? 'PASS'
+        : assertion.reason === QA_INCONCLUSIVE_SCOPE || assertion.scopeNotLocated === true ? 'INCONCLUSIVE' : 'FAIL')
       + ' (observed: ' + mdCode(inline(assertion.observed, roots)) + ')',
     );
     if (assertion.attempts !== undefined) {
@@ -275,6 +296,17 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     }
     if (assertion.scopeResolution !== undefined) {
       lines.push('  - scope resolution: ' + mdInline(assertion.scopeResolution));
+    }
+    if (assertion.scopeLevels !== undefined) {
+      // QA-BL-069: name EACH level's resolution (see the step line).
+      lines.push('  - scope levels: ' + mdInline(assertion.scopeLevels.map((level) => (
+        'level ' + String(level.level) + ' (' + level.what + '): ' + level.resolution
+      )).join('; ')));
+    }
+    if (assertion.scopeNotLocated === true) {
+      lines.push('  - scope not located: ' + mdInline(
+        'the container could not be located in the truncated view; it may exist outside the returned window',
+      ));
     }
     if (assertion.scopeRefusal !== undefined) {
       lines.push('  - scope refusal: ' + mdInline(assertion.scopeRefusal.reason));

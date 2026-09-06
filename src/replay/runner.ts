@@ -14,6 +14,8 @@ import type {
   QaScenario,
   QaScenarioAction,
   QaScenarioAssertionScope,
+  QaScopePathItem,
+  QaScopeWalkLevel,
   QaSettleWidening,
   QaStepResult,
   QaTargetResolutionDisclosure,
@@ -111,17 +113,17 @@ interface ScopeResolutionOptions {
   /**
    * True ONLY for a scoped SCROLL step whose proof is the exported
    * node-in-viewport (the record side established it through the driver's
-   * identity anchor). QA-BL-062: a single container match in a
-   * STILL-truncated whole-page view is then resolved PROVISIONALLY — the
-   * step's scopeResolution is 'provisional', its outcome is
-   * INCONCLUSIVE_SCOPE, and it can NEVER earn a pass. The whole page can
-   * never complete when the scroll target sits beyond the driver's clamped
-   * node budget, so the strict QA-BL-054 uniqueness refusal would make such
-   * exported scenarios unreplayable; the scoped assertion is still decided
-   * against the container's own view, the replay-side decision is bound to
-   * the replayed scroll by the driver's identity anchor, and PASS stays
-   * reserved for proven resolution. Every other scoped assertion keeps the
-   * strict gate (a recorded ancestor path excepted: see observeScopeView).
+   * identity anchor). QA-BL-062/069: a container resolved with at least one
+   * PROVISIONAL level is then resolved PROVISIONALLY overall — the step's
+   * scopeResolution is 'provisional', its outcome is INCONCLUSIVE_SCOPE,
+   * and it can NEVER earn a pass. The whole page can never complete when
+   * the scroll target sits beyond the driver's clamped node budget, so the
+   * strict QA-BL-054 uniqueness refusal would make such exported scenarios
+   * unreplayable; the scoped assertion is still decided against the
+   * container's own view, the replay-side decision is bound to the replayed
+   * scroll by the driver's identity anchor, and PASS stays reserved for
+   * proven resolution. Every other scoped assertion keeps the strict gate
+   * (a recorded ancestor path excepted: see observeScopeView).
    */
   provisionalScope?: boolean;
   /**
@@ -133,23 +135,65 @@ interface ScopeResolutionOptions {
   scopedObserve?: Partial<QaObserveOptions>;
 }
 
-/** How the container of a scoped decision was resolved (QA-BL-062). */
-interface ScopeResolutionResult {
-  observation: QaObservation;
-  resolution: 'proven' | 'provisional';
-  /** Whether the whole-page budget escalation ran during resolution. */
-  escalated: boolean;
+/** How the container of a scoped decision was resolved (QA-BL-062/069). */
+type ScopeResolutionResult =
+  | {
+      kind: 'resolved';
+      /** The container's settled scoped deciding view. */
+      observation: QaObservation;
+      /** Proven only when EVERY walk level was proven; provisional otherwise. */
+      resolution: 'proven' | 'provisional';
+      /** Whether a bounded budget escalation ran during resolution (whole-page at the top level, within-scope at deeper levels). */
+      escalated: boolean;
+      /** Per-level resolutions: outermost ancestor first, the container last. */
+      levels: QaScopeWalkLevel[];
+    }
+  | {
+      /**
+       * QA-BL-069 (C): zero matches at some level in a STILL-truncated view.
+       * Nothing definitely failed — the container may exist outside the
+       * returned window — so the caller reports the step INCONCLUSIVE_TRUNCATED
+       * (inconclusive), never an ordinary failure.
+       */
+      kind: 'not-located';
+      /** The still-truncated view the failing level was matched in. */
+      view: QaObservation;
+      escalated: boolean;
+      /** Levels resolved before the zero-match (the last entry is the failing one). */
+      levels: QaScopeWalkLevel[];
+    };
+
+/** Prose naming each level's resolution, for completeness details and report.md. */
+function levelSummary(levels: QaScopeWalkLevel[]): string {
+  return levels
+    .map((level) => 'level ' + String(level.level) + ' (' + level.what + '): ' + level.resolution)
+    .join('; ');
+}
+
+/** The honest zero-in-a-still-truncated-view wording (QA-BL-069, C). */
+function scopeNotLocatedMessage(levels: QaScopeWalkLevel[], escalated: boolean, view: QaObservation): string {
+  const applied = escalated
+    ? view.maxNodes === undefined
+      ? 'the escalated budget (the driver did not report the budget it applied)'
+      : 'the applied ' + String(view.maxNodes) + '-node escalated budget'
+    : 'the driver-default budget';
+  const failedLevel = levels[levels.length - 1];
+  const atLevel = failedLevel === undefined ? '' : ' (level ' + String(failedLevel.level) + ': ' + failedLevel.what + ')';
+  return 'the container could not be located in the truncated view; it may exist outside the returned window'
+    + atLevel + ' — the view was still truncated at ' + applied + ' (' + QA_INCONCLUSIVE_TRUNCATED + ')';
 }
 
 /**
  * The semantic ancestor path of `node` inside `view`: every emitted
- * ancestor on its parentRef chain, outermost first. Null when the node has
- * no emitted ancestor in this view or a hop does not resolve inside the same
- * observation (fail closed: a partial chain matches nothing).
+ * ancestor on its parentRef chain, outermost first, carrying role + name +
+ * tag so a recorded path item (which may omit the name, QA-BL-069) can be
+ * compared against it. Null when the node has no emitted ancestor in this
+ * view or a hop does not resolve inside the same observation (fail closed:
+ * a partial chain matches nothing).
  */
-function ancestorPathIn(view: QaObservation, node: QaSemanticNode): { role: string; name: string }[] | null {
+function ancestorPathIn(view: QaObservation, node: QaSemanticNode): { role: string; name: string; tag: string }[] | null {
   const byRef = new Map(view.nodes.map((candidate) => [candidate.ref, candidate]));
-  const chain: { role: string; name: string }[] = [];
+  const chain: { role: string; name: string; tag: string }[] = [];
   let current = node;
   for (let hops = 0; hops <= view.nodes.length; hops += 1) {
     const parentRef = typeof current.parentRef === 'string' && current.parentRef !== '' ? current.parentRef : null;
@@ -158,7 +202,7 @@ function ancestorPathIn(view: QaObservation, node: QaSemanticNode): { role: stri
     }
     const parent = byRef.get(parentRef);
     if (parent === undefined) return null;
-    chain.push({ role: parent.role, name: parent.name });
+    chain.push({ role: parent.role, name: parent.name, tag: parent.tag });
     current = parent;
   }
   return null;
@@ -167,43 +211,99 @@ function ancestorPathIn(view: QaObservation, node: QaSemanticNode): { role: stri
 /**
  * Path comparison for container resolution: when the recorded scope carries
  * an ancestor path, a candidate matches only when its own parentRef chain
- * yields the SAME { role, name } sequence — relationships compared, never
- * refs. No recorded path means predicate-only matching.
+ * yields the same sequence — relationships compared, never refs. QA-BL-069:
+ * the role always matches, while name and tag are compared ONLY when the
+ * recorded item carries them (a content-named ancestor's aggregated name is
+ * order-fragile and is deliberately not recorded). No recorded path means
+ * predicate-only matching.
  */
 function sameScopePath(
-  recorded: { role: string; name: string }[] | undefined,
-  candidate: { role: string; name: string }[] | null,
+  recorded: QaScopePathItem[] | undefined,
+  candidate: { role: string; name: string; tag: string }[] | null,
 ): boolean {
   if (recorded === undefined) return true;
   if (candidate === null) return false;
   return recorded.length === candidate.length
-    && recorded.every((item, index) => item.role === candidate[index]!.role && item.name === candidate[index]!.name);
+    && recorded.every((item, index) => {
+      const actual = candidate[index];
+      if (actual === undefined) return false;
+      if (item.role !== actual.role) return false;
+      if (item.name !== undefined && item.name !== actual.name) return false;
+      if (item.tag !== undefined && item.tag !== actual.tag) return false;
+      return true;
+    });
+}
+
+/** The matching predicate of ONE recorded path item: role, plus name/tag only when recorded. */
+function pathItemPredicate(item: QaScopePathItem): QaNodePredicate {
+  return {
+    role: item.role,
+    ...(item.name === undefined ? {} : { name: item.name }),
+    ...(item.tag === undefined ? {} : { tag: item.tag }),
+  };
+}
+
+/** Human-readable spelling of one recorded path item, for level-naming messages. */
+function describePathItem(item: QaScopePathItem): string {
+  const parts = ['role "' + item.role + '"'];
+  if (item.name !== undefined) parts.push('name "' + item.name + '"');
+  if (item.tag !== undefined) parts.push('tag "' + item.tag + '"');
+  return parts.join(', ');
+}
+
+/**
+ * Internal marker for the QA-BL-069 (C) classification: a container the
+ * runner could not locate in a still-truncated view — an inconclusive
+ * non-result, never an ordinary failure, never a dispatched action.
+ */
+class ScopeNotLocatedError extends Error {
+  readonly scopeNotLocated: true = true;
+  readonly levels: QaScopeWalkLevel[];
+  readonly escalated: boolean;
+  readonly view: QaObservation;
+
+  constructor(levels: QaScopeWalkLevel[], escalated: boolean, view: QaObservation) {
+    super(scopeNotLocatedMessage(levels, escalated, view));
+    this.name = 'ScopeNotLocatedError';
+    this.levels = levels;
+    this.escalated = escalated;
+    this.view = view;
+  }
 }
 
 /**
  * Observe WITHIN the container an assertion is scoped to (browser driver
- * contract v8). The container is resolved in the WHOLE-PAGE view — by UNIQUE
- * predicate, and, when the scope carries a recorded ancestor PATH
- * (QA-BL-062), additionally by that path: a candidate matches only when its
- * own parentRef chain yields the same { role, name } sequence (relationships
- * compared, never refs). An ambiguous container is refused with the existing
- * TARGET_NOT_UNIQUE vocabulary, never guessed — and the scoped read is
- * SETTLED like every other verification observation. A driver refusal on
- * the scoped read (REF_INVALID / REF_EXPIRED / TARGET_CHANGED / ...)
- * propagates as itself, never degraded into a "not found".
+ * contract v8). A driver refusal on any scoped read (REF_INVALID /
+ * REF_EXPIRED / TARGET_CHANGED / ...) propagates as itself, never degraded
+ * into a "not found"; every scoped read is SETTLED like every other
+ * verification observation.
  *
- * QA-BL-054 / QA-BL-062: uniqueness must be PROVEN. ZERO matches in a
- * truncated whole-page view may mean the container sits outside the window,
- * and ONE match in a truncated view is NOT proven unique (a twin may sit
- * outside the window). Both escalate the whole-page node budget ONCE (the
- * existing mechanism, the same settled way as action targets) before
- * concluding. Two or more matches are proven non-unique and never escalate.
- * A still-truncated view with exactly ONE match resolves PROVISIONALLY for
- * the scoped scroll-proof step (options.provisionalScope) and for any scope
- * that carries a recorded ancestor path (a stronger locator, still not
- * proof); the caller must then report INCONCLUSIVE_SCOPE — never a pass.
- * Every other one-match-in-a-truncated-view resolution refuses with
- * INCONCLUSIVE_TRUNCATED naming the scope.
+ * QA-BL-069 path walk: when the scope carries a recorded ancestor PATH, the
+ * container is resolved TOP-DOWN instead of by one flat whole-page match —
+ * the outermost ancestor is matched in the whole-page view (with today's ONE
+ * bounded budget escalation), observed within (settled), the next path item
+ * is matched inside that scoped view, and so on, until the container itself
+ * is matched inside its last ancestor's view; the container's own settled
+ * scoped view then becomes the deciding view, exactly as before. Uniqueness
+ * is judged at EACH level inside its PARENT's view: exactly one match in a
+ * COMPLETE view → proven at that level; one match in a still-truncated view
+ * → provisional; two or more → TARGET_NOT_UNIQUE (a known twin is never
+ * guessed); zero matches in a still-truncated view → the whole resolution is
+ * kind 'not-located' (QA-BL-069, C: the caller reports INCONCLUSIVE_TRUNCATED,
+ * never a failure); zero matches in a complete view → a definite failure
+ * (the ancestor/container is not on the page). The overall resolution is
+ * 'proven' only when EVERY level was proven — on a >100-node page the
+ * whole-page top level never completes, so the result is provisional, exactly
+ * as Codex consult #2 decision (b) requires.
+ *
+ * Without a recorded path the flat resolution stays (QA-BL-054 / QA-BL-062):
+ * the container is matched by UNIQUE predicate in the whole-page view, with
+ * the ONE budget escalation, zero-in-truncated now classifies as
+ * 'not-located' (C), and exactly one match in a still-truncated view
+ * resolves PROVISIONALLY for the scoped scroll-proof step
+ * (options.provisionalScope) — the caller must then report INCONCLUSIVE_SCOPE,
+ * never a pass — and refuses with INCONCLUSIVE_TRUNCATED naming the scope for
+ * every other scope.
  */
 async function observeScopeView(
   scope: QaScenarioAssertionScope,
@@ -212,55 +312,150 @@ async function observeScopeView(
   reobserve: QaReobserve,
   options: ScopeResolutionOptions = {},
 ): Promise<ScopeResolutionResult> {
-  const predicate = scopePredicate(scope);
   const path = scope.path;
-  const matchesIn = (view: QaObservation): typeof view.nodes =>
-    view.nodes.filter(
-      (node) => matchesNode(node, predicate) && sameScopePath(path, ancestorPathIn(view, node)),
-    );
-  let view = wholePage;
-  let matches = matchesIn(view);
+  const levels: QaScopeWalkLevel[] = [];
   let escalated = false;
-  if (view.truncated && matches.length <= 1) {
-    try {
-      view = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
-      escalated = true;
-      matches = matchesIn(view);
-    } catch {
-      // No fuller view: fall through and report honestly against the truncated one.
+  let view: QaObservation = wholePage;
+
+  // Match ONE discriminator inside `view`. Only the TOP level (the outermost
+  // ancestor in the whole-page view) keeps today's ONE bounded budget
+  // escalation; deeper levels are judged inside their parent's settled scoped
+  // view exactly as it was returned.
+  const resolveLevel = async (
+    predicate: QaNodePredicate,
+    level: number,
+    what: string,
+    escalate: boolean,
+    /** True for the FLAT (no-path) container level: keep its QA-BL-054 wording. */
+    flat = false,
+  ): Promise<{ node: QaSemanticNode } | { zero: true; truncated: boolean }> => {
+    let matches = view.nodes.filter((node) => matchesNode(node, predicate));
+    if (escalate && view.truncated && matches.length <= 1) {
+      try {
+        view = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET });
+        escalated = true;
+        matches = view.nodes.filter((node) => matchesNode(node, predicate));
+      } catch {
+        // No fuller view: fall through and report honestly against the truncated one.
+      }
     }
-  }
-  if (matches.length === 0) {
-    if (view.truncated) {
-      const applied = escalated
-        ? view.maxNodes === undefined
-          ? 'the escalated budget (the driver did not report the budget it applied)'
-          : 'the applied ' + String(view.maxNodes) + '-node escalated budget'
-        : 'the driver-default budget';
-      throw new Error(
-        'no observable node matches the assertion scope, and the view was still truncated at '
-        + applied + ' (' + QA_INCONCLUSIVE_TRUNCATED
-        + '): the container may exist outside the returned window rather than be missing from the page',
+    if (matches.length === 0) {
+      levels.push({ level, what, resolution: 'not-located' });
+      return { zero: true, truncated: view.truncated };
+    }
+    if (matches.length > 1) {
+      throw new QaCodeError(
+        QA_TARGET_NOT_UNIQUE,
+        flat
+          ? QA_TARGET_NOT_UNIQUE + ': ' + String(matches.length) + ' nodes match the assertion scope ('
+            + describeScope(scope) + '); the scoped container is not uniquely identifiable, so the assertion was not decided'
+          : QA_TARGET_NOT_UNIQUE + ': ' + String(matches.length) + ' nodes match path level ' + String(level)
+            + ' (' + what + '), so the recorded ancestor path is ambiguous and the scoped container was not decided',
       );
     }
+    levels.push({ level, what, resolution: view.truncated ? 'provisional' : 'proven' });
+    const only = matches[0];
+    if (only === undefined) {
+      throw new Error('no observable node matches the assertion scope');
+    }
+    return { node: only };
+  };
+
+  const notLocated = (): ScopeResolutionResult => ({ kind: 'not-located', view, escalated, levels });
+
+  // One bounded budget escalation WITHIN a settled scoped parent view whose
+  // subtree exceeds the default window (the same within-scope rule
+  // decideAssertion and resolveStepAction already use): the parent's root is
+  // re-chained through the driver's fresh scope.rootRef, never widened to the
+  // whole page. Without this, a deep container inside a >60-node ancestor
+  // subtree could never earn a proven level even on a <100-node page.
+  const widenParent = async (): Promise<void> => {
+    if (!view.truncated) return;
+    const rootRef = scopeRootRef(view);
+    if (rootRef === undefined) return; // no fresh rootRef: keep the truncated view, fail closed
+    try {
+      view = await reobserve({ maxNodes: QA_ESCALATED_NODE_BUDGET, withinRef: rootRef });
+      escalated = true;
+    } catch {
+      // No wider view: keep the truncated one, report honestly against it.
+    }
+  };
+
+  if (path !== undefined && path.length > 0) {
+    // QA-BL-069: walk the recorded ancestor path top-down, scoping into each
+    // matched ancestor (settled, one bounded within-scope escalation when
+    // the parent subtree exceeds the default window) before matching the
+    // next item inside it.
+    for (let index = 0; index < path.length; index += 1) {
+      const item = path[index];
+      if (item === undefined) continue;
+      const resolved = await resolveLevel(
+        pathItemPredicate(item), index + 1, describePathItem(item), index === 0,
+      );
+      if ('zero' in resolved) {
+        if (resolved.truncated) return notLocated();
+        throw new Error(
+          'no observable node matches path level ' + String(index + 1) + ' (' + describePathItem(item)
+          + ') in a complete view: the ancestor is not on the page, so the scoped container ('
+          + describeScope(scope) + ') cannot be there',
+        );
+      }
+      const settled = await session.observeSettled({ withinRef: resolved.node.ref });
+      if (!settled.stable) {
+        throw new Error(unsettledMessage('scoped', settled.budgetMs));
+      }
+      view = settled.observation;
+      if (view.truncated && view.nodes.filter((node) => matchesNode(node, pathItemPredicate(path[index + 1] ?? item))).length <= 1) {
+        await widenParent();
+      }
+    }
+    // The container level inside the last ancestor's view keeps the same
+    // one bounded within-scope escalation.
+    if (view.truncated && view.nodes.filter((node) => matchesNode(node, scopePredicate(scope))).length <= 1) {
+      await widenParent();
+    }
+    const container = await resolveLevel(
+      scopePredicate(scope), path.length + 1, describeScope(scope), false,
+    );
+    if ('zero' in container) {
+      if (container.truncated) return notLocated();
+      throw new Error(
+        'no observable node matches the assertion scope (' + describeScope(scope)
+        + ', ancestor path ' + JSON.stringify(path) + ') inside a complete view of its last ancestor: the container is not on the page',
+      );
+    }
+    const settled = await session.observeSettled({
+      withinRef: container.node.ref,
+      ...(options.scopedObserve === undefined ? {} : options.scopedObserve),
+    });
+    if (!settled.stable) {
+      throw new Error(unsettledMessage('scoped', settled.budgetMs));
+    }
+    return {
+      kind: 'resolved',
+      observation: settled.observation,
+      resolution: levels.every((level) => level.resolution === 'proven') ? 'proven' : 'provisional',
+      escalated,
+      levels,
+    };
+  }
+
+  // No recorded path: today's flat resolution stays (QA-BL-054/062), with the
+  // QA-BL-069 (C) classification change: zero matches in a still-truncated
+  // view is NOT a definite failure — the container may exist outside the
+  // returned window.
+  const container = await resolveLevel(scopePredicate(scope), 1, describeScope(scope), true, true);
+  if ('zero' in container) {
+    if (container.truncated) return notLocated();
     throw new Error(
-      'no observable node matches the assertion scope (' + describeScope(scope)
-      + (path === undefined ? '' : ', ancestor path ' + JSON.stringify(path)) + ')',
+      'no observable node matches the assertion scope (' + describeScope(scope) + ')',
     );
   }
-  if (matches.length > 1) {
-    throw new QaCodeError(
-      QA_TARGET_NOT_UNIQUE,
-      QA_TARGET_NOT_UNIQUE + ': ' + String(matches.length) + ' nodes match the assertion scope ('
-      + describeScope(scope) + '); the scoped container is not uniquely identifiable, so the assertion was not decided',
-    );
-  }
-  if (view.truncated && options.provisionalScope !== true && path === undefined) {
+  if (view.truncated && options.provisionalScope !== true) {
     // QA-BL-054: exactly ONE match in a STILL-truncated view is not proven
     // uniqueness — a twin container may sit outside the returned window.
-    // Refuse, naming the scope and the code. (A scroll-proof step, or a
-    // recorded ancestor path, resolves provisionally instead — see
-    // ScopeResolutionOptions / QA-BL-062.)
+    // Refuse, naming the scope and the code. (A scroll-proof step resolves
+    // provisionally instead — see ScopeResolutionOptions / QA-BL-062.)
     const applied = escalated
       ? view.maxNodes === undefined
         ? 'the escalated budget (the driver did not report the budget it applied)'
@@ -272,34 +467,32 @@ async function observeScopeView(
       + '): a twin container may exist outside the returned window, so the scoped container is not uniquely identifiable',
     );
   }
-  const container = matches[0];
-  if (container === undefined) {
-    throw new Error('no observable node matches the assertion scope');
-  }
   const settled = await session.observeSettled({
-    withinRef: container.ref,
+    withinRef: container.node.ref,
     ...(options.scopedObserve === undefined ? {} : options.scopedObserve),
   });
   if (!settled.stable) {
     throw new Error(unsettledMessage('scoped', settled.budgetMs));
   }
   return {
+    kind: 'resolved',
     observation: settled.observation,
     resolution: view.truncated ? 'provisional' : 'proven',
     escalated,
+    levels,
   };
 }
 
 /**
  * Completeness block for a decision the scope resolution made PROVISIONAL
- * (QA-BL-062): the deciding view itself is reported honestly, and the detail
- * names the provisional resolution — the container matched exactly once in a
- * still-truncated whole-page view, so uniqueness is unproven and the outcome
- * is INCONCLUSIVE_SCOPE, never a pass.
+ * (QA-BL-062/069): the deciding view itself is reported honestly, and the
+ * detail names EACH level's resolution (report.md prints it) — the overall
+ * resolution is provisional, so uniqueness is unproven and the outcome is
+ * INCONCLUSIVE_SCOPE, never a pass.
  */
 function provisionalScopeCompleteness(
   assertion: QaScenario['assertions'][number] | QaScenario['steps'][number]['assert'],
-  scoped: ScopeResolutionResult,
+  scoped: Extract<ScopeResolutionResult, { kind: 'resolved' }>,
 ): QaViewCompleteness {
   const view = scoped.observation;
   return {
@@ -309,9 +502,8 @@ function provisionalScopeCompleteness(
     outcomeDependsOnCompleteView: false,
     ...(view.scope === undefined ? {} : { scope: { role: view.scope.role, name: view.scope.name } }),
     ...(view.truncationReasons === undefined ? {} : { truncationReasons: view.truncationReasons }),
-    detail: 'the scoped container was resolved PROVISIONALLY: exactly one observable node matched the assertion scope'
-      + (assertion.scope?.path === undefined ? '' : ' (the recorded ancestor path matched)')
-      + ' in a still-truncated whole-page view, so the container\'s uniqueness is unproven and the '
+    detail: 'the scoped container was resolved PROVISIONALLY (' + levelSummary(scoped.levels)
+      + '), so the container\'s uniqueness is unproven and the '
       + assertion.kind + ' assertion was NOT decided as proven (' + QA_INCONCLUSIVE_SCOPE + ').',
   };
 }
@@ -328,8 +520,34 @@ async function decideAssertionScoped(
     return decideAssertionWithRetry(assertion, observation, reobserve, session);
   }
   const scoped = await observeScopeView(assertion.scope, observation, session, reobserve, options);
+  if (scoped.kind === 'not-located') {
+    // QA-BL-069 (C): the container could not be located in a still-truncated
+    // view — nothing definitely failed, so the result is INCONCLUSIVE_TRUNCATED
+    // (inconclusive), never an ordinary failure. report.md names each level's
+    // resolution, including the failing one.
+    return {
+      passed: false,
+      observed: null,
+      observation: scoped.view,
+      completeness: {
+        truncated: true,
+        nodeBudget: scoped.view.maxNodes ?? null,
+        escalated: scoped.escalated,
+        outcomeDependsOnCompleteView: false,
+        reason: QA_INCONCLUSIVE_TRUNCATED,
+        detail: scopeNotLocatedMessage(scoped.levels, scoped.escalated, scoped.view)
+          + '. The recorded path is a discriminator, never a proof. Levels: ' + levelSummary(scoped.levels) + '.',
+      },
+      reason: QA_INCONCLUSIVE_TRUNCATED,
+      scopeNotLocated: true,
+      scopeLevels: scoped.levels,
+      attempts: 1,
+      elapsedMs: 0,
+      widened: null,
+    };
+  }
   if (scoped.resolution === 'provisional') {
-    // QA-BL-062: a provisionally resolved container can never earn a pass.
+    // QA-BL-062/069: a provisionally resolved container can never earn a pass.
     // The assertion is still evaluated against the scoped view so the report
     // shows what WAS observed, but the outcome is INCONCLUSIVE_SCOPE — the
     // container may be the wrong one (a twin outside the window).
@@ -341,13 +559,14 @@ async function decideAssertionScoped(
       completeness: provisionalScopeCompleteness(assertion, scoped),
       reason: QA_INCONCLUSIVE_SCOPE,
       scopeResolution: 'provisional',
+      scopeLevels: scoped.levels,
       attempts: 1,
       elapsedMs: 0,
       widened: null,
     };
   }
   const decision = await decideAssertionWithRetry(assertion, scoped.observation, reobserve, session);
-  return { ...decision, scopeResolution: 'proven' };
+  return { ...decision, scopeResolution: 'proven', scopeLevels: scoped.levels };
 }
 
 /**
@@ -600,6 +819,13 @@ async function resolveStepAction(
     return resolveActionWithBudget(action, wholePage, reobserve);
   }
   const scoped = await observeScopeView(assert.scope, wholePage, session, reobserve, options);
+  if (scoped.kind === 'not-located') {
+    // QA-BL-069 (C): the container could not be located in a still-truncated
+    // view, so the action cannot be dispatched — but nothing definitely
+    // failed: the step is reported INCONCLUSIVE_TRUNCATED (inconclusive),
+    // never an ordinary failure.
+    throw new ScopeNotLocatedError(scoped.levels, scoped.escalated, scoped.view);
+  }
   const scopedView = scoped.observation;
   const target = targetOf(action);
   let view = scopedView;
@@ -729,7 +955,7 @@ type ScopedScrollProofOutcome =
 function decideScopedScrollProof(
   assertion: QaScenario['steps'][number]['assert'],
   target: QaNodePredicate,
-  scoped: ScopeResolutionResult,
+  scoped: Extract<ScopeResolutionResult, { kind: 'resolved' }>,
 ): ScopedScrollProofOutcome {
   const view = scoped.observation;
   const completenessBase = {
@@ -799,14 +1025,15 @@ function decideScopedScrollProof(
       observed: evaluation.observed,
       completeness: {
         ...completenessBase,
-        detail: 'the container was resolved in a complete whole-page view (proven), the scoped subtree is complete '
+        detail: 'the container was resolved PROVEN (' + levelSummary(scoped.levels)
+          + '), the scoped subtree is complete '
           + 'with verified coverage, and the identity anchor confirmed the asserted target is the anchored node in the viewport.',
       },
       targetResolution,
     };
   }
   const why = scoped.resolution === 'provisional'
-    ? 'the scoped container was resolved PROVISIONALLY (one match in a still-truncated whole-page view)'
+    ? 'the scoped container was resolved PROVISIONALLY (' + levelSummary(scoped.levels) + ')'
     : subtreeComplete
       ? 'the scoped subtree was complete but its coverage was not verified (coverage.verified !== true), so target uniqueness inside the scope is unproven'
       : 'the scoped subtree was still truncated at its budget, so target uniqueness inside the scope is unproven';
@@ -843,6 +1070,10 @@ function buildStepResult(
   scope: {
     scopeResolution?: 'proven' | 'provisional';
     scopeRefusal?: { code?: string; reason: string };
+    /** QA-BL-069: the scoped container could not be located in a still-truncated view. */
+    scopeNotLocated?: boolean;
+    /** QA-BL-069: per-level resolution of the scoped path walk. */
+    scopeLevels?: QaScopeWalkLevel[];
   } = {},
   targetResolution: QaTargetResolutionDisclosure | null = null,
   targetChangedRetry = false,
@@ -853,9 +1084,13 @@ function buildStepResult(
     // QA-BL-067: the scenario step's recorded record-time proof refusal rides
     // onto the step result so report.md's step lines surface it.
     ...(base.escalationRefused === undefined ? {} : { escalationRefused: base.escalationRefused }),
-    // QA-BL-062 three-state: INCONCLUSIVE_SCOPE is a provisional non-result —
-    // never green, and never an ordinary failure.
-    status: assertionPassed ? 'pass' : reason === QA_INCONCLUSIVE_SCOPE ? 'inconclusive' : 'fail',
+    // QA-BL-062/069 three-state: INCONCLUSIVE_SCOPE is a provisional
+    // non-result and a container not located in a still-truncated view is an
+    // inconclusive non-result (INCONCLUSIVE_TRUNCATED) — never green, and
+    // never an ordinary failure.
+    status: assertionPassed
+      ? 'pass'
+      : reason === QA_INCONCLUSIVE_SCOPE || scope.scopeNotLocated === true ? 'inconclusive' : 'fail',
     action: base.action,
     receipt,
     outcome,
@@ -868,6 +1103,8 @@ function buildStepResult(
     ...(attempts === undefined || attempts <= 1 ? {} : { attempts, elapsedMs: elapsedMs ?? 0 }),
     ...(scope.scopeResolution === undefined ? {} : { scopeResolution: scope.scopeResolution }),
     ...(scope.scopeRefusal === undefined ? {} : { scopeRefusal: scope.scopeRefusal }),
+    ...(scope.scopeNotLocated === true ? { scopeNotLocated: true as const } : {}),
+    ...(scope.scopeLevels === undefined ? {} : { scopeLevels: scope.scopeLevels }),
     // QA-BL-064: disclosed only when the name-only fallback resolved the action target.
     ...(targetResolution === null ? {} : { targetResolution }),
     ...(targetChangedRetry ? { targetChangedRetry: true as const } : {}),
@@ -1055,10 +1292,12 @@ export async function runScenario(
   let evidence: QaEvidence | QaEvidenceCollectionFailure | null = null;
   let failure: QaRunFailure | null = null;
   let settleWidened: QaSettleWidening | null = null;
-  // QA-BL-062: the count of PROVISIONAL required results (scopeResolution
-  // 'provisional'). Any provisional result keeps the run off 'pass' — and
-  // when nothing definitely failed, the run aggregates to 'inconclusive'.
-  let provisionalCount = 0;
+  // QA-BL-062/069: the count of UNPROVEN required results (scopeResolution
+  // 'provisional' / INCONCLUSIVE_SCOPE, or a scoped container not located in
+  // a still-truncated view / INCONCLUSIVE_TRUNCATED). Any unproven result
+  // keeps the run off 'pass' — and when nothing definitely failed, the run
+  // aggregates to 'inconclusive'.
+  let unprovenCount = 0;
 
   try {
     await session.start({
@@ -1136,6 +1375,28 @@ export async function runScenario(
         current = resolution.observation;
         targetResolution = resolution.targetResolution;
       } catch (error) {
+        if (error instanceof ScopeNotLocatedError) {
+          // QA-BL-069 (C): the scoped container could not be located in a
+          // still-truncated view, so the action was NOT dispatched — but
+          // nothing definitely failed: the step is INCONCLUSIVE_TRUNCATED
+          // (inconclusive), never an ordinary failure.
+          stepResults.push(buildStepResult(
+            base, step.assert, null, 'unknown', false, null,
+            {
+              truncated: true,
+              nodeBudget: error.view.maxNodes ?? null,
+              escalated: error.escalated,
+              outcomeDependsOnCompleteView: false,
+              reason: QA_INCONCLUSIVE_TRUNCATED,
+              detail: error.message + '. Levels: ' + levelSummary(error.levels) + '.',
+            },
+            QA_INCONCLUSIVE_TRUNCATED, 1, 0,
+            { scopeNotLocated: true, scopeLevels: error.levels },
+            null, false,
+          ));
+          unprovenCount += 1;
+          break;
+        }
         stepResults.push(buildStepResult(base, step.assert, null, 'failed', false, null));
         const code = failureCodeFor(error);
         failure = {
@@ -1196,6 +1457,27 @@ export async function runScenario(
           result = await session.act(resolved);
         }
       } catch (error) {
+        if (error instanceof ScopeNotLocatedError) {
+          // QA-BL-069 (C), same classification as the first resolution: the
+          // container could not be located in a still-truncated view, so the
+          // action was NOT dispatched — inconclusive, never a failure.
+          stepResults.push(buildStepResult(
+            base, step.assert, null, 'unknown', false, null,
+            {
+              truncated: true,
+              nodeBudget: error.view.maxNodes ?? null,
+              escalated: error.escalated,
+              outcomeDependsOnCompleteView: false,
+              reason: QA_INCONCLUSIVE_TRUNCATED,
+              detail: error.message + '. Levels: ' + levelSummary(error.levels) + '.',
+            },
+            QA_INCONCLUSIVE_TRUNCATED, 1, 0,
+            { scopeNotLocated: true, scopeLevels: error.levels },
+            null, targetChangedRetry,
+          ));
+          unprovenCount += 1;
+          break;
+        }
         stepResults.push(buildStepResult(base, step.assert, null, 'failed', false, null));
         failure = {
           stepIndex: step.index,
@@ -1274,23 +1556,51 @@ export async function runScenario(
               },
             },
           );
-          const outcome = decideScopedScrollProof(step.assert, target, verifying);
-          if (outcome.kind === 'failure') throw outcome.error;
-          if (outcome.targetResolution !== null) targetResolution = outcome.targetResolution;
-          decision = {
-            passed: outcome.kind === 'pass',
-            observed: outcome.observed,
-            observation: verifying.observation,
-            completeness: outcome.completeness,
-            ...(outcome.kind === 'pass' ? {} : { reason: QA_INCONCLUSIVE_SCOPE }),
-            ...(outcome.kind === 'inconclusive' && outcome.refusal !== undefined
-              ? { scopeRefusal: outcome.refusal }
-              : {}),
-            scopeResolution: verifying.resolution,
-            attempts: 1,
-            elapsedMs: 0,
-            widened: null,
-          };
+          if (verifying.kind === 'not-located') {
+            // QA-BL-069 (C): the container could not be located in a
+            // still-truncated view — nothing definitely failed; the step is
+            // INCONCLUSIVE_TRUNCATED, never a failure.
+            decision = {
+              passed: false,
+              observed: null,
+              observation: verifying.view,
+              completeness: {
+                truncated: true,
+                nodeBudget: verifying.view.maxNodes ?? null,
+                escalated: verifying.escalated,
+                outcomeDependsOnCompleteView: false,
+                reason: QA_INCONCLUSIVE_TRUNCATED,
+                detail: scopeNotLocatedMessage(verifying.levels, verifying.escalated, verifying.view)
+                  + '. The recorded path is a discriminator, never a proof. Levels: '
+                  + levelSummary(verifying.levels) + '.',
+              },
+              reason: QA_INCONCLUSIVE_TRUNCATED,
+              scopeNotLocated: true,
+              scopeLevels: verifying.levels,
+              attempts: 1,
+              elapsedMs: 0,
+              widened: null,
+            };
+          } else {
+            const outcome = decideScopedScrollProof(step.assert, target, verifying);
+            if (outcome.kind === 'failure') throw outcome.error;
+            if (outcome.targetResolution !== null) targetResolution = outcome.targetResolution;
+            decision = {
+              passed: outcome.kind === 'pass',
+              observed: outcome.observed,
+              observation: verifying.observation,
+              completeness: outcome.completeness,
+              ...(outcome.kind === 'pass' ? {} : { reason: QA_INCONCLUSIVE_SCOPE }),
+              ...(outcome.kind === 'inconclusive' && outcome.refusal !== undefined
+                ? { scopeRefusal: outcome.refusal }
+                : {}),
+              scopeResolution: verifying.resolution,
+              scopeLevels: verifying.levels,
+              attempts: 1,
+              elapsedMs: 0,
+              widened: null,
+            };
+          }
         } else {
           decision = await decideAssertionScoped(
             step.assert,
@@ -1329,6 +1639,8 @@ export async function runScenario(
           {
             ...(decision.scopeResolution === undefined ? {} : { scopeResolution: decision.scopeResolution }),
             ...(decision.scopeRefusal === undefined ? {} : { scopeRefusal: decision.scopeRefusal }),
+            ...(decision.scopeNotLocated === true ? { scopeNotLocated: true } : {}),
+            ...(decision.scopeLevels === undefined ? {} : { scopeLevels: decision.scopeLevels }),
           },
           targetResolution,
           targetChangedRetry,
@@ -1336,8 +1648,10 @@ export async function runScenario(
       );
       if (scopedScrollProof) lastScrollProofDecision = decision;
       // Any INCONCLUSIVE_SCOPE result is provisional evidence — a provisionally
-      // resolved container OR an anchor refusal — and keeps the run off 'pass'.
-      if (decision.reason === QA_INCONCLUSIVE_SCOPE) provisionalCount += 1;
+      // resolved container OR an anchor refusal — and an INCONCLUSIVE_TRUNCATED
+      // result from a container the truncated view could not locate is equally
+      // unproven: both keep the run off 'pass' without failing it.
+      if (decision.reason === QA_INCONCLUSIVE_SCOPE || decision.scopeNotLocated === true) unprovenCount += 1;
       if (step.assert.scope === undefined) {
         current = decision.observation;
       } else if (stepIndex < scenario.steps.length - 1) {
@@ -1361,9 +1675,10 @@ export async function runScenario(
         current = refresh.observation;
       }
       if (!decision.passed) {
-        if (decision.reason === QA_INCONCLUSIVE_SCOPE) {
-          // QA-BL-062: a PROVISIONAL result is not a definite failure — the
-          // loop continues and the run aggregates to 'inconclusive'.
+        if (decision.reason === QA_INCONCLUSIVE_SCOPE || decision.scopeNotLocated === true) {
+          // QA-BL-062/069: a PROVISIONAL result, or a container the
+          // still-truncated view could not locate, is not a definite failure
+          // — the loop continues and the run aggregates to 'inconclusive'.
         } else {
           failure = {
             stepIndex: step.index,
@@ -1425,8 +1740,12 @@ export async function runScenario(
               ...(stepDecision.reason === undefined ? {} : { reason: stepDecision.reason }),
               ...(stepDecision.scopeResolution === undefined ? {} : { scopeResolution: stepDecision.scopeResolution }),
               ...(stepDecision.scopeRefusal === undefined ? {} : { scopeRefusal: stepDecision.scopeRefusal }),
+              ...(stepDecision.scopeLevels === undefined ? {} : { scopeLevels: stepDecision.scopeLevels }),
+              ...(stepDecision.scopeNotLocated === true ? { scopeNotLocated: true as const } : {}),
             });
-            if (stepDecision.reason === QA_INCONCLUSIVE_SCOPE) provisionalCount += 1;
+            if (stepDecision.reason === QA_INCONCLUSIVE_SCOPE || stepDecision.scopeNotLocated === true) {
+              unprovenCount += 1;
+            }
             // The copy inherits the outcome: a provisional copy neither
             // fails the run nor passes it — the provisional evidence remains.
             continue;
@@ -1485,8 +1804,10 @@ export async function runScenario(
           ...(decision.reason === undefined ? {} : { reason: decision.reason }),
           ...(decision.attempts <= 1 ? {} : { attempts: decision.attempts, elapsedMs: decision.elapsedMs }),
           ...(decision.scopeResolution === undefined ? {} : { scopeResolution: decision.scopeResolution }),
+          ...(decision.scopeLevels === undefined ? {} : { scopeLevels: decision.scopeLevels }),
+          ...(decision.scopeNotLocated === true ? { scopeNotLocated: true as const } : {}),
         });
-        if (decision.reason === QA_INCONCLUSIVE_SCOPE) provisionalCount += 1;
+        if (decision.reason === QA_INCONCLUSIVE_SCOPE || decision.scopeNotLocated === true) unprovenCount += 1;
         if (assertion.scope === undefined) {
           finalObservation = decision.observation;
         } else if (i + 1 < scenario.assertions.length) {
@@ -1510,9 +1831,10 @@ export async function runScenario(
           finalObservation = refresh.observation;
         }
         if (!decision.passed) {
-          if (decision.reason === QA_INCONCLUSIVE_SCOPE) {
-            // QA-BL-062: a PROVISIONAL final assertion is not a definite
-            // failure — the run aggregates to 'inconclusive'.
+          if (decision.reason === QA_INCONCLUSIVE_SCOPE || decision.scopeNotLocated === true) {
+            // QA-BL-062/069: a PROVISIONAL final assertion, or one whose
+            // container the still-truncated view could not locate, is not a
+            // definite failure — the run aggregates to 'inconclusive'.
           } else {
             failure = {
               stepIndex: null,
@@ -1561,12 +1883,13 @@ export async function runScenario(
     schemaVersion: 1,
     scenario: scenario.meta.name,
     driver: scenario.meta.driver,
-    // QA-BL-062 three-state aggregation: PASS only when every required step
-    // and final assertion is fully proven (failure === null AND nothing was
-    // provisional); INCONCLUSIVE when at least one required result is
-    // provisional (scopeResolution 'provisional' / INCONCLUSIVE_SCOPE) and
-    // nothing definitely failed; FAIL otherwise.
-    status: failure === null ? (provisionalCount > 0 ? 'inconclusive' : 'pass') : 'fail',
+    // QA-BL-062/069 three-state aggregation: PASS only when every required
+    // step and final assertion is fully proven (failure === null AND nothing
+    // was unproven); INCONCLUSIVE when at least one required result is
+    // provisional (scopeResolution 'provisional' / INCONCLUSIVE_SCOPE) or a
+    // scoped container could not be located in a still-truncated view
+    // (INCONCLUSIVE_TRUNCATED) and nothing definitely failed; FAIL otherwise.
+    status: failure === null ? (unprovenCount > 0 ? 'inconclusive' : 'pass') : 'fail',
     startedAt,
     finishedAt: new Date().toISOString(),
     settle: session.settlePolicy,

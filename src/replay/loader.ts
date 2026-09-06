@@ -16,6 +16,7 @@ import type {
   QaScenarioAssertionScope,
   QaScenarioMeta,
   QaScenarioTarget,
+  QaScopePathItem,
   QaSettleOverride,
   QaStep,
   QaVisualAssertion,
@@ -102,7 +103,11 @@ const TARGET_FIELDS = ['launch', 'loginState'] as const;
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert', 'escalationRefused'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description', 'scope'] as const;
 const ASSERTION_SCOPE_FIELDS = ['role', 'name', 'tag', 'path'] as const;
-const ASSERTION_SCOPE_PATH_ITEM_FIELDS = ['role', 'name'] as const;
+// QA-BL-069: a path item may omit `name` (role + optional tag only) — export
+// omits the name of content-named ancestors whose aggregated name is
+// order-fragile (> 80 chars) or empty. `tag` is optional and rides only as an
+// extra discriminator.
+const ASSERTION_SCOPE_PATH_ITEM_FIELDS = ['role', 'name', 'tag'] as const;
 const NODE_VALUE_EXPECTATION_FIELDS = ['role', 'name', 'tag', 'value'] as const;
 const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
 // QA-BL-064: roleHint is the advisory live role the exporter recorded beside
@@ -319,24 +324,33 @@ function validateScrollAmount(value: unknown, position: string): 'page' | number
 }
 
 /**
- * Validates the recorded ancestor PATH of a scoped container (QA-BL-062),
- * fail-closed like every other schema field: a non-empty array of { role,
- * name } items, outermost ancestor first. The role must be a non-empty
- * string; the name may be the EMPTY STRING (an unnamed ancestor is an
- * exact-match predicate value). Unknown fields on an item are rejected, so a
- * fabricated or partially hand-edited path can never reach the runner.
+ * Validates the recorded ancestor PATH of a scoped container (QA-BL-062,
+ * amended QA-BL-069), fail-closed like every other schema field: a
+ * non-empty array of { role, name?, tag? } items, outermost ancestor first.
+ * The role must be a non-empty string. `name` is OPTIONAL (QA-BL-069 path
+ * durability: export omits it for content-named ancestors whose aggregated
+ * name is order-fragile or empty; replay then matches role (+ tag when
+ * recorded) only) and, when present, may be the EMPTY STRING (an unnamed
+ * ancestor is an exact-match predicate value). `tag` is OPTIONAL and, when
+ * present, must be a non-empty string. Unknown fields on an item are
+ * rejected, so a fabricated or partially hand-edited path can never reach
+ * the runner.
  */
-function validateScopePath(value: unknown, position: string): { role: string; name: string }[] {
+function validateScopePath(value: unknown, position: string): QaScopePathItem[] {
   const items = expectArray(value, position);
   if (items.length === 0) fail(position, 'expected at least one path item (an empty path proves nothing)');
   return items.map((item, index) => {
     const itemPosition = position + '[' + index + ']';
     const obj = expectObject(item, itemPosition);
     assertKnownFields(obj, ASSERTION_SCOPE_PATH_ITEM_FIELDS, itemPosition);
-    return {
-      role: expectNonEmptyString(obj.role, itemPosition + '.role'),
-      name: expectString(obj.name, itemPosition + '.name'),
-    };
+    const out: QaScopePathItem = { role: expectNonEmptyString(obj.role, itemPosition + '.role') };
+    if (obj.name !== undefined) {
+      out.name = expectString(obj.name, itemPosition + '.name');
+    }
+    if (obj.tag !== undefined) {
+      out.tag = expectNonEmptyString(obj.tag, itemPosition + '.tag');
+    }
+    return out;
   });
 }
 

@@ -219,57 +219,100 @@ detail string and report.md say which container the outcome was decided
 inside.
 - Replay: a scenario assertion may carry `scope: { role, name, tag?, path? }`
 (loader-validated fail-closed; the name may be empty; `path` is the
-container's semantic ancestor chain, outermost first — a stronger locator,
-compared by RELATIONSHIPS, never refs). The runner resolves that container
-in the whole-page view by UNIQUE predicate plus the recorded path when
-present — ambiguous containers are refused with the existing
-`TARGET_NOT_UNIQUE` vocabulary, never guessed. QA-BL-054/QA-BL-062: ZERO
-matches in a truncated whole-page view may mean the container sits outside
-the window, and ONE match in a truncated view is NOT proven uniqueness (a
-twin may sit outside the window) — both escalate the whole-page budget ONCE;
-a still-truncated view resolves PROVISIONALLY for the scoped SCROLL-proof
-step (B3) and for any scope carrying a recorded path, and refuses with
-`INCONCLUSIVE_TRUNCATED` naming the scope for every other scope. A
-PROVISIONAL resolution means the step carries `scopeResolution:
-'provisional'` and `reason: INCONCLUSIVE_SCOPE` — **never a pass** — and the
-run aggregates to the three-state `inconclusive` when nothing definitely
-failed. The replayed scrolled proof is still executed; its verifying scoped
-read requests `anchorLastAction` + `verifyCoverage`, and the decision
-requires the identity anchor to be connected, contained, bound to the SAME
-node ref as the asserted target, and in the viewport — a lost binding or
-mismatch is disclosed as `scopeRefusal` (escalationRefused-style) on the
-step, never a predicate reselect. Target predicate matches are counted
-BEFORE the `inViewport` filter inside the scope: ≥2 → `TARGET_NOT_UNIQUE`;
-exactly 1 in a truncated or coverage-unverified subtree stays provisional;
-exactly 1 in a complete verified subtree MAY be proven (given a proven
-container resolution). Driver refusals on the scoped read surface as
-themselves (their code rides into `failure.code`), never as a "not found".
-After a scoped decision the runner refreshes the whole-page view (settled,
+container's semantic ancestor chain, outermost first). **A `path` is a
+DISCRIMINATOR, never a proof**: it can only ever LOCATE the container;
+uniqueness is proven per level at replay time, and `PASS` stays reserved
+for proven resolution. QA-BL-069 path durability: a path item may OMIT its
+`name` — export omits it exactly for a CONTENT-NAMED container role
+(search/region/list/listbox/group/navigation/main/form/table/menu — the
+same rule as `FRAGILE_PROOF_ONLY`) whose aggregated accessible name
+concatenates its children's text and exceeds 80 chars (it changes with
+collapse state / render timing), or for an EMPTY name; such an item
+records `{ role, tag }` only, and replay compares the name only when it
+was recorded.
+
+  QA-BL-069 top-down path WALK: the outermost ancestor is matched in the
+whole-page view (with today's ONE bounded budget escalation), observed
+within (settled), the next path item matched inside that scoped view (one
+bounded WITHIN-SCOPE escalation when the parent subtree exceeds the default
+window, re-chained through the driver's fresh `scope.rootRef`), and so on,
+until the container itself is matched inside its last ancestor's view; the
+container's own settled scoped view is then the deciding view. Uniqueness
+is judged at EACH level inside its PARENT's view — the classification
+table:
+
+  | level evidence | classification |
+  | --- | --- |
+  | exactly 1 match in a COMPLETE parent view | `proven` at that level |
+  | exactly 1 match in a still-truncated parent view | `provisional` at that level |
+  | ≥ 2 matches | `TARGET_NOT_UNIQUE` — a KNOWN twin is never guessed (definite failure) |
+  | zero matches in a still-truncated parent view | `INCONCLUSIVE_TRUNCATED` — the step is **inconclusive**, never a failure |
+  | zero matches in a COMPLETE parent view | definite failure — the ancestor/container is not on the page |
+
+  The overall resolution is `proven` only when EVERY level was proven — on a
+>100-node page the whole-page top level never completes, so the result is
+provisional, exactly as Codex consult #2 decision (b) requires. Without a
+recorded path the flat resolution stays (QA-BL-054/062): ONE match in a
+still-truncated whole-page view resolves PROVISIONALLY for the scoped
+SCROLL-proof step (B3), and refuses with `INCONCLUSIVE_TRUNCATED` naming
+the scope for every other scope. A PROVISIONAL resolution means the step
+carries `scopeResolution: 'provisional'` and `reason: INCONCLUSIVE_SCOPE` —
+**never a pass** — and the run aggregates to the three-state `inconclusive`
+when nothing definitely failed. QA-BL-069 (C) classification: ZERO matches
+in a still-truncated view AT ANY LEVEL (flat included) is NOT a definite
+failure — the step carries `reason: INCONCLUSIVE_TRUNCATED`,
+`scopeNotLocated: true`, `assertionPassed: false`, the run status
+`inconclusive` (never `fail`), and report.md says "the container could not
+be located in the truncated view; it may exist outside the returned
+window"; the `scopeLevels` field and report.md name EACH level's resolution
+(outermost ancestor first, the container last). Definite failures (zero in
+a complete view, `TARGET_NOT_UNIQUE`) remain `fail`. The replayed scrolled
+proof is still executed; its verifying scoped read requests
+`anchorLastAction` + `verifyCoverage`, and the decision requires the
+identity anchor to be connected, contained, bound to the SAME node ref as
+the asserted target, and in the viewport — a lost binding or mismatch is
+disclosed as `scopeRefusal` (escalationRefused-style) on the step, never a
+predicate reselect. Target predicate matches are counted BEFORE the
+`inViewport` filter inside the scope: ≥2 → `TARGET_NOT_UNIQUE`; exactly 1
+in a truncated or coverage-unverified subtree stays provisional; exactly 1
+in a complete verified subtree MAY be proven (given a proven container
+resolution). Driver refusals on the scoped read surface as themselves
+(their code rides into `failure.code`), never as a "not found". After a
+scoped decision the runner refreshes the whole-page view (settled,
 fail-closed on an unstable refresh) because the scoped read consumed the
 observation the container was resolved from.
 - Export records the scope when the explorer used one AND the scope is
-PROVEN durable (QA-BL-054, amended by QA-BL-062): an assertion whose
-deciding proof observation was scoped is exported with the container's
-`scope: { role, name, path? }` (+tag when needed) only when that predicate
-(role+name, plus tag when needed to disambiguate) matches EXACTLY ONE node
-in the recorded BASELINE observation (the action's pre-action view), that
-baseline is COMPLETE (`truncated: false`), AND the baseline is NOT the
-container's OWN scoped subtree — a scoped baseline whose root is the
-container is trivially its own root and proves nothing (the
-scoped-complete-baseline trick is closed). `path` is the container's
-ancestor chain from an observation that contained it as a NON-root node,
-recorded when available — never manufactured from a scoped root's
-`parentRef: null`. An empty accessible NAME is a legitimate predicate value
-and is kept literally (`name: ''`). QA-BL-062: when uniqueness is UNPROVEN
-and the recorded action is an identity-anchored scroll proof (its proof
-observation carries the driver's truthful identity anchor — the acceptance
-marker hub-107's re-bind produced), the scope is exported explicitly
-PROVISIONAL (the step intent names the weakness) instead of being excluded;
-every other unproven scope EXCLUDES the step with `SCOPE_NOT_DURABLE` — a
-scoped proof is never silently exported as if it were a whole-page proof.
-`page-url` is never scoped (the URL travels on every observation). When the
-action's PRECEDING observation was scoped, the step intent records that the
-target's whole-page uniqueness was not verified at export.
+PROVEN durable (QA-BL-054, amended by QA-BL-062/069). WITH a recorded
+ancestor path, durability is judged PER LEVEL from the recorded evidence —
+the same top-down walk replay performs: level 1 in a whole-page recorded
+view, each next level inside a recorded observation scoped within its
+parent item, and the container inside the first recorded view that
+contained it as a NON-root node (its own subtree never counts — the
+scoped-complete-baseline trick stays closed). A container unique inside its
+ancestor's COMPLETE scoped view is durable at that level; the export is
+PROVISIONAL exactly where a level stays unproven (on a >100-node page the
+whole-page top level always is) — the scope (with the path) is still
+EXPORTED, so an explicit scoped assertion whose whole-page baseline was
+truncated is no longer excluded with `SCOPE_NOT_DURABLE` merely for that;
+an AMBIGUOUS or definitely-absent level IS excluded, never guessed.
+WITHOUT a path the flat rule applies: the predicate (role+name, plus tag
+when needed to disambiguate) must match EXACTLY ONE node in the recorded
+BASELINE observation (the action's pre-action view), that baseline must be
+COMPLETE (`truncated: false`), and must NOT be the container's OWN scoped
+subtree. `path` is the container's ancestor chain from an observation that
+contained it as a NON-root node, recorded when available — never
+manufactured from a scoped root's `parentRef: null`. An empty accessible
+NAME is a legitimate predicate value and is kept literally (`name: ''`).
+QA-BL-062: when uniqueness is UNPROVEN and the recorded action is an
+identity-anchored scroll proof (its proof observation carries the driver's
+truthful identity anchor — the acceptance marker hub-107's re-bind
+produced), the scope is exported explicitly PROVISIONAL (the step intent
+names the weakness) instead of being excluded; every other unproven scope
+EXCLUDES the step with `SCOPE_NOT_DURABLE` — a scoped proof is never
+silently exported as if it were a whole-page proof. `page-url` is never
+scoped (the URL travels on every observation). When the action's PRECEDING
+observation was scoped, the step intent records that the target's
+whole-page uniqueness was not verified at export.
 - The computer driver has no scoping: a `withinRef` there is REFUSED with a
 clear error, never silently ignored.
 
