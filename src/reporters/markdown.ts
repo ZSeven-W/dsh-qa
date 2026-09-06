@@ -220,6 +220,16 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     if (step.scopeRefusal !== undefined) {
       lines.push('  - scope refusal: ' + mdInline(step.scopeRefusal.reason));
     }
+    if (step.escalationRefused !== undefined) {
+      // QA-BL-067: the RECORD-time proof refusal the scenario step carried
+      // (the scoped proof read refused, or the ONE scroll-proof escalation
+      // refused) is surfaced on the step line with its fixed vocabulary word
+      // and the driver's code when one rode along.
+      lines.push(
+        '  - proof escalation refusal: ' + mdInline(step.escalationRefused.reason)
+        + (step.escalationRefused.code === undefined ? '' : ' (' + step.escalationRefused.code + ')'),
+      );
+    }
     if (step.targetResolution !== undefined) {
       // QA-BL-064: the action target was present under a drifted role and the
       // name-only fallback resolved it — disclose the recorded and the

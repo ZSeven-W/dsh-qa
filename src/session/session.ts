@@ -6,7 +6,10 @@ import type {
   QaEvidence,
   QaEvidenceOptions,
   QaObservation,
+  QaObservationAnchor,
   QaObserveOptions,
+  QaScrollProofRefusal,
+  QaScrollProofRefusalReason,
   QaSemanticNode,
   QaSessionInfo,
   QaStartOptions,
@@ -59,6 +62,23 @@ export interface QaActResult {
    */
   settle: QaSettleReport | null;
   /**
+   * ADDITIVE (QA-BL-067): present exactly when the action was taken from a
+   * SCOPED baseline (the acted ref came from a scoped observation) and its
+   * PROOF settle — taken INSIDE that scope, rooted at the baseline's
+   * `scope.rootRef` with the driver's identity anchor requested — was
+   * ACCEPTED: the scoped window settled AND the anchor reports the ORIGINAL
+   * acted element connected, contained in the scoped container, and emitted
+   * with a fresh ref whose node is in the viewport (identity from the anchor,
+   * never from matching role/name/tag). `observation` is then the settled
+   * SCOPED view, and the recorder binds it as the action's proof through the
+   * ordinary settle binding, so export carries the scope (withProofScope,
+   * QA-BL-054/062 rules unchanged). No escalation happened, so there is
+   * deliberately no `proofEscalated` — `anchor` rides alongside instead.
+   */
+  proofScope?: { role: string; name: string };
+  /** The driver's identity anchor from the accepted scoped proof (QA-BL-067). */
+  anchor?: QaObservationAnchor;
+  /**
    * ADDITIVE, present exactly when the record-time scroll-proof escalation
    * was ACCEPTED (see #escalateScrollProof): `observation` is then the
    * escalated proof view — a fuller WHOLE-PAGE view whose own `truncated`
@@ -68,15 +88,23 @@ export interface QaActResult {
    */
   proofEscalated?: true;
   /**
-   * ADDITIVE disclosure (QA-BL-058): present exactly when the ONE bounded
-   * record-time scroll-proof escalation was TAKEN but REFUSED because the
-   * escalated read threw or was refused by the driver (e.g. PAGE_CHANGED /
-   * REF_EXPIRED surfaced as an error — previously swallowed into a silent
-   * "no escalation"). The fail-closed behaviour is unchanged: the proof
-   * stays the settled observation. `code` carries the driver's machine code
-   * when one was recognizable.
+   * ADDITIVE disclosure (QA-BL-058, completed by QA-BL-067): present exactly
+   * when the FINAL proof state was refused — the SCOPED proof read for an
+   * action taken from a scoped baseline, or the ONE bounded record-time
+   * scroll-proof escalation, could not prove the outcome. `reason` is from
+   * the FIXED vocabulary (target-not-in-baseline, container-not-in-view,
+   * escalated-window-unstable, target-not-returned, target-not-in-viewport,
+   * anchor-not-connected, anchor-not-contained, anchor-unavailable) and
+   * `code` carries the driver's machine code when the driver THREW.
+   * `already-in-viewport` is deliberately NOT a refusal: no escalation is
+   * needed, and the result then simply has no escalation fields. When the
+   * scoped proof read was refused AND the escalation was refused, the
+   * escalation's refusal is the one disclosed (the more terminal truth);
+   * when the escalation was ACCEPTED the earlier refusal is superseded (the
+   * proof succeeded). The fail-closed behaviour is unchanged: the proof
+   * stays the settled observation.
    */
-  escalationRefused?: { code?: string; reason: string };
+  escalationRefused?: QaScrollProofRefusal;
   /**
    * The escalated window's report; present exactly when `proofEscalated`
    * is. `stable` is always true here (an unsettled escalated window is
@@ -258,6 +286,76 @@ function scopedRootRefOf(observation: QaObservation): string | undefined {
   if (scope === undefined) return undefined;
   const rootRef = scope.rootRef;
   return typeof rootRef === 'string' && rootRef !== '' ? rootRef : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// QA-BL-067: the fixed refusal vocabulary for every non-acceptance exit of the
+// scoped proof read and the scroll-proof escalation (completes QA-BL-058 —
+// every previously silent `return null` now discloses its reason).
+// ---------------------------------------------------------------------------
+
+/** Driver codes that mean "the scoped root can no longer be re-keyed". */
+const QA_REFUSAL_CONTAINER_CODES = new Set([
+  'REF_INVALID',
+  'REF_UNKNOWN',
+  'REF_EXPIRED',
+  'PAGE_CHANGED',
+  'TARGET_CHANGED',
+  'TARGET_DETACHED',
+  'WITHIN_NOT_ELEMENT',
+  'OBSERVATION_REQUIRED',
+]);
+
+/**
+ * The fixed-vocabulary refusal for a driver THROW during a proof re-read:
+ * ANCHOR_UNAVAILABLE means the identity anchor is gone; a scoped-root refusal
+ * code means the container root cannot be re-keyed; anything else keeps the
+ * caller's fallback word. The driver's machine code rides along verbatim.
+ */
+function scrollProofRefusalFromError(
+  error: unknown,
+  fallback: QaScrollProofRefusalReason,
+): QaScrollProofRefusal {
+  const code = (error as Error & { code?: unknown }).code;
+  if (typeof code === 'string' && code !== '') {
+    if (code === 'ANCHOR_UNAVAILABLE') return { code, reason: 'anchor-unavailable' };
+    if (QA_REFUSAL_CONTAINER_CODES.has(code)) return { code, reason: 'container-not-in-view' };
+    return { code, reason: fallback };
+  }
+  return { reason: fallback };
+}
+
+/**
+ * The acceptance verdict for a settled SCOPED proof observation (QA-BL-067):
+ * the driver's identity anchor must report the ORIGINAL acted element
+ * connected, contained in the scoped container, and emitted with a fresh ref
+ * whose node is in the viewport. Identity comes from the anchor — never from
+ * matching role/name/tag — and every non-acceptance maps to one fixed
+ * refusal word.
+ */
+function scopedProofVerdict(
+  observation: QaObservation,
+): { accepted: true } | { accepted: false; refusal: QaScrollProofRefusal } {
+  const anchor = observation.anchor;
+  const anchoredNode = anchor?.ref === null || anchor?.ref === undefined
+    ? undefined
+    : observation.nodes.find((candidate) => candidate.ref === anchor.ref);
+  if (anchor === undefined) {
+    return { accepted: false, refusal: { reason: 'anchor-unavailable' } };
+  }
+  if (anchor.connected !== true) {
+    return { accepted: false, refusal: { reason: 'anchor-not-connected' } };
+  }
+  if (anchor.contained !== true) {
+    return { accepted: false, refusal: { reason: 'anchor-not-contained' } };
+  }
+  if (anchor.ref === null) {
+    return { accepted: false, refusal: { reason: 'anchor-unavailable' } };
+  }
+  if (anchoredNode === undefined || anchoredNode.inViewport !== true) {
+    return { accepted: false, refusal: { reason: 'target-not-in-viewport' } };
+  }
+  return { accepted: true };
 }
 
 /** Field projection of one settle window result (no observation). */
@@ -531,12 +629,79 @@ export class QaSession {
       : echo === null
         ? this.#lastView
         : projectSemanticView(baselineObservation, echo);
-    const settled = await this.observeSettled(undefined, {
+    const settleOptions: QaSettleCallOptions = {
       awaitChange: true,
       ...(baselineView === null ? {} : { baselineView }),
       ...(echo === null ? {} : { echo }),
-    });
+    };
+    // QA-BL-067: when the acted ref came from a SCOPED baseline, the proof
+    // settle is taken INSIDE that scope — rooted at the baseline's
+    // scope.rootRef with the driver's identity anchor requested — so a deep
+    // target unreachable whole-page stays provable inside its container. The
+    // settle loop re-keys the within ref per poll to the driver's fresh
+    // scope.rootRef (see observeSettled). Verified against the real driver
+    // (contract v9, dsh-browser a17727a): a dispatched browser action
+    // consumes the ENTIRE latest observation — every ref it minted, including
+    // the scope rootRef — so the baseline root no longer resolves immediately
+    // after the action (OBSERVATION_REQUIRED / REF_UNKNOWN / ...). The
+    // scoped proof read is therefore ATTEMPTED and, when the driver refuses
+    // the root, the refusal is DISCLOSED (reason 'container-not-in-view' plus
+    // the driver's code) and the proof falls back to today's whole-page read.
+    // A driver that retains the scope root gets the scoped proof automatically.
+    // RECORD-TIME ONLY: the same recording-adapter capability gate the
+    // escalation uses. Replay (and every plain adapter) keeps today's
+    // whole-page proof settle — the replay runner resolves scopes and verifies
+    // through its OWN anchor-checked scoped reads, and a scoped proof
+    // observation left in the session baseline would break that flow.
+    const recordingSession = typeof this.#adapter.noteEscalatedScrollProof === 'function';
+    const baselineScopeRootRef = !recordingSession || baselineObservation === null
+      ? undefined
+      : scopedRootRefOf(baselineObservation);
+    let scopedProofRefusal: QaScrollProofRefusal | undefined;
+    let settled: QaSettleResult;
+    if (baselineScopeRootRef !== undefined) {
+      try {
+        settled = await this.observeSettled({ withinRef: baselineScopeRootRef, anchorLastAction: true }, settleOptions);
+      } catch (error) {
+        // The baseline scope root no longer resolves: document why, disclose,
+        // and take today's whole-page proof read instead. The refused attempt
+        // is a HANDLED driver refusal, never a recording failure: the
+        // recording adapter re-arms its settle-window state so the FALLBACK
+        // settle binds exactly this action's proof.
+        scopedProofRefusal = scrollProofRefusalFromError(error, 'container-not-in-view');
+        if (typeof this.#adapter.noteScopedProofFallback === 'function') {
+          try {
+            this.#adapter.noteScopedProofFallback(this.#ownerId, receipt.actionId ?? null);
+          } catch { /* observational only */ }
+        }
+        settled = await this.observeSettled(undefined, settleOptions);
+      }
+    } else {
+      settled = await this.observeSettled(undefined, settleOptions);
+    }
     const outcome: QaActOutcome = receipt.status === 'confirmed' ? 'ok' : 'unknown';
+    // The accepted scoped proof (QA-BL-067): the settled SCOPED view whose
+    // driver identity anchor reports the acted element connected, contained,
+    // and in the viewport IS the proof — no escalation happened, so the result
+    // carries proofScope + anchor instead of proofEscalated.
+    let proofObservation = settled.observation;
+    let proofScope: { role: string; name: string } | undefined;
+    let anchor: QaObservationAnchor | undefined;
+    let scopedProofAccepted = false;
+    if (
+      settled.stable
+      && baselineScopeRootRef !== undefined
+      && proofObservation.scope !== undefined
+    ) {
+      const verdict = scopedProofVerdict(proofObservation);
+      if (verdict.accepted) {
+        scopedProofAccepted = true;
+        proofScope = { role: proofObservation.scope.role, name: proofObservation.scope.name };
+        anchor = proofObservation.anchor;
+      } else if (scopedProofRefusal === undefined) {
+        scopedProofRefusal = verdict.refusal;
+      }
+    }
     // A scroll-by-ref whose settled proof view is TRUNCATED and still lacks the
     // target in the viewport gets ONE bounded escalation (recording
     // adapters only, see #escalateScrollProof): a target deep in DOM order is
@@ -548,14 +713,12 @@ export class QaSession {
     // the WHOLE-PAGE read (QA-BL-045/047) when no container is on the
     // parentRef chain or it cannot be re-keyed. At most one escalation per
     // action; a refused one keeps the settled observation and is DISCLOSED as
-    // escalationRefused (QA-BL-058: a thrown driver refusal such as
-    // ANCHOR_UNAVAILABLE, or an anchor that reports connected:false /
-    // contained:false / a null ref).
-    let proofObservation = settled.observation;
+    // escalationRefused with the fixed vocabulary (QA-BL-058/QA-BL-067).
     let escalatedSettle: QaSettleReport | null = null;
-    let escalationRefused: { code?: string; reason: string } | undefined;
+    let escalationRefused: QaScrollProofRefusal | undefined;
     if (
-      settled.stable
+      !scopedProofAccepted
+      && settled.stable
       && proofObservation.truncated
       && typeof this.#adapter.noteEscalatedScrollProof === 'function'
     ) {
@@ -569,10 +732,24 @@ export class QaSession {
         if (escalated.accepted) {
           proofObservation = escalated.observation;
           escalatedSettle = escalated.settle;
+          // The proof succeeded through the escalation: the earlier
+          // scoped-proof refusal is superseded, not disclosed.
+          scopedProofRefusal = undefined;
         } else {
+          // The escalation's refusal is the more terminal truth: it
+          // supersedes the scoped-proof refusal.
           escalationRefused = escalated.refusal;
         }
       }
+    }
+    // The FINAL refusal disclosed on the result: the escalation's when it ran
+    // and was refused, otherwise the scoped-proof read's.
+    if (escalationRefused === undefined) escalationRefused = scopedProofRefusal;
+    const scopedProof = proofScope !== undefined && anchor !== undefined ? { proofScope, anchor } : null;
+    if (escalationRefused !== undefined && typeof this.#adapter.noteScrollProofRefusal === 'function') {
+      try {
+        this.#adapter.noteScrollProofRefusal(this.#ownerId, receipt.actionId ?? null, escalationRefused);
+      } catch { /* observational only */ }
     }
     return {
       receipt,
@@ -583,6 +760,7 @@ export class QaSession {
       // escalatedSettle (see QaActResult) instead of shadowing this one.
       settle: settleReportOf(settled),
       ...(escalatedSettle === null ? {} : { proofEscalated: true as const, escalatedSettle }),
+      ...(scopedProof === null ? {} : scopedProof),
       ...(escalationRefused === undefined ? {} : { escalationRefused }),
       // A confirmed/unknown receipt still describes a dispatch, but an unstable
       // proof window means the CONSEQUENCE is unproven: `outcome` stays honest
@@ -643,7 +821,7 @@ export class QaSession {
     actionId: string | null,
   ): Promise<
     | { accepted: true; observation: QaObservation; settle: QaSettleReport }
-    | { accepted: false; refusal: { code?: string; reason: string } }
+    | { accepted: false; refusal: QaScrollProofRefusal }
     | null
   > {
     if (this.#adapter.kind !== 'browser') return null;
@@ -653,11 +831,17 @@ export class QaSession {
     // predicate is recovered there and matched by predicate afterwards.
     const targetIndex = baselineObservation?.nodes.findIndex((candidate) => candidate.ref === action.ref) ?? -1;
     const targetNode = targetIndex === -1 ? undefined : baselineObservation?.nodes[targetIndex];
-    if (targetNode === undefined) return null;
+    if (targetNode === undefined) {
+      // QA-BL-067: the silent exit is DISCLOSED with the fixed vocabulary.
+      return { accepted: false, refusal: { reason: 'target-not-in-baseline' } };
+    }
     const target = { role: targetNode.role, name: targetNode.name, tag: targetNode.tag };
     const alreadyInViewport = settledObservation.nodes.some(
       (candidate) => matchesNode(candidate, target) && candidate.inViewport === true,
     );
+    // Deliberately NOT a refusal (QA-BL-067): the settled view already proves
+    // the outcome, so no escalation is needed and the result simply carries no
+    // escalation fields.
     if (alreadyInViewport) return null;
 
     // B3: pick the container by ANCESTRY in the BASELINE observation (walk
@@ -678,32 +862,37 @@ export class QaSession {
     }
     // The ONE whole-page escalated read (QA-BL-045/047, unchanged) — taken
     // when no container-role ancestor exists or the container cannot be
-    // re-keyed into the settled view.
+    // re-keyed into the settled view. Every non-acceptance exit is DISCLOSED
+    // with the fixed vocabulary (QA-BL-067): a churning window or a view that
+    // does not stably extend the settled one is escalated-window-unstable, and
+    // the target distinction names whether it was returned at all.
     try {
       const escalated = await this.#observeEscalated({ maxNodes: QA_ESCALATED_NODE_BUDGET });
-      const targetInViewport = escalated.observation.nodes.some(
-        (candidate) => matchesNode(candidate, target) && candidate.inViewport === true,
-      );
-      if (!escalated.stable || !scrollProofExtends(settledObservation, escalated.observation) || !targetInViewport) {
-        return null;
+      if (!escalated.stable) {
+        return { accepted: false, refusal: { reason: 'escalated-window-unstable' } };
+      }
+      if (!scrollProofExtends(settledObservation, escalated.observation)) {
+        // The page changed between the two reads: the escalated view is not the
+        // stable state the settle window proved.
+        return { accepted: false, refusal: { reason: 'escalated-window-unstable' } };
+      }
+      const targetMatches = escalated.observation.nodes.filter((candidate) => matchesNode(candidate, target));
+      if (targetMatches.length === 0) {
+        return { accepted: false, refusal: { reason: 'target-not-returned' } };
+      }
+      if (targetMatches.every((candidate) => candidate.inViewport !== true)) {
+        return { accepted: false, refusal: { reason: 'target-not-in-viewport' } };
       }
       try {
         this.#adapter.noteEscalatedScrollProof?.(this.#ownerId, actionId);
       } catch { /* observational only */ }
       return { accepted: true, observation: escalated.observation, settle: settleReportOf(escalated) };
     } catch (error) {
-      // QA-BL-058: the escalated read threw (a driver refusal such as
-      // PAGE_CHANGED / REF_EXPIRED). Disclose it; the proof stays the settled
-      // observation (fail closed, unchanged).
-      const message = error instanceof Error ? error.message : String(error);
-      const code = (error as Error & { code?: unknown }).code;
-      return {
-        accepted: false,
-        refusal: {
-          reason: message === '' ? 'the escalated re-observation was refused by the driver' : message,
-          ...(typeof code === 'string' && code !== '' ? { code } : {}),
-        },
-      };
+      // QA-BL-058/QA-BL-067: the escalated read threw (a driver refusal such as
+      // PAGE_CHANGED / REF_EXPIRED). Disclose it with the fixed vocabulary plus
+      // the driver's code; the proof stays the settled observation (fail
+      // closed, unchanged).
+      return { accepted: false, refusal: scrollProofRefusalFromError(error, 'escalated-window-unstable') };
     }
   }
 
@@ -724,7 +913,7 @@ export class QaSession {
     actionId: string | null,
   ): Promise<
     | { accepted: true; observation: QaObservation; settle: QaSettleReport }
-    | { accepted: false; refusal: { code?: string; reason: string } }
+    | { accepted: false; refusal: QaScrollProofRefusal }
     | null
   > {
     try {
@@ -734,48 +923,42 @@ export class QaSession {
         maxNodes: QA_ESCALATED_NODE_BUDGET,
       });
       if (!escalated.stable) {
-        // An unsettled escalated window is refused silently, exactly like the
-        // whole-page form (fail closed, the settled observation stays).
-        return null;
+        // QA-BL-067: the unsettled-window refusal is DISCLOSED, never a silent
+        // exit (fail closed, the settled observation stays).
+        return { accepted: false, refusal: { reason: 'escalated-window-unstable' } };
       }
       const anchor = escalated.observation.anchor;
       const anchoredNode = anchor?.ref === null || anchor?.ref === undefined
         ? undefined
         : escalated.observation.nodes.find((candidate) => candidate.ref === anchor.ref);
-      let anchorFailure: string | undefined;
+      let refusal: QaScrollProofRefusal | undefined;
       if (anchor === undefined) {
-        anchorFailure = 'the driver reported no identity anchor for the scoped read';
+        refusal = { reason: 'anchor-unavailable' };
       } else if (anchor.connected !== true) {
-        anchorFailure = 'the identity anchor reported the acted element no longer connected (connected: false)';
+        refusal = { reason: 'anchor-not-connected' };
       } else if (anchor.contained !== true) {
-        anchorFailure = 'the identity anchor reported the acted element outside the scoped container (contained: false)';
+        refusal = { reason: 'anchor-not-contained' };
       } else if (anchor.ref === null) {
-        anchorFailure = 'the identity anchor excluded the acted element from the scoped view (anchor ref null)';
+        refusal = { reason: 'anchor-unavailable' };
       } else if (anchoredNode === undefined || anchoredNode.inViewport !== true) {
-        anchorFailure = 'the anchored element is not in the viewport, so the scoped scroll proof is unproven';
+        refusal = { reason: 'target-not-in-viewport' };
       }
-      if (anchorFailure !== undefined) {
-        // QA-BL-058 vocabulary: the refusal is DISCLOSED — the proof stays the
-        // settled observation, and the reason names the anchor truth.
-        return { accepted: false, refusal: { reason: anchorFailure } };
+      if (refusal !== undefined) {
+        // QA-BL-058/QA-BL-067: the refusal is DISCLOSED with the fixed
+        // vocabulary — the proof stays the settled observation, and the reason
+        // names the anchor truth.
+        return { accepted: false, refusal };
       }
       try {
         this.#adapter.noteEscalatedScrollProof?.(this.#ownerId, actionId);
       } catch { /* observational only */ }
       return { accepted: true, observation: escalated.observation, settle: settleReportOf(escalated) };
     } catch (error) {
-      // QA-BL-058: the scoped escalated read threw (a driver refusal such as
-      // ANCHOR_UNAVAILABLE — no retained action target — or REF_EXPIRED /
-      // PAGE_CHANGED). Disclose it; the proof stays the settled observation.
-      const message = error instanceof Error ? error.message : String(error);
-      const code = (error as Error & { code?: unknown }).code;
-      return {
-        accepted: false,
-        refusal: {
-          reason: message === '' ? 'the scoped escalated re-observation was refused by the driver' : message,
-          ...(typeof code === 'string' && code !== '' ? { code } : {}),
-        },
-      };
+      // QA-BL-058/QA-BL-067: the scoped escalated read threw (a driver refusal
+      // such as ANCHOR_UNAVAILABLE — no retained action target — or
+      // REF_EXPIRED / PAGE_CHANGED). Disclose it with the fixed vocabulary
+      // plus the driver's code; the proof stays the settled observation.
+      return { accepted: false, refusal: scrollProofRefusalFromError(error, 'anchor-unavailable') };
     }
   }
 

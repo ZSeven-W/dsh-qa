@@ -68,7 +68,7 @@ const outerFiller = () => node('n-outer', 'link', 'Outer 01', 'a', { inViewport:
  * ({ maxNodes, withinRef, anchorLastAction }) so the tests can pin what the
  * escalated read carried.
  */
-function scopedScrollAdapter({ before, after, scopedEscalated = null, wholeEscalated = null, anchorThrows = null } = {}) {
+function scopedScrollAdapter({ before, after, scopedEscalated = null, wholeEscalated = null, anchorThrows = null, throwSpec = null } = {}) {
   let acted = false
   let escalationWindows = 0
   let lastWasEscalated = false
@@ -97,6 +97,12 @@ function scopedScrollAdapter({ before, after, scopedEscalated = null, wholeEscal
             const error = new Error(anchorThrows)
             error.name = 'DriverIssue'
             error.code = 'ANCHOR_UNAVAILABLE'
+            throw error
+          }
+          if (throwSpec !== null) {
+            const error = new Error(throwSpec.message)
+            error.name = 'DriverIssue'
+            error.code = throwSpec.code
             throw error
           }
         }
@@ -360,9 +366,11 @@ test('B3: a contained:false anchor REFUSES the scoped escalation and is DISCLOSE
 
   assert.equal(escalationWindows, 1, 'the ONE scoped escalation ran and was refused')
   assert.equal(acted.proofEscalated, undefined, 'a refused escalation is never a proof')
-  assert.ok(acted.escalationRefused, 'the refusal is disclosed (QA-BL-058 vocabulary)')
-  assert.equal(acted.escalationRefused.code, undefined)
-  assert.match(acted.escalationRefused.reason, /contained/)
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'anchor-not-contained' },
+    'the refusal is disclosed with the QA-BL-067 fixed vocabulary',
+  )
   assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
   assert.equal(acted.observation.nodes.some((item) => item.name === TARGET.name), false)
 
@@ -392,8 +400,11 @@ test('B3: a disconnected anchor (connected:false) REFUSES the scoped escalation 
 
   assert.equal(escalationWindows, 1)
   assert.equal(acted.proofEscalated, undefined)
-  assert.ok(acted.escalationRefused, 'the refusal is disclosed')
-  assert.match(acted.escalationRefused.reason, /connected/)
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'anchor-not-connected' },
+    'the refusal is disclosed with the QA-BL-067 fixed vocabulary',
+  )
   assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
 })
 
@@ -417,8 +428,34 @@ test('B3: ANCHOR_UNAVAILABLE (the scoped read rejected) is DISCLOSED with the dr
   assert.equal(acted.proofEscalated, undefined)
   assert.deepEqual(
     acted.escalationRefused,
-    { code: 'ANCHOR_UNAVAILABLE', reason: 'no action target is retained (ANCHOR_UNAVAILABLE)' },
-    'the driver refusal is disclosed, never silently swallowed',
+    { code: 'ANCHOR_UNAVAILABLE', reason: 'anchor-unavailable' },
+    'QA-BL-067: the driver refusal is disclosed with the fixed vocabulary plus the driver\'s code, never silently swallowed',
+  )
+  assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
+})
+
+test('B3: a scoped escalated read rejected with REF_EXPIRED is disclosed as container-not-in-view with the driver code', async () => {
+  const before = view(
+    [
+      container('n-zone-before'),
+      targetOffViewport('n-target', 'n-zone-before'),
+    ],
+    false,
+  )
+  const after = view([outerFiller(), container('n-zone-settled')], true)
+
+  const { acted, escalationWindows } = await exploreScroll({
+    before,
+    after,
+    throwSpec: { code: 'REF_EXPIRED', message: 'the within ref expired; observe again' },
+  })
+
+  assert.equal(escalationWindows, 1, 'the one scoped escalation ran and was refused')
+  assert.equal(acted.proofEscalated, undefined)
+  assert.deepEqual(
+    acted.escalationRefused,
+    { code: 'REF_EXPIRED', reason: 'container-not-in-view' },
+    'QA-BL-067: the container root cannot be re-keyed; the driver code rides along',
   )
   assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
 })
@@ -445,8 +482,11 @@ test('B3: a null anchor ref (the acted element excluded from the view) REFUSES t
 
   assert.equal(escalationWindows, 1)
   assert.equal(acted.proofEscalated, undefined, 'a null anchor ref can never be the proof')
-  assert.ok(acted.escalationRefused, 'the refusal is disclosed')
-  assert.match(acted.escalationRefused.reason, /anchor/)
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'anchor-unavailable' },
+    'the refusal is disclosed with the QA-BL-067 fixed vocabulary',
+  )
   assert.equal(acted.observation.truncated, true)
 })
 
@@ -475,8 +515,11 @@ test('B3: an anchored element that is NOT in the viewport refuses the scoped esc
 
   assert.equal(escalationWindows, 1)
   assert.equal(acted.proofEscalated, undefined, 'an anchored element off-viewport proves nothing')
-  assert.ok(acted.escalationRefused, 'the refusal is disclosed')
-  assert.match(acted.escalationRefused.reason, /viewport/)
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'target-not-in-viewport' },
+    'the refusal is disclosed with the QA-BL-067 fixed vocabulary',
+  )
 })
 
 test('B3: a scoped escalated window that never settles is refused silently (fail closed)', async () => {
@@ -526,7 +569,11 @@ test('B3: a scoped escalated window that never settles is refused silently (fail
     const acted = await session.act({ kind: 'scroll', ref: targetNode.ref })
     assert.equal(escalationWindows, 1)
     assert.equal(acted.proofEscalated, undefined, 'an unsettled escalated window is refused')
-    assert.equal(acted.escalationRefused, undefined, 'an unsettled window refusal is the silent fail-closed path')
+    assert.deepEqual(
+      acted.escalationRefused,
+      { reason: 'escalated-window-unstable' },
+      'QA-BL-067: the unsettled-window refusal is DISCLOSED, never a silent exit',
+    )
     assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
   } finally {
     await session.stop().catch(() => {})

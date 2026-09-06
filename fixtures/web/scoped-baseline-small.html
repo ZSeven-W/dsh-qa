@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa scoped baseline small fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 6px 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <!--
+      QA-BL-067 small fixture: the whole page fits the default 60-node window
+      completely (28 emitted nodes), so after the scroll the WHOLE-PAGE fallback
+      proof is COMPLETE and proves the target in the viewport on its own — the
+      escalation never runs, and the act result discloses the scoped-proof
+      fallback (container-not-in-view + OBSERVATION_REQUIRED) while the proof is
+      the whole-page settled view. Emitted totals: h1 (1) + 20 outer links
+      (2..21) + region (22) + h2 (23) + 3 inner links (24..26) + target (27) +
+      status (28). The container subtree (region + h2 + 3 inner + target) is 6
+      nodes: a scoped observe reports truncated:false.
+    -->
+    <h1>Scoped baseline small fixture</h1>
+    <ul id="outer-fillers">
+      <li><a href="#outer-01">Outer 01</a></li>
+      <li><a href="#outer-02">Outer 02</a></li>
+      <li><a href="#outer-03">Outer 03</a></li>
+      <li><a href="#outer-04">Outer 04</a></li>
+      <li><a href="#outer-05">Outer 05</a></li>
+      <li><a href="#outer-06">Outer 06</a></li>
+      <li><a href="#outer-07">Outer 07</a></li>
+      <li><a href="#outer-08">Outer 08</a></li>
+      <li><a href="#outer-09">Outer 09</a></li>
+      <li><a href="#outer-10">Outer 10</a></li>
+      <li><a href="#outer-11">Outer 11</a></li>
+      <li><a href="#outer-12">Outer 12</a></li>
+      <li><a href="#outer-13">Outer 13</a></li>
+      <li><a href="#outer-14">Outer 14</a></li>
+      <li><a href="#outer-15">Outer 15</a></li>
+      <li><a href="#outer-16">Outer 16</a></li>
+      <li><a href="#outer-17">Outer 17</a></li>
+      <li><a href="#outer-18">Outer 18</a></li>
+      <li><a href="#outer-19">Outer 19</a></li>
+      <li><a href="#outer-20">Outer 20</a></li>
+    </ul>
+    <section id="deep-zone" role="region" aria-label="Deep zone">
+      <h2>Deep zone</h2>
+      <ul id="inner-fillers">
+        <li><a href="#inner-01">Inner 01</a></li>
+        <li><a href="#inner-02">Inner 02</a></li>
+        <li><a href="#inner-03">Inner 03</a></li>
+      </ul>
+      <a id="deep-target" href="#deep-target">Deep Target</a>
+    </section>
+    <div id="result" role="status" aria-live="polite">IDLE</div>
+  </main>
+</body>
+</html>

@@ -1180,6 +1180,11 @@ function buildScenario(
         )),
         action: resolved.action,
         assert: scopedStep.assertion,
+        // QA-BL-067: the recorded record-time proof refusal rides on the step
+        // (additive) so report.md step lines surface it.
+        ...(candidate.recorded.scrollProofRefusal === null
+          ? {}
+          : { escalationRefused: candidate.recorded.scrollProofRefusal }),
       });
       continue;
     }
@@ -1265,6 +1270,11 @@ function buildScenario(
       // A scoped proof observation exports as a scoped assertion — never as if
       // it were a whole-page proof (browser driver contract v8).
       assert: scopedStep.assertion,
+      // QA-BL-067: the recorded record-time proof refusal rides on the step
+      // (additive) so report.md step lines surface it.
+      ...(candidate.recorded.scrollProofRefusal === null
+        ? {}
+        : { escalationRefused: candidate.recorded.scrollProofRefusal }),
     });
   }
 

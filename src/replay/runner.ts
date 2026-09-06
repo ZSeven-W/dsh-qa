@@ -825,6 +825,8 @@ interface StepBase {
   index: number;
   intent: string;
   action: QaScenarioAction;
+  /** ADDITIVE (QA-BL-067): the scenario step's recorded record-time proof refusal. */
+  escalationRefused?: { code?: string; reason: string };
 }
 
 function buildStepResult(
@@ -848,6 +850,9 @@ function buildStepResult(
   return {
     index: base.index,
     intent: base.intent,
+    // QA-BL-067: the scenario step's recorded record-time proof refusal rides
+    // onto the step result so report.md's step lines surface it.
+    ...(base.escalationRefused === undefined ? {} : { escalationRefused: base.escalationRefused }),
     // QA-BL-062 three-state: INCONCLUSIVE_SCOPE is a provisional non-result —
     // never green, and never an ordinary failure.
     status: assertionPassed ? 'pass' : reason === QA_INCONCLUSIVE_SCOPE ? 'inconclusive' : 'fail',
@@ -1100,7 +1105,12 @@ export async function runScenario(
       if (failure !== null) break;
       const step = scenario.steps[stepIndex];
       if (step === undefined) continue;
-      const base: StepBase = { index: step.index, intent: step.intent, action: step.action };
+      const base: StepBase = {
+        index: step.index,
+        intent: step.intent,
+        action: step.action,
+        ...(step.escalationRefused === undefined ? {} : { escalationRefused: step.escalationRefused }),
+      };
       const scopedScrollProof = scopedScrollProofStep(step);
       if (scopedScrollProof) lastScrollProofStep = step;
 

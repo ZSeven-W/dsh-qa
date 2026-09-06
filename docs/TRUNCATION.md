@@ -281,6 +281,29 @@ takes the ONE bounded escalation at RECORD time instead: a browser
 still lacks the action target in the viewport gets one more SETTLED read at
 `QA_ESCALATED_NODE_BUDGET`.
 
+**Scoped-baseline proof read (QA-BL-067).** When the acted ref came from a
+SCOPED baseline (the observation the ref belongs to carries `scope`), the
+action's PROOF settle itself is taken INSIDE that scope:
+`observeSettled({ withinRef: <baseline scope.rootRef>, anchorLastAction: true })`
+with the same settle options — the settle loop re-keys the within ref per poll
+to the driver's fresh `scope.rootRef`. The acceptance is decided by the
+driver's identity anchor, never by matching role/name/tag: the scoped window
+settled AND `anchor.connected && anchor.contained === true && anchor.ref !==
+null` AND the anchored node has `inViewport: true`. On acceptance the result
+carries `proofScope: { role, name }` plus `anchor` (NO escalation happened, so
+there is deliberately no `proofEscalated`), the recorder binds the scoped
+observation as the action's proof through the ordinary settle binding, and
+export carries the scope through the unchanged `withProofScope` path
+(QA-BL-054/062: `scope.path` recorded from record-time ancestry, PROVISIONAL
+at replay on pages that can never complete). VERIFIED against the real driver
+(contract v9): a dispatched browser action consumes the ENTIRE latest
+observation — every ref it minted, including the scope `rootRef` — so the
+baseline root no longer resolves immediately after the action
+(`OBSERVATION_REQUIRED`). The scoped proof read is therefore ATTEMPTED and,
+when the driver refuses the root, the refusal is DISCLOSED and the proof
+falls back to today's whole-page read; a driver that retains the scope root
+gets the scoped proof automatically.
+
 **Scoped escalation RE-ENABLED via the identity anchor (B3, contract v9).**
 The QA-BL-050 container-heuristic is still RETIRED: the audit (F4) showed the
 nearest-container heuristic can pick a NON-ancestor (the driver exposed no
@@ -328,14 +351,29 @@ re-persists the session policy, and never replaces the session baseline — the
 next action still compares against the action's own settled observation.
 An accepted escalation is visible on the `qa_act` result as
 `proofEscalated: true` plus the escalated window's report under
-`escalatedSettle` (the action's own window stays under `settle`). QA-BL-058:
-when the escalated read itself THROWS (a driver refusal such as
-ANCHOR_UNAVAILABLE / PAGE_CHANGED / REF_EXPIRED — previously swallowed into a
-silent "no escalation") — or a scoped read's anchor reports connected:false,
-contained:false, or a null ref — the result DISCLOSES it as
-`escalationRefused: { code?, reason }`; the proof stays the
-settled observation either way (fail closed). The recorder re-binds the proof
-by the EXACT recorded action id carried on the receipt: a null or
+`escalatedSettle` (the action's own window stays under `settle`).
+
+**Every non-acceptance exit is disclosed (QA-BL-058, completed by
+QA-BL-067).** `escalationRefused: { reason, code? }` carries one of a FIXED
+vocabulary words — `target-not-in-baseline` (the acted ref is absent from the
+baseline), `container-not-in-view` (the scope root / container can no longer
+be re-keyed into any fresh view — including the verified post-action
+`OBSERVATION_REQUIRED` refusal of the baseline rootRef),
+`escalated-window-unstable` (the escalated window never settled, or the
+escalated view does not stably extend the settled one), `target-not-returned`
+/ `target-not-in-viewport` (the escalated view lacks the target / returned it
+off-viewport),
+`anchor-not-connected`, `anchor-not-contained`, `anchor-unavailable` (the
+identity anchor's truth) — plus the driver's machine `code` when the driver
+THREW. `already-in-viewport` is deliberately NOT a refusal: no escalation is
+needed, and the result then simply has no escalation fields. When both the
+scoped proof read and the escalation were refused, the escalation's refusal
+is the one disclosed (the more terminal truth); an accepted escalation
+supersedes the earlier refusal. The refusal rides on the `qa_act` result and,
+through the recording adapter, on the exported scenario step (additive
+`escalationRefused`), so report.md prints it on the step line. The proof
+stays the settled observation either way (fail closed). The recorder re-binds
+the proof by the EXACT recorded action id carried on the receipt: a null or
 non-matching id (e.g. a concurrent act settled in between) is refused and
 recorded as a recording issue, never silently re-bound to the wrong action.
 

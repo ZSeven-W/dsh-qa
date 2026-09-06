@@ -111,6 +111,33 @@ export interface QaComputerWindowIdentity {
   identity: string;
 }
 
+// ---------------------------------------------------------------------------
+// QA-BL-067 scroll-proof refusal vocabulary (completes QA-BL-058).
+//
+// Every non-acceptance exit of the record-time scoped/whole-page scroll-proof
+// reads is DISCLOSED through `escalationRefused` with ONE of these fixed words
+// (plus the driver's machine code when the driver threw). `already-in-viewport`
+// is deliberately NOT a refusal: no escalation is needed, and the result then
+// simply carries no escalation fields.
+// ---------------------------------------------------------------------------
+
+export type QaScrollProofRefusalReason =
+  | 'target-not-in-baseline'
+  | 'container-not-in-view'
+  | 'escalated-window-unstable'
+  | 'target-not-returned'
+  | 'target-not-in-viewport'
+  | 'anchor-not-connected'
+  | 'anchor-not-contained'
+  | 'anchor-unavailable'
+
+export interface QaScrollProofRefusal {
+  /** The fixed refusal vocabulary word (QA-BL-067). */
+  reason: QaScrollProofRefusalReason;
+  /** The driver's machine code when the driver THREW the refusal. */
+  code?: string;
+}
+
 /** Computer-only helper status subset the QA layer asserts on. */
 export interface QaComputerHelperStatus {
   platform: 'macos' | 'unsupported';
@@ -529,6 +556,31 @@ export interface QaDriverAdapter {
    * change driver behavior.
    */
   noteSettlePolicy?(ownerId: string, policy: QaSettlePolicy): void;
+  /**
+   * Optional PASSIVE notification (QA-BL-067), implemented only by the Explore
+   * recording adapter. The session core calls it exactly once per act whose
+   * FINAL proof state carries an `escalationRefused` disclosure (the scoped
+   * proof read refused for an action taken from a scoped baseline, or the ONE
+   * scroll-proof escalation refused), passing the EXACT recorded action id so
+   * the recorder can attach the refusal to THAT action: export then carries it
+   * on the step (additive `escalationRefused`) and report.md prints it on the
+   * step line. A null or non-matching action id is refused by the recorder and
+   * recorded as a recording issue. It must never throw and can never change
+   * driver behavior.
+   */
+  noteScrollProofRefusal?(ownerId: string, actionId: string | null, refusal: QaScrollProofRefusal): void;
+  /**
+   * Optional PASSIVE notification (QA-BL-067), implemented only by the Explore
+   * recording adapter. The session core calls it exactly once per act when
+   * the SCOPED proof attempt was REFUSED by the driver (the baseline root no
+   * longer resolves — a HANDLED, disclosed refusal, never a recording
+   * failure) and the proof is falling back to the whole-page read: the
+   * recorder re-arms its settle-window state so the FALLBACK settle binds
+   * exactly this action's proof, and clears the handled refusal from the
+   * action's own issue marker. It must never throw and can never change
+   * driver behavior.
+   */
+  noteScopedProofFallback?(ownerId: string, actionId: string | null): void;
   /**
    * Optional PASSIVE notification, implemented only by the Explore recording
    * adapter. The session core calls it exactly once when it accepted the ONE

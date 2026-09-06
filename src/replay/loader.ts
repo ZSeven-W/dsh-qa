@@ -97,7 +97,9 @@ const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as con
 const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes', 'settle'] as const;
 const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'intervalMs', 'adaptiveBudgetMs'] as const;
 const TARGET_FIELDS = ['launch', 'loginState'] as const;
-const STEP_FIELDS = ['index', 'intent', 'action', 'assert'] as const;
+// QA-BL-067: the recorded record-time proof refusal rides on the step
+// (additive; schemaVersion stays 1) so report.md step lines can surface it.
+const STEP_FIELDS = ['index', 'intent', 'action', 'assert', 'escalationRefused'] as const;
 const ASSERTION_FIELDS = ['kind', 'expected', 'description', 'scope'] as const;
 const ASSERTION_SCOPE_FIELDS = ['role', 'name', 'tag', 'path'] as const;
 const ASSERTION_SCOPE_PATH_ITEM_FIELDS = ['role', 'name'] as const;
@@ -422,7 +424,19 @@ function validateStep(value: unknown, position: string): QaStep {
   const intent = expectNonEmptyString(obj.intent, position + '.intent');
   const action = validateAction(obj.action, position + '.action');
   const assert = validateAssertion(obj.assert, position + '.assert');
-  return { index: indexValue, intent, action, assert };
+  // QA-BL-067: the recorded record-time proof refusal is additive — accepted
+  // structurally (reason string, optional driver code) and returned verbatim
+  // so report.md step lines can surface it.
+  let escalationRefused: QaStep['escalationRefused'];
+  if (obj.escalationRefused !== undefined) {
+    const refusal = expectObject(obj.escalationRefused, position + '.escalationRefused');
+    assertKnownFields(refusal, ['reason', 'code'], position + '.escalationRefused');
+    escalationRefused = {
+      reason: expectNonEmptyString(refusal.reason, position + '.escalationRefused.reason'),
+      ...(refusal.code === undefined ? {} : { code: expectString(refusal.code, position + '.escalationRefused.code') }),
+    };
+  }
+  return { index: indexValue, intent, action, assert, ...(escalationRefused === undefined ? {} : { escalationRefused }) };
 }
 
 function validateSteps(value: unknown, position: string): QaStep[] {

@@ -6,6 +6,7 @@ import type {
   QaDriverAdapter,
   QaEvidence,
   QaObservation,
+  QaScrollProofRefusal,
   QaSessionInfo,
   QaStartOptions,
   QaStopResult,
@@ -188,6 +189,16 @@ export interface QaRecordedAction {
    * the exporter: an unstable view proves nothing.
    */
   afterObservationStable: boolean | null;
+  /**
+   * ADDITIVE (QA-BL-067): the FINAL record-time proof refusal the session core
+   * disclosed for this action (the scoped proof read refused for an action
+   * taken from a scoped baseline, or the ONE scroll-proof escalation refused),
+   * attached through noteScrollProofRefusal with the EXACT recorded action id.
+   * Null means no refusal was disclosed (or the note never arrived). Export
+   * carries it on the step (additive escalationRefused) so report.md step
+   * lines can surface it.
+   */
+  scrollProofRefusal: QaScrollProofRefusal | null;
   payloadRedacted: boolean;
   recordingIssue: string | null;
 }

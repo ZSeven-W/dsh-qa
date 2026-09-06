@@ -252,6 +252,20 @@ export interface QaStep {
   action: QaScenarioAction;
   /** Assertion evaluated against the FRESH observation after this step's act. */
   assert: QaAssertion;
+  /**
+   * ADDITIVE (QA-BL-067, completes QA-BL-058): the FINAL record-time proof
+   * refusal Explore disclosed for this step's action — the scoped proof read
+   * refused (an action taken from a scoped baseline whose rootRef no longer
+   * resolved, or whose identity anchor refused), or the ONE scroll-proof
+   * escalation refused. `reason` is from the fixed vocabulary
+   * (target-not-in-baseline, container-not-in-view, escalated-window-unstable,
+   * target-not-returned, target-not-in-viewport, anchor-not-connected,
+   * anchor-not-contained, anchor-unavailable) and `code` carries the driver's
+   * machine code when the driver threw. Present exactly when Explore recorded
+   * one; replay copies it onto the step result and report.md prints it on the
+   * step line.
+   */
+  escalationRefused?: { code?: string; reason: string };
 }
 
 export interface QaScenario {
@@ -506,6 +520,13 @@ export interface QaStepResult {
    * names the anchor truth — never a predicate reselect.
    */
   scopeRefusal?: { code?: string; reason: string };
+  /**
+   * ADDITIVE (QA-BL-067): the FINAL record-time proof refusal the exported
+   * scenario step carries (see QaStep.escalationRefused), copied verbatim onto
+   * the step result so report.md's step lines surface it. Present exactly when
+   * the scenario step recorded one; never synthesized by replay.
+   */
+  escalationRefused?: { code?: string; reason: string };
   /**
    * Stable machine code when the assertion was refused for a structural reason
    * (TARGET_NOT_UNIQUE, VALUE_WITHHELD / VALUE_SECURE / VALUE_TRUNCATED, ...)

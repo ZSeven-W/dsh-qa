@@ -145,6 +145,11 @@ test('a scroll whose truncated settled view lacks the target is excluded with th
     'the click/fill wording is wrong for a scroll and must never be used',
   )
   assert.equal(escalationWindows, 1, 'exactly ONE bounded escalation, never a loop')
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'target-not-returned' },
+    'QA-BL-067: the refused escalation is DISCLOSED with the fixed vocabulary, never a silent exit',
+  )
   assert.equal(acted.observation.truncated, true, 'the recorded proof observation keeps its honest truncated flag')
   assert.equal(acted.observation.nodes.some((item) => item.name === 'Deep Target'), false)
 })
@@ -204,6 +209,11 @@ test('an escalated view that does not extend the settled view is refused (fail c
   })
 
   assert.equal(escalationWindows, 1, 'the escalation still ran exactly once')
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'escalated-window-unstable' },
+    'QA-BL-067: a view that changed between the two reads is disclosed (the escalated window is not the stable page state), never a silent exit',
+  )
   assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
   assert.equal(acted.observation.nodes.some((item) => item.name === 'Deep Target'), false)
 
@@ -223,6 +233,11 @@ test('an escalated window that never settles is refused (fail closed)', async ()
   })
 
   assert.equal(escalationWindows, 1, 'the escalation still ran exactly once')
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'escalated-window-unstable' },
+    'QA-BL-067: a churning escalated window is DISCLOSED, never a silent exit',
+  )
   assert.equal(acted.observation.truncated, true, 'the proof stays the settled observation')
   assert.equal(acted.observation.nodes.some((item) => item.name === 'Deep Target'), false)
 
@@ -413,6 +428,11 @@ test('an escalated view that extends the settled view but still lacks the target
   })
 
   assert.equal(escalationWindows, 1, 'the escalation still ran exactly once')
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'target-not-in-viewport' },
+    'QA-BL-067: a returned-but-off-viewport target is DISCLOSED with the fixed vocabulary, never a silent exit',
+  )
   assert.equal(
     acted.observation.nodes.some((item) => item.name === 'Deep Target'),
     false,
@@ -444,6 +464,48 @@ test('an accepted escalation is visible on the act result', async () => {
   assert.ok(acted.settle, 'the action\'s own settle report stays the FIRST window')
   assert.equal(acted.settle.stable, true)
   assert.equal(exported.ok, true, JSON.stringify(exported))
+})
+
+test('an action whose ref is absent from the baseline is refused as target-not-in-baseline (disclosed)', async () => {
+  const before = view([filler(), targetOffViewport()], true)
+  const after = view([filler()], true)
+  let escalationWindows = 0
+  const adapter = {
+    kind: 'browser',
+    async start(_owner, startOptions) {
+      return { page: { url: startOptions?.url ?? LAUNCH, title: 'scroll fixture' }, headless: true }
+    },
+    async observe(_owner, observeOptions) {
+      if (observeOptions?.maxNodes === QA_ESCALATED_NODE_BUDGET) escalationWindows += 1
+      return observeOptions?.maxNodes === QA_ESCALATED_NODE_BUDGET ? after : before
+    },
+    async act(_owner, action) {
+      if (action.kind === 'scroll') return { status: 'confirmed', dispatched: true }
+      throw new Error('unexpected action ' + action.kind)
+    },
+    async evidence() {
+      return { console: [], network: [], bounded: true, dropped: { console: 0, network: 0 } }
+    },
+    async stop() {
+      return { stopped: true, reason: 'requested' }
+    },
+  }
+  const recorder = new QaTrajectoryRecorder()
+  const session = new QaSession(new RecordingQaDriverAdapter(adapter, recorder), 'baseline-ghost', { settle: SETTLE })
+  await session.start({ url: LAUNCH })
+  try {
+    await session.observeSettled()
+    // The acted ref belongs to NO node of the baseline observation.
+    const acted = await session.act({ kind: 'scroll', ref: 'n-ghost' })
+    assert.equal(escalationWindows, 0, 'no escalation read ever happens when the target is not in the baseline')
+    assert.deepEqual(
+      acted.escalationRefused,
+      { reason: 'target-not-in-baseline' },
+      'QA-BL-067: the silent exit is DISCLOSED with the fixed vocabulary',
+    )
+  } finally {
+    await session.stop().catch(() => {})
+  }
 })
 
 test('bindEscalatedScrollProof re-binds exactly the recorded action id and refuses a non-matching one', () => {

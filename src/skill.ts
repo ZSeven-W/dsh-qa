@@ -139,7 +139,22 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   rooted at the target's nearest container-role ancestor (walked on the target's \`parentRef\`
   chain, contract v9): the escalated view is accepted only when the driver's identity anchor
   reports the ORIGINAL acted element connected, contained in that container, and in the
-  viewport — identity comes from the anchor, never from matching role/name/tag.
+  viewport — identity comes from the anchor, never from matching role/name/tag. A scroll (or
+  any act) whose ref came from a SCOPED baseline takes its PROOF settle inside that scope
+  instead (withinRef: the baseline \`scope.rootRef\` plus \`anchorLastAction\`), accepted only on
+  the same identity-anchor rule — the result then carries \`proofScope: { role, name }\` plus
+  \`anchor\` (no escalation happened, so no \`proofEscalated\`), and export carries the scope
+  (provisional at replay on long pages). A dispatched action consumes the ENTIRE baseline
+  observation (contract v9), so the baseline rootRef usually no longer resolves immediately
+  after the action (\`OBSERVATION_REQUIRED\`): the scoped proof read is attempted and, when the
+  driver refuses the root, the refusal is DISCLOSED and the proof falls back to the whole-page
+  read. Every non-acceptance exit is disclosed as \`escalationRefused: { reason, code? }\` with a
+  fixed vocabulary — \`target-not-in-baseline\`, \`container-not-in-view\`,
+  \`escalated-window-unstable\`, \`target-not-returned\`, \`target-not-in-viewport\`,
+  \`anchor-not-connected\`, \`anchor-not-contained\`, \`anchor-unavailable\` — plus the driver's
+  code when it threw; \`already-in-viewport\` is NOT a refusal (the result then simply has no
+  escalation fields), and the refusal rides on the exported step so report.md prints it on the
+  step line.
 - \`qa_assert\` takes the SAME \`within_ref\`: the assertion is decided INSIDE that container
   (the deciding read is a fresh settled scoped observation), so \`node-absent\` means "absent
   FROM THE CONTAINER" — \`completeness.scope\` names it (\`{ role, name }\`) and the PASS

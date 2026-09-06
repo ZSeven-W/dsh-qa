@@ -12,6 +12,7 @@ import type {
   QaEvidenceOptions,
   QaObservation,
   QaObserveOptions,
+  QaScrollProofRefusal,
   QaSessionInfo,
   QaSettleReport,
   QaStartOptions,
@@ -215,6 +216,7 @@ export class QaTrajectoryRecorder {
         receipt: null,
         afterObservationId: null,
         afterObservationStable: null,
+        scrollProofRefusal: null,
         payloadRedacted: safe.changed,
         recordingIssue: null,
       };
@@ -241,6 +243,7 @@ export class QaTrajectoryRecorder {
         receipt: null,
         afterObservationId: null,
         afterObservationStable: null,
+        scrollProofRefusal: null,
         payloadRedacted: true,
         recordingIssue: issue,
       };
@@ -425,6 +428,74 @@ export class QaTrajectoryRecorder {
     } catch (error) {
       refuse('scroll-proof escalation recording failed: ' + safeReason(error));
     }
+  }
+
+  /**
+   * Attach the FINAL record-time proof refusal (QA-BL-067) to EXACTLY the
+   * named recorded action. The session core calls this exactly once per act
+   * whose final proof state carries an escalationRefused disclosure, passing
+   * the exact action id this recorder stamped onto the receipt. Export then
+   * carries the refusal on the step (additive `escalationRefused`) and
+   * report.md prints it on the step line.
+   *
+   * The attachment is fail-closed: a null id, an unknown id, an action without
+   * a recorded receipt, or an action that is NOT the most recently settled one
+   * is refused and recorded as a recording issue instead of silently tagging
+   * the wrong action.
+   */
+  recordScrollProofRefusal(ownerId: string, actionId: string | null, refusal: QaScrollProofRefusal): void {
+    const trajectory = this.#trajectories.get(ownerId);
+    if (trajectory === undefined) return;
+    const refuse = (issue: string): void => {
+      trajectory.recordingIssues.push(issue);
+      const recorded = actionId === null ? undefined : trajectory.actionById.get(actionId);
+      if (recorded !== undefined) recorded.recordingIssue = issue;
+      this.#recordingError(trajectory, 'settle', issue, actionId);
+    };
+    if (actionId === null) {
+      refuse('scroll-proof refusal could not be recorded: the session core did not pass the recorded action id');
+      return;
+    }
+    const action = trajectory.actionById.get(actionId);
+    if (action === undefined) {
+      refuse('scroll-proof refusal could not be recorded: unknown action id "' + actionId + '"');
+      return;
+    }
+    if (action.receipt === null) {
+      refuse('scroll-proof refusal could not be recorded: action "' + actionId + '" has no recorded receipt');
+      return;
+    }
+    if (trajectory.lastSettledActionId !== actionId) {
+      refuse('scroll-proof refusal could not be recorded: action "' + actionId + '" is not the most recently settled action');
+      return;
+    }
+    try {
+      action.scrollProofRefusal = cloneRedacted(refusal).value;
+    } catch (error) {
+      refuse('scroll-proof refusal recording failed: ' + safeReason(error));
+    }
+  }
+
+  /**
+   * QA-BL-067: the scoped proof attempt for the named action was REFUSED by
+   * the driver — a HANDLED refusal (disclosed as escalationRefused, never a
+   * recording failure) — and the session core fell back to the whole-page
+   * proof read. The refused attempt's failed observation therefore cleared
+   * the settle-window state: re-arm it so the FALLBACK settle binds exactly
+   * this action's proof (pendingActionId -> first observation -> settle), and
+   * clear the handled refusal from the action's own issue marker so the
+   * exporter never excludes the action over it.
+   */
+  rearmSettleWindowAfterScopedProofFallback(ownerId: string, actionId: string | null): void {
+    const trajectory = this.#trajectories.get(ownerId);
+    if (trajectory === undefined || actionId === null) return;
+    const action = trajectory.actionById.get(actionId);
+    if (action === undefined) return;
+    if (action.recordingIssue !== null && action.recordingIssue.startsWith('fresh observation failed:')) {
+      action.recordingIssue = null;
+    }
+    trajectory.pendingActionId = actionId;
+    trajectory.settlingActionId = null;
   }
 
   /** Passive: persist the session's resolved settle policy for meta.settle export. */
@@ -828,6 +899,25 @@ export class RecordingQaDriverAdapter implements QaDriverAdapter {
    */
   noteEscalatedScrollProof(ownerId: string, actionId: string | null): void {
     this.#safe(() => this.#recorder.bindEscalatedScrollProof(ownerId, actionId));
+  }
+
+  /**
+   * Passive (QA-BL-067): attaches the FINAL record-time proof refusal to
+   * exactly the named recorded action, so export carries it on the step and
+   * report.md prints it on the step line. Recording can never alter session
+   * behavior.
+   */
+  noteScrollProofRefusal(ownerId: string, actionId: string | null, refusal: QaScrollProofRefusal): void {
+    this.#safe(() => this.#recorder.recordScrollProofRefusal(ownerId, actionId, refusal));
+  }
+
+  /**
+   * Passive (QA-BL-067): re-arms the settle-window state after a REFUSED
+   * scoped proof attempt so the fallback whole-page settle binds exactly this
+   * action's proof. Recording can never alter session behavior.
+   */
+  noteScopedProofFallback(ownerId: string, actionId: string | null): void {
+    this.#safe(() => this.#recorder.rearmSettleWindowAfterScopedProofFallback(ownerId, actionId));
   }
 
   /** Passive: persists the session's resolved settle policy for meta.settle export. */
