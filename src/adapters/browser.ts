@@ -58,9 +58,11 @@ export class BrowserAdapter implements QaDriverAdapter {
       ...(options?.maxNodes === undefined ? {} : { maxNodes: options.maxNodes }),
       // v8 scoped observation: the driver resolves the ref exactly as actions
       // do and REFUSES (REF_INVALID / REF_UNKNOWN / REF_EXPIRED / PAGE_CHANGED
-      // / TARGET_CHANGED / WITHIN_NOT_ELEMENT / OBSERVATION_REQUIRED) instead
-      // of falling back to a whole-page view. The refusal propagates verbatim
-      // — this adapter never catches, retries, or reroutes it.
+      // / TARGET_CHANGED / WITHIN_NOT_ELEMENT / OBSERVATION_REQUIRED /
+      // SCOPE_UNAVAILABLE — contract v9, dsh-browser d069f4f: a retained scope
+      // root was released by navigation or an intervening observe) instead of
+      // falling back to a whole-page view. The refusal propagates verbatim —
+      // this adapter never catches, retries, or reroutes it.
       ...(options?.withinRef === undefined ? {} : { within: options.withinRef }),
       // v9 Phase C: the bounded coverage probe runs ONLY on the terminal
       // absence-proof path (never on settle polls); the evidence travels

@@ -144,10 +144,15 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   instead (withinRef: the baseline \`scope.rootRef\` plus \`anchorLastAction\`), accepted only on
   the same identity-anchor rule — the result then carries \`proofScope: { role, name }\` plus
   \`anchor\` (no escalation happened, so no \`proofEscalated\`), and export carries the scope
-  (provisional at replay on long pages). A dispatched action consumes the ENTIRE baseline
-  observation (contract v9), so the baseline rootRef usually no longer resolves immediately
-  after the action (\`OBSERVATION_REQUIRED\`): the scoped proof read is attempted and, when the
-  driver refuses the root, the refusal is DISCLOSED and the proof falls back to the whole-page
+  (provisional at replay on long pages). On driver >= d069f4f the dispatched action RETAINS
+  the consumed scope root (contract v9), so the scoped proof read RESOLVES through it: the
+  FIRST poll is keyed by the EXPLICIT baseline \`scope.rootRef\` (never \`'last-scope'\`, so a
+  stale baseline is refused instead of silently rebinding to whatever root was last acted),
+  then the loop re-keys each later poll to the fresh \`rootRef\` that poll minted — the scroll
+  is PROVEN inside that scope. When the driver refuses the root (a pre-retention driver, the
+  acted ref IS the scope root itself — the single-owner handle is never retained, while the
+  anchor still works — or a released retention after navigation: \`OBSERVATION_REQUIRED\` /
+  \`SCOPE_UNAVAILABLE\`), the refusal is DISCLOSED and the proof falls back to the whole-page
   read. Every non-acceptance exit is disclosed as \`escalationRefused: { reason, code? }\` with a
   fixed vocabulary — \`target-not-in-baseline\`, \`container-not-in-view\`,
   \`escalated-window-unstable\`, \`target-not-returned\`, \`target-not-in-viewport\`,

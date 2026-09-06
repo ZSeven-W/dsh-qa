@@ -255,9 +255,10 @@ export interface QaStep {
   /**
    * ADDITIVE (QA-BL-067, completes QA-BL-058): the FINAL record-time proof
    * refusal Explore disclosed for this step's action — the scoped proof read
-   * refused (an action taken from a scoped baseline whose rootRef no longer
-   * resolved, or whose identity anchor refused), or the ONE scroll-proof
-   * escalation refused. `reason` is from the fixed vocabulary
+   * refused (an action taken from a scoped baseline whose rootRef the driver
+   * refused: OBSERVATION_REQUIRED when no scope root was retained,
+   * SCOPE_UNAVAILABLE when a retained root was released, or the identity
+   * anchor refused), or the ONE scroll-proof escalation refused. `reason` is from the fixed vocabulary
    * (target-not-in-baseline, container-not-in-view, escalated-window-unstable,
    * target-not-returned, target-not-in-viewport, anchor-not-connected,
    * anchor-not-contained, anchor-unavailable) and `code` carries the driver's
