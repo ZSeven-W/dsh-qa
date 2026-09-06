@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Assert scoped fixture</title>
+  <!--
+    Static page pinning the scoped qa_assert contract (QA-BL-066): three
+    sibling containers, all inside the whole-page window (no probes, no
+    iframe, so the whole-page view is COMPLETE and the baseline for
+    scope-durability export is clean):
+
+      clean container   role=region "Clean container"
+                        - Trigger check button (click proves a step)
+                        - two filler buttons; NO deep target, NO shadow root,
+                          so a scoped node-absent {link "Deep scoped target"}
+                          PASSES once the coverage probe verifies the subtree
+      target container  role=region "Target container"
+                        - holds the a[aria-label="Deep scoped target"] link,
+                          so the SAME scoped assertion fails with observed
+      shadow container  role=region "Shadow container"
+                        - holds an imperative CLOSED shadow root (see the
+                          sibling driver's observe-phasec fixture): the
+                          coverage probe finds it and the scoped absence stays
+                          INCONCLUSIVE_TRUNCATED naming closed-shadow-root
+
+    The whole page ALSO contains the closed shadow root, so a whole-page
+    node-absent for a genuinely missing link stays INCONCLUSIVE_TRUNCATED
+    while the scoped assertion on the clean container passes — the exact
+    scoped-absence headline of driver contract v8/v9.
+  -->
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    h1 { margin: 0; height: 40px; line-height: 40px; font-size: 24px; }
+    .box { display: block; width: 240px; height: 24px; margin: 0; padding: 0; box-sizing: border-box; }
+    .link { display: block; width: 240px; height: 24px; margin: 0; padding: 0; box-sizing: border-box; }
+    .status { display: block; height: 24px; line-height: 24px; }
+  </style>
+</head>
+<body>
+  <h1>Assert scoped fixture</h1>
+  <div id="clean" role="region" aria-label="Clean container">
+    <button class="box">Trigger check</button>
+    <button class="box">clean-1</button>
+    <button class="box">clean-2</button>
+  </div>
+  <div id="status" role="status" class="status">IDLE</div>
+  <div id="holder" role="region" aria-label="Target container">
+    <button class="box">holder-1</button>
+    <a class="link" aria-label="Deep scoped target" href="https://example.com/deep">jump</a>
+    <button class="box">holder-2</button>
+  </div>
+  <div id="shadowed" role="region" aria-label="Shadow container">
+    <button class="box">shadow-1</button>
+    <div id="closed-host"></div>
+  </div>
+  <script>
+    const closedHost = document.getElementById('closed-host')
+    const closedRoot = closedHost.attachShadow({ mode: 'closed' })
+    closedRoot.innerHTML = '<button style="display:block;width:240px;height:24px;margin:0;padding:0;box-sizing:border-box">closed hidden button</button>'
+    document.getElementById('clean').querySelector('button').addEventListener('click', () => {
+      document.getElementById('status').textContent = 'PASS'
+    })
+  </script>
+</body>
+</html>

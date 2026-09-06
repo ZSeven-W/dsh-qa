@@ -25,6 +25,7 @@ import {
 import type { QaSettlePolicy } from '../session/settle.ts';
 import type { QaTrajectoryRecorder } from './recorder.ts';
 import type {
+  QaAssertionExportExclusion,
   QaExportExclusion,
   QaRecordedAction,
   QaRecordExportOptions,
@@ -1023,8 +1024,9 @@ function scenarioSettleOverride(policy: QaSettlePolicy | null): QaSettleOverride
 function buildScenario(
   trajectory: QaTrajectorySnapshot,
   options: QaRecordExportOptions,
-): { scenario: QaScenario | null; excluded: QaExportExclusion[] } {
+): { scenario: QaScenario | null; excluded: QaExportExclusion[]; excludedAssertions: QaAssertionExportExclusion[] } {
   const excluded: QaExportExclusion[] = [];
+  const excludedAssertions: QaAssertionExportExclusion[] = [];
   const steps: QaStep[] = [];
 
   // Pass 1: resolve each action into a durable candidate (or an exclusion)
@@ -1266,7 +1268,44 @@ function buildScenario(
     });
   }
 
-  if (steps.length === 0) return { scenario: null, excluded };
+  if (steps.length === 0) return { scenario: null, excluded, excludedAssertions };
+
+  // QA-BL-066: recorded deterministic qa_assert decisions become the
+  // scenario's final assertions. A PASSED scoped assertion carries its scope
+  // through the SAME withProofScope path as step proofs (QA-BL-054 rules
+  // unchanged: a scope not proven durable against a complete whole-page
+  // baseline is EXCLUDED with SCOPE_NOT_DURABLE, never silently dropped or
+  // exported as a whole-page assertion). Failed decisions were already
+  // surfaced live and are not exported — the scenario re-proves the proven
+  // trajectory. When no passed assertion was recorded, the final assertion
+  // stays the last step's proof copy, exactly as before.
+  const recordedAssertions: QaAssertion[] = [];
+  for (const recorded of trajectory.assertions) {
+    if (!recorded.passed) continue;
+    const deciding = recorded.decidingObservationId === null
+      ? null
+      : trajectory.observations[recorded.decidingObservationId] ?? null;
+    if (deciding === null) {
+      excludedAssertions.push({
+        reason: 'OBSERVATION_RECORDING_FAILED',
+        detail: 'the assertion decision has no recorded deciding observation, so its scope cannot be proven durable.',
+      });
+      continue;
+    }
+    const baseline = recorded.baselineObservationId === null
+      ? null
+      : trajectory.observations[recorded.baselineObservationId] ?? null;
+    const scopePath = scopePathFor(trajectory, deciding, baseline);
+    const scoped = withProofScope(recorded.assertion, deciding, baseline, false, scopePath);
+    if (scoped.notDurable !== null) {
+      // QA-BL-054: a scoped proof whose container is not proven durable is
+      // EXCLUDED, never silently exported as an unscoped assertion.
+      excludedAssertions.push({ reason: QA_SCOPE_NOT_DURABLE, detail: scoped.notDurable });
+      continue;
+    }
+    recordedAssertions.push(scoped.assertion);
+  }
+
   const fallbackName = 'explore-' + trajectory.driver + '-' + trajectory.startedAt.slice(0, 10);
   // Explore visual findings are informational notes, never blocking assertions:
   // only the deterministic question text is surfaced, so the exported scenario
@@ -1289,12 +1328,15 @@ function buildScenario(
     },
     target: { launch: trajectory.launch },
     steps,
-    assertions: [steps[steps.length - 1]!.assert],
+    // The recorded (passed) qa_assert decisions replace the synthesized
+    // steps-copy when any were exported; otherwise the final assertion stays
+    // the last step's proof copy, exactly as before QA-BL-066.
+    assertions: recordedAssertions.length > 0 ? recordedAssertions : [steps[steps.length - 1]!.assert],
   };
   // Every free-text field above already came from the recorder's redacted
   // projection (or redactText for generated metadata); operational URLs came
   // through the recorder's stricter component-wise Replay URL projection.
-  return { scenario: validateScenario(rawScenario), excluded };
+  return { scenario: validateScenario(rawScenario), excluded, excludedAssertions };
 }
 
 function inside(root: string, candidate: string): boolean {
@@ -1343,6 +1385,7 @@ export async function exportRecordedScenario(
       code: 'NO_TRAJECTORY',
       error: 'No Explore trajectory exists for this owner; start and explore a session first.',
       excludedActions: [],
+      excludedAssertions: [],
     };
   }
   if (trajectory.driver !== 'browser') {
@@ -1351,6 +1394,7 @@ export async function exportRecordedScenario(
       code: 'DRIVER_NOT_REPLAYABLE',
       error: 'Replay v0.1 supports browser scenarios only; the computer trajectory was retained but not exported.',
       excludedActions: [],
+      excludedAssertions: [],
     };
   }
   const built = buildScenario(trajectory, options);
@@ -1360,6 +1404,7 @@ export async function exportRecordedScenario(
       code: 'NO_PROVEN_STEPS',
       error: 'No action had both a durable semantic target and an outcome proven by a fresh observation; no file was written.',
       excludedActions: built.excluded,
+      excludedAssertions: built.excludedAssertions,
     };
   }
   const output = await safeOutputPath(options);
@@ -1382,5 +1427,6 @@ export async function exportRecordedScenario(
       evidenceReferences: trajectory.evidenceReferences,
     },
     excludedActions: built.excluded,
+    excludedAssertions: built.excludedAssertions,
   };
 }

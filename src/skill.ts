@@ -140,6 +140,21 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   chain, contract v9): the escalated view is accepted only when the driver's identity anchor
   reports the ORIGINAL acted element connected, contained in that container, and in the
   viewport — identity comes from the anchor, never from matching role/name/tag.
+- \`qa_assert\` takes the SAME \`within_ref\`: the assertion is decided INSIDE that container
+  (the deciding read is a fresh settled scoped observation), so \`node-absent\` means "absent
+  FROM THE CONTAINER" — \`completeness.scope\` names it (\`{ role, name }\`) and the PASS
+  wording says "within the {role} named \"{name}\""; WITHOUT \`within_ref\` the decision stays
+  whole-page and carries no \`completeness.scope\`. The ref must come from the LATEST
+  observation: a container ref from the latest whole-page \`qa_observe\`, or the
+  \`scope.rootRef\` (any node ref works) echoed by the immediately preceding scoped
+  \`qa_observe\`. Every observe REPLACES the driver's current observation, so a ref from an
+  earlier observation — including a whole-page container ref captured before an intervening
+  scoped observe — is REFUSED as \`{ ok:false, code: "REF_UNKNOWN" | "REF_EXPIRED" | …,
+  error }\`, never silently re-decided against the whole page. All scoped rules apply
+  (subtree budgets, in-scope escalation and coverage probe, the \`coverage.verified\` gate);
+  the recorder exports a passed scoped assert with its scope (\`SCOPE_NOT_DURABLE\` exclusion
+  when the container is not unique in a complete recorded baseline); the computer driver
+  refuses \`within_ref\` and \`kind: "visual"\` does not take it.
 
 - The moment a problem appears, call \`qa_evidence\` before navigating away or changing state.
   Missing permissions, truncation, and driver rejection are boundaries, never green results.

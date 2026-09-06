@@ -19,8 +19,10 @@ import type {
   QaVisualCapture,
   QaVisualObserveOptions,
 } from '../session/adapter.ts';
+import type { QaAssertion } from '../contracts.ts';
 import type {
   QaRecordedAction,
+  QaRecordedAssertion,
   QaTrajectoryEvent,
   QaTrajectorySnapshot,
 } from './types.ts';
@@ -64,6 +66,20 @@ interface MutableTrajectory {
   lastSettledActionId: string | null;
   /** The session's RESOLVED settle policy (recorded at start; see noteSettlePolicy). */
   settlePolicy: QaSettlePolicy | null;
+  /**
+   * Recorded deterministic qa_assert decisions (QA-BL-066). Binding is
+   * IDENTICAL for scoped and unscoped assertions: the deciding observation is
+   * the last recorded one when the decision completes, and the baseline is
+   * the latest recorded WHOLE-PAGE observation (see lastWholePageObservationId).
+   */
+  assertions: QaRecordedAssertion[];
+  /**
+   * The latest recorded WHOLE-PAGE observation id: the QA-BL-054 durability
+   * gate for a scoped assertion needs whole-page uniqueness, which a scoped
+   * observation can never prove. Updated only by observations without a
+   * scope, so a scoped observe/assert never shadows it.
+   */
+  lastWholePageObservationId: string | null;
 }
 
 interface Sanitized<T> {
@@ -163,6 +179,8 @@ export class QaTrajectoryRecorder {
         settlingActionId: null,
         lastSettledActionId: null,
         settlePolicy: null,
+        assertions: [],
+        lastWholePageObservationId: null,
       };
       this.#trajectories.set(ownerId, trajectory);
       this.#push(trajectory, {
@@ -273,6 +291,12 @@ export class QaTrajectoryRecorder {
       }
       trajectory.observations.set(observationId, safeObservation);
       trajectory.lastObservationId = observationId;
+      // QA-BL-066: the scope-durability baseline for a recorded assertion is
+      // the latest WHOLE-PAGE observation — whole-page uniqueness is what the
+      // QA-BL-054 gate proves, so a scoped observation never shadows it.
+      if (observation.scope === undefined) {
+        trajectory.lastWholePageObservationId = observationId;
+      }
       trajectory.pendingActionId = null;
       if (afterActionId !== null) {
         const action = trajectory.actionById.get(afterActionId);
@@ -414,6 +438,45 @@ export class QaTrajectoryRecorder {
     }
   }
 
+  /**
+   * Record one deterministic qa_assert decision (QA-BL-066). The binding is
+   * IDENTICAL for scoped and unscoped assertions: the tool layer calls this
+   * AFTER the decision completed, when the last recorded observation IS the
+   * deciding observation (the settle polls, the one bounded escalation, and
+   * the terminal probed coverage read all record through the session core in
+   * the same flow), and the baseline is the latest recorded WHOLE-PAGE
+   * observation — the QA-BL-054 durability gate needs whole-page uniqueness,
+   * which a scoped observation can never prove. Recording is passive: no
+   * trajectory (or a failed record) never changes the tool result.
+   */
+  assertion(ownerId: string, assertion: QaAssertion, passed: boolean): void {
+    const trajectory = this.#trajectories.get(ownerId);
+    if (trajectory === undefined) return;
+    try {
+      const safeAssertion = cloneRedacted(assertion).value;
+      const recorded: QaRecordedAssertion = {
+        assertion: safeAssertion,
+        passed,
+        decidingObservationId: trajectory.lastObservationId,
+        baselineObservationId: trajectory.lastWholePageObservationId,
+      };
+      trajectory.assertions.push(recorded);
+      this.#push(trajectory, {
+        sequence: this.#sequence(trajectory),
+        at: new Date().toISOString(),
+        kind: 'assertion',
+        assertion: recorded.assertion,
+        passed: recorded.passed,
+        decidingObservationId: recorded.decidingObservationId,
+        baselineObservationId: recorded.baselineObservationId,
+      });
+    } catch (error) {
+      const issue = 'assertion recording failed: ' + safeReason(error);
+      trajectory.recordingIssues.push(issue);
+      this.#recordingError(trajectory, 'observation', issue, null);
+    }
+  }
+
   observationFailed(ownerId: string, error: unknown): void {
     const trajectory = this.#trajectories.get(ownerId);
     if (trajectory === undefined) return;
@@ -541,6 +604,7 @@ export class QaTrajectoryRecorder {
       events: trajectory.events,
       observations,
       actions: trajectory.actions,
+      assertions: trajectory.assertions,
       evidenceReferences: trajectory.evidenceReferences,
       visualFindings,
       recordingIssues: trajectory.recordingIssues,
@@ -688,6 +752,8 @@ export class QaTrajectoryRecorder {
       settlingActionId: null,
       lastSettledActionId: null,
       settlePolicy: null,
+      assertions: [],
+      lastWholePageObservationId: null,
     };
     this.#recordingError(trajectory, 'start', issue, null);
     return trajectory;

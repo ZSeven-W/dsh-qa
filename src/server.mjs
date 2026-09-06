@@ -392,6 +392,7 @@ server.tool(
     kind: z.enum(['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value', 'visual']),
     expected: z.unknown().optional(),
     question: z.string().optional(),
+    within_ref: z.string().optional(),
   },
   guard(async (args) => {
     const owner = ownerFrom(args);
@@ -401,11 +402,27 @@ server.tool(
       if (typeof args.question !== 'string' || args.question.trim() === '') {
         throw new Error('qa_assert visual requires a non-empty question');
       }
+      if (args.within_ref !== undefined) {
+        // A scoped visual capture is not supported: refuse instead of
+        // silently ignoring the ref and capturing the whole page.
+        throw new Error('qa_assert kind "visual" does not take within_ref; observe the container with qa_observe within_ref first, then ask the visual question');
+      }
       return textResult(await assertVisualMCP(owner, session, args.question));
     }
     // Fail-closed: validate the assertion shape before touching the session.
     const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert');
-    const settled = await session.observeSettled();
+    // QA-BL-066: when the agent pins a container, the DECIDING read is a
+    // fresh SETTLED SCOPED observation (the settle loop re-keys the within
+    // ref per poll to the driver's fresh scope.rootRef), so the scoped
+    // machinery in decideAssertion engages: completeness.scope names the
+    // container, the one bounded escalation and the terminal coverage probe
+    // stay INSIDE the scope, and node-absent passes only on a complete scoped
+    // view with coverage.verified:true. A driver refusal for the ref
+    // (REF_UNKNOWN / REF_EXPIRED / TARGET_CHANGED / WITHIN_NOT_ELEMENT / ...)
+    // throws out of observeSettled and surfaces as { ok:false, code, error }
+    // through the guard — never degraded into a whole-page decision. Without
+    // within_ref the deciding read is the whole-page one, exactly as before.
+    const settled = await session.observeSettled(args.within_ref === undefined ? undefined : { withinRef: args.within_ref });
     if (!settled.stable) {
       // Parity with the replay runner: an assertion can never be proven from a
       // view that never stopped changing. Fail closed with the SAME honest
@@ -426,6 +443,13 @@ server.tool(
     // presence): the decision escalates the node budget once and fails closed
     // with INCONCLUSIVE_TRUNCATED rather than reporting a false green.
     const decision = await decideAssertionWithRetry(assertion, settled.observation, sessionReobserve(session), session);
+    // QA-BL-066: bind the decision to the Explore trajectory exactly for
+    // scoped and unscoped assertions alike (the deciding observation is the
+    // last one the assertion's settle/decision reads recorded, and the
+    // baseline is the latest whole-page observation), so a PASSED scoped
+    // assertion exports its scope through the existing withProofScope path.
+    // Recording is passive: it can never change the result below.
+    recorder.assertion(owner, assertion, decision.passed);
     return textResult({
       ok: true,
       passed: decision.passed,

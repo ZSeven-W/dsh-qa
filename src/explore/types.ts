@@ -1,4 +1,4 @@
-import type { QaDriverKind, QaScenario } from '../contracts.ts';
+import type { QaAssertion, QaDriverKind, QaScenario } from '../contracts.ts';
 import type { QaSettlePolicy } from '../session/settle.ts';
 import type {
   QaAction,
@@ -120,6 +120,26 @@ export interface QaTrajectoryVisualFindingEvent {
   reasoning: string;
 }
 
+/**
+ * One deterministic qa_assert decision recorded during Explore (QA-BL-066).
+ * The binding is IDENTICAL for scoped and unscoped assertions: the deciding
+ * observation is the last observation the assertion's settle/decision reads
+ * recorded (the terminal probed read for a proven absence), and the baseline
+ * is the latest WHOLE-PAGE observation recorded before the assertion — the
+ * QA-BL-054 durability gate needs whole-page uniqueness, which a scoped
+ * observation can never prove.
+ */
+export interface QaTrajectoryAssertionEvent {
+  sequence: number;
+  at: string;
+  kind: 'assertion';
+  assertion: QaAssertion;
+  /** Whether the live decision passed (only passed assertions export). */
+  passed: boolean;
+  decidingObservationId: string | null;
+  baselineObservationId: string | null;
+}
+
 export type QaTrajectoryEvent =
   | QaTrajectoryStartEvent
   | QaTrajectoryObservationEvent
@@ -129,8 +149,31 @@ export type QaTrajectoryEvent =
   | QaTrajectoryEvidenceEvent
   | QaTrajectoryVisualCaptureEvent
   | QaTrajectoryVisualFindingEvent
+  | QaTrajectoryAssertionEvent
   | QaTrajectoryStopEvent
   | QaTrajectoryRecordingErrorEvent;
+
+/** A recorded qa_assert decision, as retained in the trajectory. */
+export interface QaRecordedAssertion {
+  assertion: QaAssertion;
+  /** Whether the live decision passed (only passed assertions export). */
+  passed: boolean;
+  /** The DECIDING observation; null when no observation was recorded. */
+  decidingObservationId: string | null;
+  /** The latest WHOLE-PAGE observation recorded before the assertion. */
+  baselineObservationId: string | null;
+}
+
+/**
+ * An assertion-level export exclusion (QA-BL-066): a PASSED recorded
+ * assertion whose scope cannot be proven durable is excluded with
+ * SCOPE_NOT_DURABLE — a scoped proof is never silently dropped or exported
+ * as an unscoped one (QA-BL-054 rules unchanged).
+ */
+export interface QaAssertionExportExclusion {
+  reason: 'SCOPE_NOT_DURABLE' | 'OBSERVATION_RECORDING_FAILED';
+  detail: string;
+}
 
 export interface QaRecordedAction {
   actionId: string;
@@ -158,6 +201,8 @@ export interface QaTrajectorySnapshot {
   events: readonly QaTrajectoryEvent[];
   observations: Readonly<Record<string, QaObservation>>;
   actions: readonly QaRecordedAction[];
+  /** Recorded deterministic qa_assert decisions (QA-BL-066). */
+  assertions: readonly QaRecordedAssertion[];
   evidenceReferences: readonly string[];
   visualFindings: readonly QaTrajectoryVisualFindingEvent[];
   recordingIssues: readonly string[];
@@ -213,6 +258,8 @@ export interface QaRecordExportSuccess {
     evidenceReferences: readonly string[];
   };
   excludedActions: readonly QaExportExclusion[];
+  /** Passed recorded assertions excluded with a reason (see QaAssertionExportExclusion). */
+  excludedAssertions: readonly QaAssertionExportExclusion[];
 }
 
 export interface QaRecordExportFailure {
@@ -220,6 +267,8 @@ export interface QaRecordExportFailure {
   code: 'NO_TRAJECTORY' | 'DRIVER_NOT_REPLAYABLE' | 'NO_PROVEN_STEPS';
   error: string;
   excludedActions: readonly QaExportExclusion[];
+  /** Passed recorded assertions excluded with a reason (see QaAssertionExportExclusion). */
+  excludedAssertions: readonly QaAssertionExportExclusion[];
 }
 
 export type QaRecordExportResult = QaRecordExportSuccess | QaRecordExportFailure;

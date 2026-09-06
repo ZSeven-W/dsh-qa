@@ -128,6 +128,17 @@ export class QaToolHost {
     this.#options = options
   }
 
+  /**
+   * The Explore trajectory recorder shared by every manager this host builds
+   * (the same instance the recording adapter wraps the drivers with), so a
+   * qa_assert decision recorded through it binds exactly the observations the
+   * session core produced. Read-only accessor: trajectory recording stays
+   * passive and can never alter session behavior.
+   */
+  get recorder(): QaTrajectoryRecorder {
+    return this.#recorder
+  }
+
   managerFor(driver: QaDriverKind): Promise<QaSessionManager> {
     let manager = this.#managers.get(driver)
     if (manager === undefined) {
@@ -378,6 +389,15 @@ interface AssertArgs {
   kind: 'node-present' | 'node-absent' | 'page-url' | 'node-in-viewport' | 'node-value' | 'visual'
   expected?: unknown
   question?: string
+  /**
+   * Browser-only (contract v8): decide the assertion INSIDE the composed
+   * subtree rooted at this element instead of the whole page. Must be a ref
+   * from the session's LATEST observation (a container ref from the latest
+   * whole-page qa_observe, or the scope.rootRef / any node ref echoed by the
+   * immediately preceding scoped qa_observe); stale refs are refused by the
+   * driver and surface as { ok: false, code, error }.
+   */
+  within_ref?: string
 }
 
 interface EvidenceArgs {
@@ -580,6 +600,7 @@ export function createQaTools(host: QaToolHost): QaTools {
       kind: enumOf('node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value', 'visual'),
       expected: {},
       question: strProp,
+      within_ref: strProp,
     }, ['kind']),
     output: outputFor(),
     timeoutMs: 60_000,
@@ -592,10 +613,27 @@ export function createQaTools(host: QaToolHost): QaTools {
         if (typeof args.question !== 'string' || args.question.trim() === '') {
           throw new Error('qa_assert visual requires a non-empty question')
         }
+        if (args.within_ref !== undefined) {
+          // A scoped visual capture is not supported: refuse instead of
+          // silently ignoring the ref and capturing the whole page.
+          throw new Error('qa_assert kind "visual" does not take within_ref; observe the container with qa_observe within_ref first, then ask the visual question')
+        }
         return host.assertVisual(owner, session, args.question)
       }
       const assertion = validateAssertion({ kind: args.kind, expected: args.expected }, 'qa_assert')
-      const settled = await session.observeSettled()
+      // QA-BL-066: when the agent pins a container, the DECIDING read is a
+      // fresh SETTLED SCOPED observation (the settle loop re-keys the within
+      // ref per poll to the driver's fresh scope.rootRef), so the whole
+      // scoped machinery in decideAssertion engages: completeness.scope names
+      // the container, the one bounded escalation and the terminal coverage
+      // probe stay INSIDE the scope, and node-absent passes only on a complete
+      // scoped view with coverage.verified:true. A driver refusal for the ref
+      // (REF_UNKNOWN / REF_EXPIRED / TARGET_CHANGED / WITHIN_NOT_ELEMENT / ...)
+      // throws out of observeSettled and surfaces as { ok:false, code, error }
+      // through the guard — it is NEVER degraded into a whole-page decision.
+      // Without within_ref the deciding read is the whole-page one, exactly as
+      // before this change.
+      const settled = await session.observeSettled(args.within_ref === undefined ? undefined : { withinRef: args.within_ref })
       if (!settled.stable) {
         // Parity with the replay runner: an assertion can never be proven from a
         // view that never stopped changing. Fail closed with the SAME honest
@@ -619,6 +657,14 @@ export function createQaTools(host: QaToolHost): QaTools {
       // driver has not verified the observation's boundaries: that outcome
       // fails closed with COVERAGE_UNVERIFIED.
       const decision = await decideAssertionWithRetry(assertion, settled.observation, sessionReobserve(session), session)
+      // QA-BL-066: bind the decision to the Explore trajectory exactly for
+      // scoped and unscoped assertions alike (the deciding observation is the
+      // last one the assertion's settle/decision reads recorded, and the
+      // baseline is the latest whole-page observation), so a PASSED scoped
+      // assertion exports its scope through the existing withProofScope path.
+      // Recording is passive: a recorder without this owner's trajectory (or a
+      // failed record) can never change the result below.
+      host.recorder.assertion(owner, assertion, decision.passed)
       return {
         ok: true,
         passed: decision.passed,
