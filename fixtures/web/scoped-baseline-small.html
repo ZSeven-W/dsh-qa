@@ -13,15 +13,19 @@
 <body>
   <main>
     <!--
-      QA-BL-067 small fixture: the whole page fits the default 60-node window
-      completely (28 emitted nodes), so after the scroll the WHOLE-PAGE fallback
-      proof is COMPLETE and proves the target in the viewport on its own — the
-      escalation never runs, and the act result discloses the scoped-proof
-      fallback (container-not-in-view + OBSERVATION_REQUIRED) while the proof is
-      the whole-page settled view. Emitted totals: h1 (1) + 20 outer links
-      (2..21) + region (22) + h2 (23) + 3 inner links (24..26) + target (27) +
-      status (28). The container subtree (region + h2 + 3 inner + target) is 6
-      nodes: a scoped observe reports truncated:false.
+      QA-BL-067 small fixture (driver >= d069f4f): the whole page fits the
+      default 60-node window completely (29 emitted nodes), so after a scroll
+      acted from a SCOPED baseline the scoped proof read — rooted at the
+      baseline scope.rootRef, resolved through the driver's post-action scope
+      retention — is ACCEPTED on the identity anchor and the act result carries
+      proofScope + anchor; the export carries the scope WITH the recorded
+      ancestor path (the wrapper region is the container's emitted ancestor),
+      and replay PROVES the container unique in the COMPLETE whole-page view
+      (scopeResolution proven, PASS).
+      Emitted totals: h1 (1) + 20 outer links (2..21) + wrapper region (22) +
+      region (23) + h2 (24) + 3 inner links (25..27) + target (28) + status
+      (29). The container subtree (region + h2 + 3 inner + target) is 6 nodes:
+      a scoped observe reports truncated:false.
     -->
     <h1>Scoped baseline small fixture</h1>
     <ul id="outer-fillers">
@@ -46,14 +50,16 @@
       <li><a href="#outer-19">Outer 19</a></li>
       <li><a href="#outer-20">Outer 20</a></li>
     </ul>
-    <section id="deep-zone" role="region" aria-label="Deep zone">
-      <h2>Deep zone</h2>
-      <ul id="inner-fillers">
-        <li><a href="#inner-01">Inner 01</a></li>
-        <li><a href="#inner-02">Inner 02</a></li>
-        <li><a href="#inner-03">Inner 03</a></li>
-      </ul>
-      <a id="deep-target" href="#deep-target">Deep Target</a>
+    <section id="deep-shelf" role="region" aria-label="Deep zone wrapper">
+      <section id="deep-zone" role="region" aria-label="Deep zone">
+        <h2>Deep zone</h2>
+        <ul id="inner-fillers">
+          <li><a href="#inner-01">Inner 01</a></li>
+          <li><a href="#inner-02">Inner 02</a></li>
+          <li><a href="#inner-03">Inner 03</a></li>
+        </ul>
+        <a id="deep-target" href="#deep-target">Deep Target</a>
+      </section>
     </section>
     <div id="result" role="status" aria-live="polite">IDLE</div>
   </main>

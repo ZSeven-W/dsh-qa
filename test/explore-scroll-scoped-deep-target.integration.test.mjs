@@ -10,6 +10,15 @@
 // identity anchor (anchorLastAction: the ORIGINAL acted element is connected,
 // contained in the within subtree, emitted with a fresh ref, and that
 // anchored node is in the viewport) — never on a role+name+tag re-match.
+// NOTE for the driver at d069f4f: the scoped PROOF read is now attempted
+// FIRST (rooted at the baseline scope.rootRef through the post-action
+// retention) — but THIS fixture's container subtree (61 nodes) exceeds the
+// default 60-node budget, so the scoped proof window truncates the target,
+// its verdict refuses anchor-unavailable, and the ONE escalated scoped read
+// (maxNodes 100) still decides — the observable result is unchanged
+// (proofEscalated). The retained-root proof without escalation is pinned for
+// subtrees that fit the default budget by
+// test/explore-scroll-scoped-baseline.integration.test.mjs.
 // Export yields a scoped node-in-viewport step under the EXPLICITLY
 // PROVISIONAL gate (the scoped baseline is the container's own subtree, so
 // uniqueness was never proven; QA-BL-062), and replay is INCONCLUSIVE twice
@@ -125,7 +134,11 @@ test('explore a container-scoped deep scroll target -> scoped node-in-viewport s
     //    takes the ONE SCOPED read rooted at the parentRef-derived container
     //    and is accepted on the identity anchor — so the deep target IS
     //    proven, qa_act shows proofEscalated, and the recorded proof is the
-    //    SCOPED escalated view.
+    //    SCOPED escalated view. (On the driver at d069f4f the scoped PROOF
+    //    read is attempted first through the retained scope root, but this
+    //    fixture's 61-node subtree exceeds the default 60-node budget, so its
+    //    verdict refuses anchor-unavailable and the escalation still decides
+    //    — the observable result is unchanged.)
     const scrolled = await call(tools.qaAct, { owner, action: 'scroll', ref: target.ref })
     assert.equal(scrolled.outcome, 'ok')
     assert.equal(scrolled.receipt.status, 'confirmed')

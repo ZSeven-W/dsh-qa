@@ -294,7 +294,14 @@ function scopedRootRefOf(observation: QaObservation): string | undefined {
 // every previously silent `return null` now discloses its reason).
 // ---------------------------------------------------------------------------
 
-/** Driver codes that mean "the scoped root can no longer be re-keyed". */
+/**
+ * Driver codes that mean "the scoped root can no longer be re-keyed".
+ * SCOPE_UNAVAILABLE (contract v9, dsh-browser d069f4f) is the retention-era
+ * sibling of OBSERVATION_REQUIRED: a scope root WAS retained by the last
+ * dispatched action, but its live binding was released (navigation, dispose,
+ * or an intervening observe consumed the retention) — still a container
+ * refusal, never a whole-page fallback.
+ */
 const QA_REFUSAL_CONTAINER_CODES = new Set([
   'REF_INVALID',
   'REF_UNKNOWN',
@@ -304,6 +311,7 @@ const QA_REFUSAL_CONTAINER_CODES = new Set([
   'TARGET_DETACHED',
   'WITHIN_NOT_ELEMENT',
   'OBSERVATION_REQUIRED',
+  'SCOPE_UNAVAILABLE',
 ]);
 
 /**
@@ -457,7 +465,11 @@ export class QaSession {
     // the driver's current observation, so the within ref from the previous
     // poll no longer resolves. Re-key it each poll to the DRIVER's fresh
     // scope.rootRef (contract v9, Phase B) — never by role+name+tag
-    // re-matching, which is not identity. A fresh view whose driver minted
+    // re-matching, which is not identity. A proof window opened immediately
+    // after a dispatched action (see act) takes its FIRST poll through the
+    // driver's post-action scope-root retention (contract v9, dsh-browser
+    // d069f4f): that poll consumes the retention, and the fresh rootRef it
+    // mints is what this loop re-keys from there. A fresh view whose driver minted
     // no rootRef fails closed instead of silently re-narrowing to some other
     // node. rootRef binds the root even when the visibility gate excluded it
     // from nodes, so a root that hides mid-window still chains.
@@ -637,17 +649,27 @@ export class QaSession {
     // QA-BL-067: when the acted ref came from a SCOPED baseline, the proof
     // settle is taken INSIDE that scope — rooted at the baseline's
     // scope.rootRef with the driver's identity anchor requested — so a deep
-    // target unreachable whole-page stays provable inside its container. The
-    // settle loop re-keys the within ref per poll to the driver's fresh
-    // scope.rootRef (see observeSettled). Verified against the real driver
-    // (contract v9, dsh-browser a17727a): a dispatched browser action
-    // consumes the ENTIRE latest observation — every ref it minted, including
-    // the scope rootRef — so the baseline root no longer resolves immediately
-    // after the action (OBSERVATION_REQUIRED / REF_UNKNOWN / ...). The
-    // scoped proof read is therefore ATTEMPTED and, when the driver refuses
-    // the root, the refusal is DISCLOSED (reason 'container-not-in-view' plus
-    // the driver's code) and the proof falls back to today's whole-page read.
-    // A driver that retains the scope root gets the scoped proof automatically.
+    // target unreachable whole-page stays provable inside its container.
+    // VERIFIED against the real driver (contract v9, dsh-browser d069f4f):
+    // a dispatched action that consumed a SCOPED observation and did NOT
+    // navigate retains that observation's scope root until the next
+    // successful observe. The FIRST poll is therefore keyed by the EXPLICIT
+    // baseline scope.rootRef — deliberately not the 'last-scope' alias, which
+    // would silently rebind a STALE baseline to whatever root was last acted
+    // and measure the anchor's containment against the WRONG container (a
+    // false scoped proof); the explicit rootRef is refused instead. That poll
+    // resolves through the retained handle and CONSUMES the retention,
+    // minting a FRESH scope.rootRef in its observation; the settle loop
+    // re-keys every later poll to that fresh rootRef (scopedRootRefOf, see
+    // observeSettled), riding the driver's transition from the retained root
+    // to a live observation. Refusals stay DISCLOSED (reason
+    // 'container-not-in-view' plus the driver's code) and the proof falls
+    // back to today's whole-page read: OBSERVATION_REQUIRED when nothing was
+    // retained (a pre-retention driver, a plain node ref from the consumed
+    // observation, or the acted ref IS the scope root itself — the driver
+    // deliberately creates no retention for that single-owner handle, while
+    // the anchor still works), SCOPE_UNAVAILABLE when a retained root was
+    // released (navigation, dispose, or an intervening observe).
     // RECORD-TIME ONLY: the same recording-adapter capability gate the
     // escalation uses. Replay (and every plain adapter) keeps today's
     // whole-page proof settle — the replay runner resolves scopes and verifies

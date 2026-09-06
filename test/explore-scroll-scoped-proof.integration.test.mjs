@@ -184,7 +184,11 @@ test('twin fixture: an unseen twin container with an identical path is INCONCLUS
     // 3. Scroll: the record-time escalation scopes to the first twin and is
     //    accepted on the identity anchor (the ORIGINAL acted element is
     //    connected, contained, in the viewport) — identity-safe at record
-    //    time, but it can never prove WHICH twin the recording meant.
+    //    time, but it can never prove WHICH twin the recording meant. (On the
+    //    driver at d069f4f the scoped PROOF read is attempted first through
+    //    the retained scope root, but the twin's subtree exceeds the default
+    //    60-node budget, so its verdict refuses anchor-unavailable and the
+    //    escalation still decides — the observable result is unchanged.)
     const scrolled = await call(tools.qaAct, { owner, action: 'scroll', ref: target.ref })
     assert.equal(scrolled.outcome, 'ok')
     assert.equal(scrolled.proofEscalated, true, 'the record-time escalation was accepted')

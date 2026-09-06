@@ -8,21 +8,27 @@
 // action's proof through the ordinary settle binding so export carries the
 // scope (withProofScope, QA-BL-054/062 rules unchanged).
 //
-// Verified against the REAL driver (contract v9, dsh-browser a17727a): a
-// dispatched browser action consumes the ENTIRE latest observation — every
-// ref it minted, including the scope rootRef — so the baseline root no longer
-// resolves immediately after the action (OBSERVATION_REQUIRED, pinned by
-// test/explore-scroll-scoped-baseline.integration.test.mjs). The session core
-// therefore ATTEMPTS the scoped proof settle and, when the driver refuses the
-// root, DISCLOSES the fallback (reason 'container-not-in-view' plus the
-// driver's code) and takes today's whole-page proof read instead. Every
-// non-acceptance exit is disclosed through escalationRefused with the fixed
-// vocabulary (QA-BL-067 completes QA-BL-058): target-not-in-baseline,
+// VERIFIED against the REAL driver (contract v9, dsh-browser d069f4f, pinned
+// by test/explore-scroll-scoped-baseline.integration.test.mjs): a dispatched
+// action that consumed a SCOPED observation and did NOT navigate RETAINS that
+// observation's scope root until the next successful observe, so the FIRST
+// proof poll — keyed by the explicit baseline scope.rootRef (deliberately not
+// 'last-scope', so a stale baseline is refused instead of silently rebinding
+// to whatever root was last acted) — resolves through the retained handle,
+// consumes the retention, and mints the fresh scope.rootRef the settle loop
+// re-keys every later poll to. On acceptance the result carries proofScope +
+// anchor. The FALLBACK remains for the conditions that still produce one, and
+// every non-acceptance exit is disclosed through escalationRefused with the
+// fixed vocabulary (QA-BL-067 completes QA-BL-058): target-not-in-baseline,
 // container-not-in-view, escalated-window-unstable, target-not-returned,
 // target-not-in-viewport, anchor-not-connected, anchor-not-contained,
 // anchor-unavailable, plus the driver's code when it threw. An escalation
 // refusal supersedes the scoped-proof refusal (the more terminal truth); an
-// accepted escalation supersedes both (the proof succeeded).
+// accepted escalation supersedes both (the proof succeeded). The refusal pins
+// below model drivers WITHOUT retention (OBSERVATION_REQUIRED — a pre-d069f4f
+// driver, or a plain node ref from the consumed observation) and a driver
+// whose retained root was RELEASED by the just-dispatched navigation
+// (SCOPE_UNAVAILABLE).
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -234,7 +240,12 @@ test('QA-BL-067: an accepted scoped proof settle surfaces proofScope + anchor, n
   assert.equal(step.escalationRefused, undefined, 'no refusal rides on an accepted proof step')
 })
 
-test('QA-BL-067: an unresolvable baseline rootRef discloses container-not-in-view + the driver code and falls back whole-page', async () => {
+test('QA-BL-067: a driver WITHOUT retention (no post-action scope root) discloses container-not-in-view + OBSERVATION_REQUIRED and falls back whole-page', async () => {
+  // The fake adapter models a pre-d069f4f driver (or a plain node ref from the
+  // consumed observation, or the acted ref IS the scope root itself — the
+  // single-owner handle the driver never retains): the baseline rootRef no
+  // longer resolves immediately after the action, the refusal is DISCLOSED,
+  // and the whole-page fallback proves the scroll on its own.
   const before = scopedBaseline()
   const after = wholePage([outerFiller(), targetInViewport('n-target-after')], false)
   const { acted, exported, escalationWindows, calls } = await exploreScopedBaseline({
@@ -278,6 +289,60 @@ test('QA-BL-067: an unresolvable baseline rootRef discloses container-not-in-vie
   assert.deepEqual(
     step.escalationRefused,
     { reason: 'container-not-in-view', code: 'OBSERVATION_REQUIRED' },
+    'the refusal rides on the exported step (report.md step lines surface it)',
+  )
+})
+
+test('QA-BL-067: a retained scope root released by the just-dispatched navigation discloses container-not-in-view + SCOPE_UNAVAILABLE and falls back whole-page', async () => {
+  // The fake adapter models the d069f4f retention-era refusal: the action DID
+  // retain the consumed scope root, but the dispatch navigated (or the
+  // binding was otherwise released before the proof poll), so the driver
+  // refuses the root with the distinct SCOPE_UNAVAILABLE — never a whole-page
+  // fallback at the driver, and here DISCLOSED with the driver's code while
+  // the QA proof falls back to the whole-page read.
+  const before = scopedBaseline()
+  const after = wholePage([outerFiller(), targetInViewport('n-target-after')], false)
+  const { acted, exported, escalationWindows, calls } = await exploreScopedBaseline({
+    before,
+    after,
+    scopedThrows: { code: 'SCOPE_UNAVAILABLE', message: 'the retained scope root belonged to a document that no longer exists; observe again' },
+  })
+
+  const proofCalls = calls.filter((call) => call.maxNodes === undefined)
+  assert.equal(
+    proofCalls.filter((call) => call.withinRef !== undefined).length,
+    1,
+    'exactly ONE scoped proof attempt, then whole-page polls: ' + JSON.stringify(proofCalls),
+  )
+  assert.equal(
+    proofCalls[0].withinRef,
+    'n-zone-before',
+    'the refused attempt rooted at the baseline scope.rootRef: ' + JSON.stringify(proofCalls[0]),
+  )
+  assert.ok(
+    calls.slice(1).every((call) => call.withinRef === undefined && call.anchorLastAction === undefined),
+    "the fallback is today's WHOLE-PAGE proof read: " + JSON.stringify(calls.slice(1)),
+  )
+  assert.equal(escalationWindows, 0, 'a complete whole-page proof needs no escalation')
+  assert.deepEqual(
+    acted.escalationRefused,
+    { reason: 'container-not-in-view', code: 'SCOPE_UNAVAILABLE' },
+    'the released retention refuses with the distinct driver code, disclosed with the fixed vocabulary',
+  )
+  assert.equal(acted.proofEscalated, undefined)
+  assert.equal(acted.proofScope, undefined)
+  assert.equal(acted.observation.scope, undefined, 'the proof is the whole-page settled view')
+  assert.ok(
+    acted.observation.nodes.some((item) => item.name === TARGET.name && item.inViewport === true),
+    'the whole-page fallback still proves the scroll',
+  )
+
+  assert.equal(exported.ok, true, JSON.stringify(exported))
+  const step = exported.scenario.steps[0]
+  assert.equal(step.assert.scope, undefined, 'the whole-page proof exports unscoped')
+  assert.deepEqual(
+    step.escalationRefused,
+    { reason: 'container-not-in-view', code: 'SCOPE_UNAVAILABLE' },
     'the refusal rides on the exported step (report.md step lines surface it)',
   )
 })
