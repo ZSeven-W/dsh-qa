@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa scope identity flip fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 6px 0; }
+    a { color: #3366cc; }
+  </style>
+</head>
+<body>
+  <!--
+    QA-BL-073 fixture (driver 677cdc2, contract v9): the walk's within read on
+    the SIDEBAR ancestor races a churn the whole-page read does not see.
+      ?mode=content — the sidebar is CONTENT-named (no aria-label): its
+        aggregated accessible name flips once per isConnected probe (the
+        hide/show toggle inside it changes text). The driver reports the
+        name-only change INFORMATIONALLY via scope.nameChanged instead of
+        refusing — the walk succeeds and the step records scopeNameChanged.
+      ?mode=label — the sidebar is LABEL-named (aria-label "Sidebar one"):
+        the label flips on the probe (strict identity check, like the
+        Wikipedia sidebar story the driver fixed only for content names).
+        The walk's within read is refused TARGET_CHANGED with
+        changed: ["name"]; a timer restores the label so the retry's fresh
+        whole-page re-resolution can match the recorded name again.
+        flips=K: after K refusals the level resolves (the walk retry).
+        flips=forever: every within probe flips — the retry exhausts the
+        settle budget and the step must be INCONCLUSIVE_UNSTABLE, never fail.
+    The whole page is small (<100 nodes) so every level resolves proven.
+  -->
+  <h1>Scope identity flip fixture</h1>
+  <nav id="sidebar" role="navigation" aria-label="Sidebar one">
+    <button id="toggle" type="button">hide</button>
+    <div role="navigation" aria-label="China navbox">
+      <h2>China</h2>
+      <ul>
+        <li><a id="target" href="#history-of-china">History of China</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div id="result" role="status" aria-live="polite">IDLE</div>
+
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var mode = params.get('mode') === 'content' ? 'content' : 'label';
+      var raw = params.get('flips');
+      var flipsRemaining = raw === 'forever' ? Infinity : Number(raw || '0');
+      if (flipsRemaining !== Infinity && (!Number.isFinite(flipsRemaining) || flipsRemaining < 0)) flipsRemaining = 0;
+      var nav = document.getElementById('sidebar');
+      // Content mode: the sidebar must be CONTENT-named — no authored label at
+      // all, so its aggregated accessible name (descendant text, including the
+      // hide/show toggle) is what flips with the toggle.
+      if (mode === 'content') nav.removeAttribute('aria-label');
+      var toggle = document.getElementById('toggle');
+      var restoreTimer = null;
+      var labelOn = true; // aria-label "Sidebar one" when true
+
+      function flip() {
+        if (mode === 'label') {
+          labelOn = !labelOn;
+          nav.setAttribute('aria-label', labelOn ? 'Sidebar one' : 'Sidebar two');
+          if (restoreTimer !== null) clearTimeout(restoreTimer);
+          // Restore quickly (well inside any settle quiet window): the
+          // walk retry's fresh whole-page read must settle on the RECORDED
+          // label, so the re-resolution can match it again. A slow restore
+          // could let a settle window conclude stable on the flipped label
+          // and the re-resolution would honestly report the ancestor absent.
+          restoreTimer = setTimeout(function () {
+            if (!labelOn) {
+              labelOn = true;
+              nav.setAttribute('aria-label', 'Sidebar one');
+            }
+            restoreTimer = null;
+          }, 40);
+        } else {
+          toggle.textContent = toggle.textContent === 'hide' ? 'show' : 'hide';
+        }
+      }
+
+      var lastFlipAt = 0;
+      var proto = Node.prototype;
+      var descriptor = null;
+      while (proto !== null && descriptor === null) {
+        descriptor = Object.getOwnPropertyDescriptor(proto, 'isConnected');
+        proto = Object.getPrototypeOf(proto);
+      }
+      if (descriptor !== null && typeof descriptor.get === 'function') {
+        var original = descriptor.get;
+        Object.defineProperty(Node.prototype, 'isConnected', {
+          configurable: true,
+          enumerable: false,
+          get: function () {
+            var connected = original.call(this);
+            var now = Date.now();
+            if (this === nav && flipsRemaining > 0 && now - lastFlipAt >= 40) {
+              lastFlipAt = now;
+              flipsRemaining -= 1;
+              flip();
+            }
+            return connected;
+          },
+        });
+      } else {
+        document.getElementById('result').textContent = 'HOOK_FAILED';
+      }
+    })();
+  </script>
+</body>
+</html>

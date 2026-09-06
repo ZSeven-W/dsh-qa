@@ -217,6 +217,18 @@ export interface QaSettleResult extends QaSettleReport {
    * the deterministic artifact — settling changes duration, not outcome.
    */
   observation: QaObservation;
+  /**
+   * ADDITIVE (QA-BL-073, driver contract v9 677cdc2): true when ANY poll of
+   * this settle window carried `observation.scope.nameChanged: true` — an
+   * informational name-only change on a content-named container. The flag is
+   * ACCUMULATED across the window because the reporting poll is typically
+   * the FIRST one (the later polls re-key by the driver's fresh rootRef and
+   * compare against the already-updated name, so their scope carries no
+   * nameChanged) while `observation` is the LAST poll: callers that track the
+   * informational report must read this field, never the settled
+   * observation's own scope flag alone. Absent when no poll reported one.
+   */
+  scopeNameChanged?: boolean;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -497,6 +509,10 @@ export async function observeUntilStable(
   const echo = options.echo;
   const startedAt = Date.now();
   let latest = await observe();
+  // QA-BL-073: an informational scope.nameChanged report is ACCUMULATED across
+  // the whole window (the reporting poll is typically the first one, while the
+  // settled observation is the last — see QaSettleResult.scopeNameChanged).
+  let scopeNameChanged = latest.scope?.nameChanged === true;
   // FULL projection drives the quiet window (the echo must hold still too).
   let projection = projectSemanticView(latest);
   // ECHO-MASKED projection drives awaitChange: the action's own echo is
@@ -530,6 +546,7 @@ export async function observeUntilStable(
         budgetMs: policy.budgetMs,
         quietRequiredMs,
         widened,
+        ...(scopeNameChanged ? { scopeNameChanged } : {}),
       };
     }
     const remaining = policy.budgetMs - (now - startedAt);
@@ -559,11 +576,13 @@ export async function observeUntilStable(
         budgetMs: policy.budgetMs,
         quietRequiredMs,
         widened,
+        ...(scopeNameChanged ? { scopeNameChanged } : {}),
       };
     }
     await sleep(Math.min(policy.intervalMs, remaining));
     const next = await observe();
     passes += 1;
+    if (next.scope?.nameChanged === true) scopeNameChanged = true;
     const nextProjection = projectSemanticView(next);
     const nextChangedProjection = projectSemanticView(next, echo);
     if (nextChangedProjection !== changedProjection) {

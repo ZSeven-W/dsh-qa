@@ -35,6 +35,7 @@ import type {
   QaAssertionKind,
   QaNodePredicate,
   QaObservedNode,
+  QaScopeIdentityRefusal,
   QaScopeWalkLevel,
   QaViewCompleteness,
 } from '../contracts.ts';
@@ -704,6 +705,31 @@ export interface QaRetriedDecision extends QaAssertionDecision {
    * reason names the anchor truth. Never a predicate reselect.
    */
   scopeRefusal?: { code?: string; reason: string };
+  /**
+   * ADDITIVE (QA-BL-073): true exactly when the scoped path walk's bounded
+   * identity retry exhausted its settle budget — the decision is then
+   * inconclusive with reason INCONCLUSIVE_UNSTABLE (never a failure), and
+   * `message` / `scopeIdentityRefusal` name the level and the refusal.
+   * Consumers use this flag (not the reason string alone) to know the run
+   * must skip re-deciding the final assertions on this unproven step.
+   */
+  scopeIdentityExhausted?: true;
+  /**
+   * ADDITIVE (QA-BL-073): the driver's verbatim within-refusal detail when
+   * the walk's identity retry exhausted (see QaStepResult.scopeIdentityRefusal).
+   */
+  scopeIdentityRefusal?: QaScopeIdentityRefusal;
+  /**
+   * ADDITIVE (QA-BL-073): true when a scoped read of this decision reported
+   * the informational `scope.nameChanged` (see QaStepResult.scopeNameChanged).
+   * Informational only, never a refusal.
+   */
+  scopeNameChanged?: true;
+  /**
+   * ADDITIVE (QA-BL-073): the level-naming exhaustion message when the walk's
+   * identity retry exhausted (see QaStepResult.message).
+   */
+  message?: string;
 }
 
 /**

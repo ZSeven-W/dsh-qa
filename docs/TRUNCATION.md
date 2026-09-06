@@ -501,6 +501,33 @@ The **name-only rule** therefore applies to BOTH selector families:
   the step is unproven" — and the driver's last refusal receipt (its verbatim
   `reason` plus any additive fields such as `changed`) rides on the step so
   triage can see WHAT changed.
+- **Walk-time drift (QA-BL-073).** The SAME `TARGET_CHANGED` refusal can be
+  thrown by a `within` read during the scoped path walk (a level's ancestor
+  changed identity between its parent read and the scoped read — the same
+  churn as at dispatch, on the walk instead; the pre-677cdc2 Wikipedia
+  sidebar story was one cause, and a label-named ancestor whose label flips
+  is still possible). The walk shares the ONE bounded retry the dispatch uses
+  (`runBoundedIdentityRetry`: same budget re-read every iteration, same
+  once-per-session widening, same `targetChangedRetries` counter — dispatch
+  and walk refusals count together, because the step is classified once and
+  both refusals are the same churn at two uses of the same bound element).
+  Only `TARGET_CHANGED` is ever retried: `REF_UNKNOWN` /
+  `OBSERVATION_REQUIRED` / `SCOPE_UNAVAILABLE` and every policy refusal stay
+  hard failures with their own code. A refusal re-resolves the level from the
+  level ABOVE with a fresh settled read (the whole page for level 1, the
+  parent's fresh `scope.rootRef` otherwise) and repeats until the level
+  resolves or the budget is exhausted. Exhaustion classifies the step
+  `inconclusive` with reason `INCONCLUSIVE_UNSTABLE` and `assertionPassed:
+  false`, the message names the level — "path level N (<what>) kept changing
+  identity for the whole settle budget (N retries): the page did not hold
+  still, so the step is unproven" — the driver's `changed`/`before`/`after`
+  ride verbatim on `scopeIdentityRefusal`, and the run aggregates to
+  `inconclusive`, never `fail`. Separately (driver 677cdc2), a CONTENT-named
+  container whose aggregated accessible name changed between reads is never a
+  refusal at all: the driver resolves informationally with
+  `scope.nameChanged: true` (accumulated across the settle window's polls),
+  and the step records `scopeNameChanged: true` — informational, never a
+  classification input.
 
 ## Budget
 

@@ -202,6 +202,18 @@ export interface QaObservationScope {
   role: string;
   name: string;
   tag: string;
+  /**
+   * Browser-only (driver contract v9, dsh-browser 677cdc2): true when the
+   * within resolution proceeded through an identity-EXEMPT name-only change
+   * on a content-named container (the aggregated accessible name tracks
+   * descendant text — Wikipedia's collapsible sidebar — while the element is
+   * still the same node). The driver reports the change INFORMATIONALLY
+   * instead of refusing TARGET_CHANGED, and `name` carries the NEW aggregated
+   * name. Label-named nodes and non-container nodes keep the strict check
+   * and never produce this flag. Honest-optional: absent means no
+   * informational change was reported.
+   */
+  nameChanged?: true;
 }
 export interface QaObservation {
   page: QaPageRef;

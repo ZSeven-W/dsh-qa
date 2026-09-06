@@ -12,11 +12,14 @@ const EXCLUDED_FIELDS = new Set(['advisory', 'artifacts', 'evidence']);
 
 /**
  * Bounded-retry accounting fields: duration artifacts, never outcome. The
- * identity-staleness retry count (QA-BL-070) and its exhaustion message name
- * how many retries a page's timing happened to cost, exactly like attempts —
- * the OUTCOME (pass / INCONCLUSIVE_UNSTABLE) is what the projection keeps.
+ * identity-staleness retry count (QA-BL-070/073, dispatch + walk), its
+ * exhaustion message, and the walk's verbatim refusal detail
+ * (QA-BL-073 scopeIdentityRefusal — it names the refusal behind the
+ * exhausted retry) record how many retries a page's timing happened to
+ * cost, exactly like attempts — the OUTCOME (pass / INCONCLUSIVE_UNSTABLE)
+ * is what the projection keeps.
  */
-const RETRY_FIELDS = new Set(['attempts', 'elapsedMs', 'targetChangedRetries', 'message']);
+const RETRY_FIELDS = new Set(['attempts', 'elapsedMs', 'targetChangedRetries', 'message', 'scopeIdentityRefusal']);
 
 /** Strip the per-step/per-assertion retry accounting from a subtree. */
 function stripRetryFields(value: unknown): unknown {

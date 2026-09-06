@@ -1,5 +1,5 @@
 import { projectRedactedJsonValue, projectArtifactPath, redactText, type RedactionRoots } from '../redaction/index.ts';
-import { QA_INCONCLUSIVE_SCOPE } from '../contracts.ts';
+import { QA_INCONCLUSIVE_SCOPE, QA_INCONCLUSIVE_UNSTABLE } from '../contracts.ts';
 import type { QaEvidenceCollectionFailure, QaRunReport, QaViewCompleteness } from '../contracts.ts';
 
 // Backtick character for inline code spans (built from a code point so the
@@ -259,16 +259,41 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
       );
     }
     if (step.targetChangedRetries !== undefined) {
-      // QA-BL-070: the bounded identity-staleness retry count (replaces the
-      // QA-BL-064 boolean): how many TARGET_CHANGED refusals the runner
-      // retried within the settle budget before the resolve->dispatch pair
-      // landed or the budget was exhausted.
+      // QA-BL-070/073: the shared bounded identity-staleness retry count
+      // (replaces the QA-BL-064 boolean): how many TARGET_CHANGED refusals
+      // the runner retried within the settle budget — at dispatch AND/OR on
+      // a `within` read of the scoped path walk (ONE counter) — before the
+      // pair landed or the budget was exhausted.
       lines.push(
         '  - target changed retries: ' + String(step.targetChangedRetries) + ' — ' + mdInline(
-          'the driver refused the dispatch with TARGET_CHANGED (the page replaced the bound '
-          + 'element between resolution and dispatch) ' + String(step.targetChangedRetries)
-          + ' time(s); the runner re-observed, re-resolved the same semantic target, and '
-          + 're-dispatched within the settle budget',
+          'the driver refused with TARGET_CHANGED (the page replaced or renamed the bound '
+          + 'element between resolution and its use) ' + String(step.targetChangedRetries)
+          + ' time(s); the runner re-observed, re-resolved the same semantic target (at '
+          + 'dispatch, or from the level above on a path-walk within read), and re-tried within the settle budget',
+        ),
+      );
+    }
+    if (step.scopeIdentityRefusal !== undefined) {
+      // QA-BL-073: the walk's bounded identity retry exhausted — name the
+      // level that kept changing and the driver's verbatim refusal detail.
+      const refusal = step.scopeIdentityRefusal;
+      lines.push(
+        '  - scope identity refusal: ' + mdInline(
+          'the within read at path level ' + String(refusal.level) + ' (' + refusal.what + ') was refused '
+          + refusal.code
+          + (refusal.changed === undefined ? '' : ' with changed ' + JSON.stringify(refusal.changed))
+          + (refusal.reason === undefined ? '' : ' — ' + refusal.reason),
+        ),
+      );
+    }
+    if (step.scopeNameChanged === true) {
+      // QA-BL-073: the driver reported an INFORMATIONAL name-only change on a
+      // content-named container's scoped read (scope.nameChanged) — never a
+      // refusal and never a classification input.
+      lines.push(
+        '  - scope name changed: ' + mdInline(
+          'a scoped read resolved a content-named container whose aggregated accessible name changed since the parent read'
+          + ' (the driver reported scope.nameChanged informationally)',
         ),
       );
     }
@@ -285,12 +310,13 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
   for (const assertion of report.assertions) {
     lines.push(
       '- ' + mdInline(assertion.kind) + ' -> '
-      // QA-BL-062/069: provisional (INCONCLUSIVE_SCOPE) and container-
-      // not-located (INCONCLUSIVE_TRUNCATED) results are INCONCLUSIVE,
-      // never FAIL.
+      // QA-BL-062/069/073: provisional (INCONCLUSIVE_SCOPE), container-
+      // not-located (INCONCLUSIVE_TRUNCATED), and exhausted walk-identity
+      // (INCONCLUSIVE_UNSTABLE) results are INCONCLUSIVE, never FAIL.
       + (assertion.passed
         ? 'PASS'
-        : assertion.reason === QA_INCONCLUSIVE_SCOPE || assertion.scopeNotLocated === true ? 'INCONCLUSIVE' : 'FAIL')
+        : assertion.reason === QA_INCONCLUSIVE_SCOPE || assertion.reason === QA_INCONCLUSIVE_UNSTABLE
+          || assertion.scopeNotLocated === true ? 'INCONCLUSIVE' : 'FAIL')
       + ' (observed: ' + mdCode(inline(assertion.observed, roots)) + ')',
     );
     if (assertion.attempts !== undefined) {
@@ -318,6 +344,42 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
     }
     if (assertion.scopeRefusal !== undefined) {
       lines.push('  - scope refusal: ' + mdInline(assertion.scopeRefusal.reason));
+    }
+    if (assertion.scopeIdentityRefusal !== undefined) {
+      // QA-BL-073: the final assertion's walk identity retry exhausted — name
+      // the level and the driver's verbatim refusal detail (see the step line).
+      const refusal = assertion.scopeIdentityRefusal;
+      lines.push(
+        '  - scope identity refusal: ' + mdInline(
+          'the within read at path level ' + String(refusal.level) + ' (' + refusal.what + ') was refused '
+          + refusal.code
+          + (refusal.changed === undefined ? '' : ' with changed ' + JSON.stringify(refusal.changed))
+          + (refusal.reason === undefined ? '' : ' — ' + refusal.reason),
+        ),
+      );
+    }
+    if (assertion.scopeNameChanged === true) {
+      // QA-BL-073: the informational name change report (see the step line).
+      lines.push(
+        '  - scope name changed: ' + mdInline(
+          'a scoped read resolved a content-named container whose aggregated accessible name changed since the parent read'
+          + ' (the driver reported scope.nameChanged informationally)',
+        ),
+      );
+    }
+    if (assertion.targetChangedRetries !== undefined) {
+      // QA-BL-073: the shared identity retry count for this final assertion's
+      // walk (see the step line).
+      lines.push(
+        '  - target changed retries: ' + String(assertion.targetChangedRetries) + ' — ' + mdInline(
+          'the driver refused a within read of the scoped path walk with TARGET_CHANGED '
+          + String(assertion.targetChangedRetries)
+          + ' time(s); the runner re-observed and re-resolved from the level above within the settle budget',
+        ),
+      );
+    }
+    if (assertion.message !== undefined) {
+      lines.push('  - message: ' + mdInline(assertion.message));
     }
     if (assertion.completeness !== undefined) {
       lines.push('  - view completeness: ' + mdInline(completenessLine(assertion.completeness)));

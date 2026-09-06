@@ -218,6 +218,38 @@ export interface QaScopeWalkLevel {
 }
 
 /**
+ * ADDITIVE (QA-BL-073): the driver's verbatim refusal detail for a `within`
+ * read during the scoped path walk that refused TARGET_CHANGED (the
+ * ancestor/container changed identity between the parent read and the scoped
+ * read — the same identity-staleness churn the dispatch retry handles, on
+ * the walk instead). The bounded walk retry re-resolves the level from the
+ * level above until it resolves or the settle budget is exhausted; when it
+ * exhausts, the step is `inconclusive` with reason INCONCLUSIVE_UNSTABLE and
+ * this field carries the LAST refusal: the level that refused (`level` is
+ * 1-based — the last level is the container itself), the human-readable
+ * discriminator matched there (`what`), and the driver's additive
+ * `changed`/`before`/`after` (the identity fields that differed and their
+ * safe-subset snapshots) verbatim, so triage sees WHAT kept changing.
+ * `REF_UNKNOWN` / `OBSERVATION_REQUIRED` / `SCOPE_UNAVAILABLE` and every
+ * policy refusal are never retried and never produce this field — they stay
+ * hard failures with their own code. schemaVersion stays 1.
+ */
+export interface QaScopeIdentityRefusal {
+  level: number;
+  what: string;
+  /** Always TARGET_CHANGED: the ONLY driver code the walk retry handles. */
+  code: 'TARGET_CHANGED';
+  /** The driver's verbatim reason, when one rode on the refusal. */
+  reason?: string;
+  /** The identity fields that differed, in the driver's stable order (e.g. ['name'], ['detached']). */
+  changed?: unknown;
+  /** Safe-subset snapshot of the OBSERVED candidate (role/name/tag/disabled/visible), verbatim. */
+  before?: unknown;
+  /** Safe-subset snapshot of the LIVE element, verbatim. */
+  after?: unknown;
+}
+
+/**
  * A visual assertion: ADVISORY in Replay (executed, recorded, never affects
  * pass/fail) and a first-class finding in Explore. Its model verdict is
  * inherently non-deterministic, so it lives in a dedicated schema field that
@@ -537,13 +569,16 @@ export interface QaStepResult {
   index: number;
   intent: string;
   /**
-   * Three-state (QA-BL-062, amended QA-BL-069, QA-BL-070): 'inconclusive'
-   * when the result is provisional (INCONCLUSIVE_SCOPE), OR the scoped
-   * container could not be located in a still-truncated view
+   * Three-state (QA-BL-062, amended QA-BL-069, QA-BL-070, QA-BL-073):
+   * 'inconclusive' when the result is provisional (INCONCLUSIVE_SCOPE), OR
+   * the scoped container could not be located in a still-truncated view
    * (INCONCLUSIVE_TRUNCATED with scopeNotLocated: true), OR the target
    * kept changing identity between resolution and dispatch for the whole
    * settle budget (INCONCLUSIVE_UNSTABLE with targetChangedRetries —
-   * nothing definitely failed: the page did not hold still), never passed.
+   * nothing definitely failed: the page did not hold still), OR a `within`
+   * read of the scoped path walk kept refusing TARGET_CHANGED for the whole
+   * settle budget (INCONCLUSIVE_UNSTABLE with scopeIdentityRefusal naming
+   * the level — same classification, same counter), never passed.
    */
   status: 'pass' | 'inconclusive' | 'fail';
   action: QaScenarioAction;
@@ -632,39 +667,71 @@ export interface QaStepResult {
    */
   targetResolution?: QaTargetResolutionDisclosure;
   /**
-   * ADDITIVE (QA-BL-064, amended QA-BL-070): how many times the driver
-   * REFUSED the dispatch with TARGET_CHANGED (the page replaced the bound
-   * element between target resolution and dispatch — the same hydration
-   * swap as the role drift, and the action was NOT dispatched) before the
-   * bounded identity retry stopped. The runner retries the resolve->dispatch
-   * pair WITHIN the session settle budget — a fresh settled observation, a
-   * re-resolution of the SAME semantic target, and a re-dispatch, widening
-   * the budget ONCE through the shared session gate when the retry exhausts
-   * it (the QA-BL-039/041 machinery assertions use) — and this count names
-   * how many stale-identity dispatches that took. Only the
-   * identity-staleness code TARGET_CHANGED is ever retried; every other
-   * rejection (safety/policy) stays a hard stop with the field absent.
-   * When the budget is exhausted with the target still changing identity,
-   * the step is 'inconclusive' with reason INCONCLUSIVE_UNSTABLE and
-   * assertionPassed false (the page did not hold still, so the step is
-   * unproven — NEVER an ordinary failure); the final receipt (with the
-   * driver's verbatim reason and any additive fields) rides as `receipt`.
-   * Excluded from the determinism projection (a duration artifact, like
-   * attempts/elapsedMs). schemaVersion stays 1.
+   * ADDITIVE (QA-BL-064, amended QA-BL-070, QA-BL-073): how many times the
+   * driver REFUSED with TARGET_CHANGED (identity staleness: the page
+   * replaced or renamed the bound element between resolution and its use,
+   * and NOTHING was dispatched) before the bounded identity retry stopped.
+   * QA-BL-073: ONE shared counter — a dispatch refusal and a refusal thrown
+   * by a `within` read during the scoped path walk count into the SAME
+   * number (both are the same churn, and the step is classified once, so a
+   * sibling counter would add report surface for no triage benefit). The
+   * runner retries WITHIN the session settle budget — for the dispatch: a
+   * fresh settled observation, a re-resolution of the SAME semantic target,
+   * and a re-dispatch; for the walk: a re-resolution of the refused level
+   * from the level ABOVE with a fresh settled read — widening the budget
+   * ONCE through the shared session gate when the retry exhausts it (the
+   * QA-BL-039/041 machinery assertions use). Only the identity-staleness
+   * code TARGET_CHANGED is ever retried; every other rejection
+   * (safety/policy, REF_UNKNOWN, OBSERVATION_REQUIRED,
+   * SCOPE_UNAVAILABLE) stays a hard stop with the field absent. When the
+   * budget is exhausted with the identity still changing, the step is
+   * 'inconclusive' with reason INCONCLUSIVE_UNSTABLE and assertionPassed
+   * false (the page did not hold still, so the step is unproven — NEVER an
+   * ordinary failure); for the dispatch the final receipt (with the
+   * driver's verbatim reason and any additive fields) rides as `receipt`,
+   * and for the walk the driver's changed/before/after ride on
+   * `scopeIdentityRefusal`. Excluded from the determinism projection (a
+   * duration artifact, like attempts/elapsedMs). schemaVersion stays 1.
    */
   targetChangedRetries?: number;
   /**
-   * ADDITIVE (QA-BL-070): the exhaustion message for a step whose target
-   * kept changing identity between resolution and dispatch for the whole
-   * settle budget: "the target kept changing identity between resolution
-   * and dispatch for the whole settle budget (N retries): the page did not
-   * hold still, so the step is unproven" — plus the once-only widening
-   * clause when one happened. Present exactly when the bounded identity
-   * retry exhausted its budget (step status 'inconclusive', reason
-   * INCONCLUSIVE_UNSTABLE). Excluded from the determinism projection
-   * (it names the retry count). schemaVersion stays 1.
+   * ADDITIVE (QA-BL-070, amended QA-BL-073): the exhaustion message for a
+   * step whose bounded identity retry exhausted its settle budget. Dispatch
+   * form: "the target kept changing identity between resolution and
+   * dispatch for the whole settle budget (N retries): the page did not hold
+   * still, so the step is unproven". Walk form (QA-BL-073, names the
+   * level): "path level N (<what>) kept changing identity for the whole
+   * settle budget (N retries): the page did not hold still, so the step is
+   * unproven". Both add the once-only widening clause when one happened.
+   * Present exactly when the bounded identity retry exhausted its budget
+   * (step status 'inconclusive', reason INCONCLUSIVE_UNSTABLE). Excluded
+   * from the determinism projection (it names the retry count).
+   * schemaVersion stays 1.
    */
   message?: string;
+  /**
+   * ADDITIVE (QA-BL-073): the driver's verbatim refusal detail when a
+   * `within` read during the scoped path walk kept refusing TARGET_CHANGED
+   * until the settle budget was exhausted (see QaScopeIdentityRefusal).
+   * Present exactly when the walk's bounded identity retry exhausted (the
+   * step then carries reason INCONCLUSIVE_UNSTABLE, the level-naming
+   * `message`, and the shared targetChangedRetries). Excluded from the
+   * determinism projection (it names the retry that exhausted).
+   * schemaVersion stays 1.
+   */
+  scopeIdentityRefusal?: QaScopeIdentityRefusal;
+  /**
+   * ADDITIVE (QA-BL-073, driver 677cdc2): true when a scoped read of this
+   * step reported `scope.nameChanged` — an informational name-only change
+   * on a CONTENT-named container (its aggregated accessible name tracks
+   * descendant text while the element stays the same node, so the driver
+   * resolves the within read instead of refusing TARGET_CHANGED). Purely
+   * informational, never a refusal and never a classification input: the
+   * step is unaffected, and report.md prints the line so triage sees the
+   * container's name moved between reads. Absent when no scoped read
+   * reported one. schemaVersion stays 1.
+   */
+  scopeNameChanged?: true;
 }
 
 export interface QaAssertionResult {
@@ -723,6 +790,35 @@ export interface QaAssertionResult {
    */
   attempts?: number;
   elapsedMs?: number;
+  /**
+   * ADDITIVE (QA-BL-073): the shared TARGET_CHANGED retry count for a final
+   * assertion whose scoped path walk kept refusing identity until the settle
+   * budget was exhausted (see QaStepResult.targetChangedRetries — the same
+   * counter, the same classification: the assertion is inconclusive with
+   * reason INCONCLUSIVE_UNSTABLE, never a failure). Excluded from the
+   * determinism projection. schemaVersion stays 1.
+   */
+  targetChangedRetries?: number;
+  /**
+   * ADDITIVE (QA-BL-073): the level-naming exhaustion message for a final
+   * assertion whose walk identity retry exhausted its budget (see
+   * QaStepResult.message). Excluded from the determinism projection.
+   * schemaVersion stays 1.
+   */
+  message?: string;
+  /**
+   * ADDITIVE (QA-BL-073): the driver's verbatim within-refusal detail when
+   * the final assertion's walk identity retry exhausted (see
+   * QaStepResult.scopeIdentityRefusal). Excluded from the determinism
+   * projection. schemaVersion stays 1.
+   */
+  scopeIdentityRefusal?: QaScopeIdentityRefusal;
+  /**
+   * ADDITIVE (QA-BL-073): true when a scoped read of this assertion reported
+   * the informational `scope.nameChanged` (see QaStepResult.scopeNameChanged).
+   * Informational only, never a refusal. schemaVersion stays 1.
+   */
+  scopeNameChanged?: true;
 }
 
 export interface QaReproductionStep {

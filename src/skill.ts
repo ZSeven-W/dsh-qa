@@ -266,7 +266,16 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   changing identity, the step is \`inconclusive\` with reason \`INCONCLUSIVE_UNSTABLE\` and
   \`assertionPassed: false\` (the run is \`inconclusive\`, NEVER \`fail\`): "the target kept
   changing identity between resolution and dispatch for the whole settle budget (N retries): the
-  page did not hold still, so the step is unproven".
+  page did not hold still, so the step is unproven". The SAME refusal on a \`within\` read of the
+  scoped path walk (QA-BL-073: an ancestor changed identity between its parent read and the scoped
+  read) runs the SAME bounded retry — re-resolving the level from the level above with a fresh
+  settled read, counting into the SAME \`targetChangedRetries\` — and its exhaustion is the same
+  \`inconclusive\` / \`INCONCLUSIVE_UNSTABLE\` classification with a message naming the level
+  ("path level N (<what>) kept changing identity …") and the driver's \`changed\`/\`before\`/\`after\`
+  verbatim as \`scopeIdentityRefusal\`; only \`TARGET_CHANGED\` is ever retried (policy refusals,
+  \`REF_UNKNOWN\`, \`OBSERVATION_REQUIRED\`, \`SCOPE_UNAVAILABLE\` stay hard). A CONTENT-named
+  container whose aggregated name changed between reads is never a refusal at all: the driver
+  reports it informationally (\`scope.nameChanged\`), and the step records \`scopeNameChanged: true\`.
 - \`qa_session_stop\` releases the owner scope. Stop on success and failure; the trajectory remains
   exportable until another session starts for that owner or the plugin disposes.
 

@@ -516,6 +516,10 @@ export class QaSession {
           ...(withinRef === undefined ? {} : { withinRef }),
         },
       );
+      // QA-BL-073: the probed deciding read may itself carry the
+      // informational scope.nameChanged report (its within resolution runs
+      // the same tolerant identity check as every other scoped poll).
+      if (observation.scope?.nameChanged === true) result.scopeNameChanged = true;
     }
     this.#lastView = projectSemanticView(observation);
     this.#lastObservation = observation;

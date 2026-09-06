@@ -294,7 +294,11 @@ test('a TARGET_CHANGED refusal is retried within the settle budget and discloses
   )
   const md = renderReportMarkdown(report)
   assert.match(md, /target changed retries: 1/, 'report.md discloses the retry count (renamed from the boolean targetChangedRetry, QA-BL-070)')
-  assert.match(md, /the driver refused the dispatch with TARGET_CHANGED/)
+  // QA-BL-073: the shared dispatch+walk retry reworded this report line to
+  // cover BOTH refusal sites ("the driver refused with TARGET_CHANGED ... at
+  // dispatch, or from the level above on a path-walk within read") — same
+  // count, same classification, one shared implementation.
+  assert.match(md, /the driver refused with TARGET_CHANGED/)
 })
 
 test('a non-TARGET_CHANGED rejection stays a hard stop (never retried)', async () => {
