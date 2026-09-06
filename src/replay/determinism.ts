@@ -10,8 +10,13 @@ const FIXED_TIMESTAMP = '<timestamp>';
 /** Fields excluded by schema from the determinism comparison. */
 const EXCLUDED_FIELDS = new Set(['advisory', 'artifacts', 'evidence']);
 
-/** Bounded-retry accounting fields: duration artifacts, never outcome. */
-const RETRY_FIELDS = new Set(['attempts', 'elapsedMs']);
+/**
+ * Bounded-retry accounting fields: duration artifacts, never outcome. The
+ * identity-staleness retry count (QA-BL-070) and its exhaustion message name
+ * how many retries a page's timing happened to cost, exactly like attempts —
+ * the OUTCOME (pass / INCONCLUSIVE_UNSTABLE) is what the projection keeps.
+ */
+const RETRY_FIELDS = new Set(['attempts', 'elapsedMs', 'targetChangedRetries', 'message']);
 
 /** Strip the per-step/per-assertion retry accounting from a subtree. */
 function stripRetryFields(value: unknown): unknown {

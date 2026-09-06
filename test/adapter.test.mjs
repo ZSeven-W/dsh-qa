@@ -83,6 +83,39 @@ test('BrowserAdapter maps driver results and never retries a risk rejection', as
   assert.ok(calls.some((c) => c[0] === 'dispose'))
 })
 
+test('BrowserAdapter passes additive driver receipt fields through verbatim, excluding driver bookkeeping (QA-BL-070)', async () => {
+  const driver = {
+    kind: 'browser',
+    contractVersion: 9,
+    async start() { return { ownerId: 'a', state: 'running', headless: true, browser: { channel: 'chrome', version: 'fixture' }, page: { url: 'about:blank', title: '' }, isolation: 'ephemeral-user-data', navigationPolicy: { mode: 'unrestricted', allowedOrigins: [] } } },
+    async observe() { throw new Error('not exercised') },
+    async act() {
+      return {
+        receiptId: 'r1', ownerId: 'a', action: 'click', status: 'failed',
+        startedAt: '2024-01-01T00:00:00.000Z', completedAt: '2024-01-01T00:00:01.000Z',
+        dispatched: false,
+        pageBefore: { url: 'about:blank', title: '' }, pageAfter: { url: 'about:blank', title: '' },
+        code: 'TARGET_CHANGED', reason: 'the live element no longer matches the observed semantic fingerprint',
+        changed: { field: 'disabled', from: false, to: true },
+      }
+    },
+    async evidence() { return { ownerId: 'a', page: { url: 'about:blank', title: '' }, console: [], network: [], bounded: true, limits: { console: 1, network: 1 }, dropped: { console: 0, network: 0 } } },
+    async stop() { return { ownerId: 'a', stopped: true, reason: 'requested' } },
+    async dispose() {},
+  }
+  const adapter = new BrowserAdapter(driver)
+  const receipt = await adapter.act('a', { kind: 'click', ref: 'br_1' })
+  assert.equal(receipt.code, 'TARGET_CHANGED')
+  assert.equal(receipt.reason, 'the live element no longer matches the observed semantic fingerprint')
+  assert.deepEqual(
+    receipt.changed,
+    { field: 'disabled', from: false, to: true },
+    'the additive driver field naming WHAT changed survives verbatim',
+  )
+  assert.equal(receipt.receiptId, undefined, 'driver bookkeeping never leaks into the QA receipt')
+  assert.equal(receipt.startedAt, undefined, 'driver timestamps never leak')
+})
+
 test('BrowserAdapter carries the APPLIED budget and the driver-named truncation reasons', async () => {
   const driver = {
     kind: 'browser',

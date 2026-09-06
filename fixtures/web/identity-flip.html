@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dsh-qa identity flip fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 18px 0; }
+    a[aria-disabled="true"] { color: #999; }
+  </style>
+</head>
+<body>
+  <h1>Identity flip fixture</h1>
+  <nav id="china-navbox" role="navigation" aria-label="China navbox">
+    <h2>China</h2>
+    <ul>
+      <li><a href="#topic-01">Topic 01</a></li>
+      <li><a href="#topic-02">Topic 02</a></li>
+      <li><a href="#topic-03">Topic 03</a></li>
+      <li><a href="#topic-04">Topic 04</a></li>
+      <li><a href="#topic-05">Topic 05</a></li>
+      <li><a href="#topic-06">Topic 06</a></li>
+      <li><a href="#topic-07">Topic 07</a></li>
+      <li><a href="#topic-08">Topic 08</a></li>
+      <li><a href="#topic-09">Topic 09</a></li>
+      <li><a href="#topic-10">Topic 10</a></li>
+      <li><a href="#topic-11">Topic 11</a></li>
+      <li><a href="#topic-12">Topic 12</a></li>
+      <li><a href="#topic-13">Topic 13</a></li>
+      <li><a href="#topic-14">Topic 14</a></li>
+      <li><a href="#topic-15">Topic 15</a></li>
+      <li><a href="#topic-16">Topic 16</a></li>
+      <li><a href="#topic-17">Topic 17</a></li>
+      <li><a href="#topic-18">Topic 18</a></li>
+      <li><a href="#topic-19">Topic 19</a></li>
+      <li><a href="#topic-20">Topic 20</a></li>
+      <li><a href="#topic-21">Topic 21</a></li>
+      <li><a href="#topic-22">Topic 22</a></li>
+      <li><a id="history-link" href="#history-of-china">History of China</a></li>
+      <li><a href="#topic-24">Topic 24</a></li>
+      <li><a href="#topic-25">Topic 25</a></li>
+      <li><a href="#topic-26">Topic 26</a></li>
+      <li><a href="#topic-27">Topic 27</a></li>
+      <li><a href="#topic-28">Topic 28</a></li>
+      <li><a href="#topic-29">Topic 29</a></li>
+      <li><a href="#topic-30">Topic 30</a></li>
+    </ul>
+  </nav>
+  <div id="result" role="status" aria-live="polite">IDLE</div>
+
+  <script>
+    (function () {
+      var raw = new URLSearchParams(location.search).get('flips');
+      var flipsRemaining = raw === 'forever' ? Infinity : Number(raw || '0');
+      // Infinity ("forever") is valid and must survive; anything else that is
+      // not a non-negative finite count means the page never flips.
+      if (flipsRemaining !== Infinity && (!Number.isFinite(flipsRemaining) || flipsRemaining < 0)) flipsRemaining = 0;
+      var link = document.getElementById('history-link');
+      var lastFlipAt = 0;
+
+      var proto = Node.prototype;
+      var descriptor = null;
+      while (proto !== null && descriptor === null) {
+        descriptor = Object.getOwnPropertyDescriptor(proto, 'isConnected');
+        proto = Object.getPrototypeOf(proto);
+      }
+      if (descriptor !== null && typeof descriptor.get === 'function') {
+        var original = descriptor.get;
+        Object.defineProperty(Node.prototype, 'isConnected', {
+          configurable: true,
+          enumerable: false,
+          get: function () {
+            var connected = original.call(this);
+            var now = Date.now();
+            if (this === link && flipsRemaining > 0 && now - lastFlipAt >= 40) {
+              lastFlipAt = now;
+              flipsRemaining -= 1;
+              if (link.getAttribute('aria-disabled') === 'true') {
+                link.removeAttribute('aria-disabled');
+              } else {
+                link.setAttribute('aria-disabled', 'true');
+              }
+            }
+            return connected;
+          },
+        });
+      } else {
+        document.getElementById('result').textContent = 'HOOK_FAILED';
+      }
+    })();
+  </script>
+</body>
+</html>

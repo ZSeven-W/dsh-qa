@@ -482,11 +482,25 @@ The **name-only rule** therefore applies to BOTH selector families:
   resolution and dispatch: the driver then REFUSES the action with
   `TARGET_CHANGED` (identity staleness — the page replaced the bound element
   mid-flight, and NOTHING was dispatched). Only that one code is retried, and
-  exactly ONCE: a fresh settled observation, a re-resolution of the SAME
-  semantic target, and a second dispatch. The step discloses
-  `targetChangedRetry: true` in report.json/report.md. Every other
-  rejection (a safety/policy refusal) stays a hard stop, and a second
-  `TARGET_CHANGED` fails honestly — the retry never loops.
+  the retry is BOUNDED, never one-shot: a fresh settled observation, a
+  re-resolution of the SAME semantic target, and a re-dispatch, repeated
+  WITHIN the session settle budget until the resolve->dispatch pair lands
+  (QA-BL-070). The budget is re-read every iteration and widened ONCE through
+  the shared once-per-session gate when the retry exhausts it — the same
+  bounded-retry/adaptive-widening machinery positive-existence assertions use
+  (`decideAssertionWithRetry` / `session.widenForRetry`, cause
+  `assertion-retry`). The step discloses `targetChangedRetries: N` (the
+  refusal count) in report.json/report.md. Every other rejection (a
+  safety/policy refusal) stays a hard stop with ZERO retries — as do
+  `TARGET_NOT_UNIQUE` and a target absent from a COMPLETE view. When the
+  budget is exhausted with the target still changing identity, the step is
+  `inconclusive` with reason `INCONCLUSIVE_UNSTABLE` and
+  `assertionPassed: false` (the run aggregates to `inconclusive`, NEVER
+  `fail`): "the target kept changing identity between resolution and dispatch
+  for the whole settle budget (N retries): the page did not hold still, so
+  the step is unproven" — and the driver's last refusal receipt (its verbatim
+  `reason` plus any additive fields such as `changed`) rides on the step so
+  triage can see WHAT changed.
 
 ## Budget
 

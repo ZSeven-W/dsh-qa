@@ -537,11 +537,13 @@ export interface QaStepResult {
   index: number;
   intent: string;
   /**
-   * Three-state (QA-BL-062, amended QA-BL-069): 'inconclusive' when the
-   * result is provisional (INCONCLUSIVE_SCOPE) OR the scoped container
-   * could not be located in a still-truncated view
-   * (INCONCLUSIVE_TRUNCATED with scopeNotLocated: true — nothing
-   * definitely failed), never passed.
+   * Three-state (QA-BL-062, amended QA-BL-069, QA-BL-070): 'inconclusive'
+   * when the result is provisional (INCONCLUSIVE_SCOPE), OR the scoped
+   * container could not be located in a still-truncated view
+   * (INCONCLUSIVE_TRUNCATED with scopeNotLocated: true), OR the target
+   * kept changing identity between resolution and dispatch for the whole
+   * settle budget (INCONCLUSIVE_UNSTABLE with targetChangedRetries —
+   * nothing definitely failed: the page did not hold still), never passed.
    */
   status: 'pass' | 'inconclusive' | 'fail';
   action: QaScenarioAction;
@@ -630,16 +632,39 @@ export interface QaStepResult {
    */
   targetResolution?: QaTargetResolutionDisclosure;
   /**
-   * ADDITIVE (QA-BL-064): true when the driver REFUSED the first dispatch
-   * with TARGET_CHANGED (the page replaced the bound element between target
-   * resolution and dispatch — the same hydration swap as the role drift, and
-   * the action was NOT dispatched) and the runner retried it ONCE: a fresh
-   * settled observation, a re-resolution of the SAME semantic target, and a
-   * second dispatch. Only the identity-staleness code TARGET_CHANGED is ever
-   * retried; every other rejection (safety/policy) stays a hard stop, and a
-   * second TARGET_CHANGED fails honestly. schemaVersion stays 1.
+   * ADDITIVE (QA-BL-064, amended QA-BL-070): how many times the driver
+   * REFUSED the dispatch with TARGET_CHANGED (the page replaced the bound
+   * element between target resolution and dispatch — the same hydration
+   * swap as the role drift, and the action was NOT dispatched) before the
+   * bounded identity retry stopped. The runner retries the resolve->dispatch
+   * pair WITHIN the session settle budget — a fresh settled observation, a
+   * re-resolution of the SAME semantic target, and a re-dispatch, widening
+   * the budget ONCE through the shared session gate when the retry exhausts
+   * it (the QA-BL-039/041 machinery assertions use) — and this count names
+   * how many stale-identity dispatches that took. Only the
+   * identity-staleness code TARGET_CHANGED is ever retried; every other
+   * rejection (safety/policy) stays a hard stop with the field absent.
+   * When the budget is exhausted with the target still changing identity,
+   * the step is 'inconclusive' with reason INCONCLUSIVE_UNSTABLE and
+   * assertionPassed false (the page did not hold still, so the step is
+   * unproven — NEVER an ordinary failure); the final receipt (with the
+   * driver's verbatim reason and any additive fields) rides as `receipt`.
+   * Excluded from the determinism projection (a duration artifact, like
+   * attempts/elapsedMs). schemaVersion stays 1.
    */
-  targetChangedRetry?: true;
+  targetChangedRetries?: number;
+  /**
+   * ADDITIVE (QA-BL-070): the exhaustion message for a step whose target
+   * kept changing identity between resolution and dispatch for the whole
+   * settle budget: "the target kept changing identity between resolution
+   * and dispatch for the whole settle budget (N retries): the page did not
+   * hold still, so the step is unproven" — plus the once-only widening
+   * clause when one happened. Present exactly when the bounded identity
+   * retry exhausted its budget (step status 'inconclusive', reason
+   * INCONCLUSIVE_UNSTABLE). Excluded from the determinism projection
+   * (it names the retry count). schemaVersion stays 1.
+   */
+  message?: string;
 }
 
 export interface QaAssertionResult {

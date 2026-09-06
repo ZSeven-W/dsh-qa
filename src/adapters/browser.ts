@@ -105,12 +105,25 @@ export class BrowserAdapter implements QaDriverAdapter {
   // here to keep the session core driver-agnostic.
   async act(ownerId: string, action: QaAction, _approval?: QaApprovalGate): Promise<QaActionReceipt> {
     const receipt = await this.#driver.act(ownerId, this.#mapAction(action));
-    return {
+    const projected: QaActionReceipt = {
       status: receipt.status,
       ...(receipt.code === undefined ? {} : { code: receipt.code }),
       ...(receipt.reason === undefined ? {} : { reason: receipt.reason }),
       dispatched: receipt.dispatched,
     };
+    // QA-BL-070: additive driver fields ride through VERBATIM (e.g. a
+    // `changed` field naming WHAT the driver saw change), so triage can read
+    // the refusal detail on the step result. Driver-native bookkeeping
+    // (timestamps, page refs, verification internals) stays excluded.
+    const DRIVER_BOOKKEEPING = new Set([
+      'receiptId', 'ownerId', 'action', 'startedAt', 'completedAt', 'dispatched',
+      'pageBefore', 'pageAfter', 'target', 'observation', 'verification', 'code', 'reason', 'status',
+    ]);
+    for (const [key, value] of Object.entries(receipt as unknown as Record<string, unknown>)) {
+      if (DRIVER_BOOKKEEPING.has(key) || value === undefined) continue;
+      (projected as unknown as Record<string, unknown>)[key] = value;
+    }
+    return projected;
   }
 
   #mapAction(action: QaAction): BrowserAction {

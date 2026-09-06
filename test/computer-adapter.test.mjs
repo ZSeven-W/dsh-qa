@@ -147,6 +147,31 @@ test('projects observation, asserts identity, and maps a type action verbatim', 
   assert.equal(calls.filter((c) => c[0] === 'observe').length, 1)
 })
 
+test('ComputerAdapter passes additive driver receipt fields through verbatim, excluding driver bookkeeping (QA-BL-070)', async () => {
+  const { driver } = fakeDriver({
+    act() {
+      return receipt({
+        status: 'failed',
+        reason: 'live target identity changed; observe again',
+        changed: { field: 'identity', from: 'window-number 7', to: 'window-number 8' },
+      })
+    },
+  })
+  const adapter = new ComputerAdapter(driver)
+  const result = await adapter.act('sc', { kind: 'click', ref: 'r3' })
+  assert.equal(result.status, 'failed')
+  assert.equal(result.code, 'IDENTITY_CHANGED', 'the derived structured code still applies')
+  assert.equal(result.reason, 'live target identity changed; observe again')
+  assert.deepEqual(
+    result.changed,
+    { field: 'identity', from: 'window-number 7', to: 'window-number 8' },
+    'the additive driver field naming WHAT changed survives verbatim',
+  )
+  assert.equal(result.receiptId, undefined, 'driver bookkeeping never leaks into the QA receipt')
+  assert.equal(result.sequence, undefined)
+  assert.equal(result.startedAt, undefined, 'driver timestamps never leak')
+})
+
 test('secure field is permanently rejected even when an approval gate is supplied', async () => {
   const { driver, calls } = fakeDriver()
   const adapter = new ComputerAdapter(driver)

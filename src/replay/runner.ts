@@ -21,7 +21,7 @@ import type {
   QaTargetResolutionDisclosure,
   QaViewCompleteness,
 } from '../contracts.ts';
-import type { QaAction, QaActionReceipt, QaDriverAdapter, QaEvidence, QaObservation, QaObserveOptions, QaSemanticNode, QaVisualCapture } from '../session/adapter.ts';
+import type { QaAction, QaActionReceipt, QaDriverAdapter, QaEvidence, QaObservation, QaObserveOptions, QaSettleWidened, QaSemanticNode, QaVisualCapture } from '../session/adapter.ts';
 import { captureLatestVisual, QaSession, type QaActResult } from '../session/session.ts';
 import type { QaSettlePolicy } from '../session/settle.ts';
 import { evaluateVisualQuestion, persistCaptureFile, type QaVisualServices } from '../vision.ts';
@@ -56,6 +56,20 @@ export interface ReplayRunOptions {
 /** Deterministic, honest failure message for a view that never stabilized. */
 function unsettledMessage(what: string, budgetMs: number): string {
   return 'the ' + what + ' observation never settled within the ' + String(budgetMs) + 'ms settle budget';
+}
+
+/**
+ * QA-BL-070: the required exhaustion message for the bounded identity retry.
+ * The target kept changing identity between resolution and dispatch for the
+ * whole settle budget — the page mutated under the runner, so nothing about
+ * the scenario's claim definitely failed: the step is unproven, and the
+ * message says so. The once-only widening is named when it happened.
+ */
+function identityExhaustionMessage(retries: number, widened: QaSettleWidened | null): string {
+  return 'the target kept changing identity between resolution and dispatch for the whole settle budget ('
+    + String(retries) + ' retries): the page did not hold still, so the step is unproven'
+    + (widened === null ? '' : ' — the settle budget was widened once from ' + String(widened.fromMs)
+      + ' to ' + String(widened.toMs) + 'ms and still exhausted');
 }
 
 function errorMessage(error: unknown): string {
@@ -1076,7 +1090,8 @@ function buildStepResult(
     scopeLevels?: QaScopeWalkLevel[];
   } = {},
   targetResolution: QaTargetResolutionDisclosure | null = null,
-  targetChangedRetry = false,
+  targetChangedRetries = 0,
+  message?: string,
 ): QaStepResult {
   return {
     index: base.index,
@@ -1084,13 +1099,16 @@ function buildStepResult(
     // QA-BL-067: the scenario step's recorded record-time proof refusal rides
     // onto the step result so report.md's step lines surface it.
     ...(base.escalationRefused === undefined ? {} : { escalationRefused: base.escalationRefused }),
-    // QA-BL-062/069 three-state: INCONCLUSIVE_SCOPE is a provisional
-    // non-result and a container not located in a still-truncated view is an
-    // inconclusive non-result (INCONCLUSIVE_TRUNCATED) — never green, and
-    // never an ordinary failure.
+    // QA-BL-062/069/070 three-state: INCONCLUSIVE_SCOPE is a provisional
+    // non-result, a container not located in a still-truncated view is an
+    // inconclusive non-result (INCONCLUSIVE_TRUNCATED), and a target that
+    // kept changing identity for the whole settle budget is an inconclusive
+    // non-result (INCONCLUSIVE_UNSTABLE) — never green, and never an
+    // ordinary failure.
     status: assertionPassed
       ? 'pass'
-      : reason === QA_INCONCLUSIVE_SCOPE || scope.scopeNotLocated === true ? 'inconclusive' : 'fail',
+      : reason === QA_INCONCLUSIVE_SCOPE || reason === QA_INCONCLUSIVE_UNSTABLE
+        || scope.scopeNotLocated === true ? 'inconclusive' : 'fail',
     action: base.action,
     receipt,
     outcome,
@@ -1107,7 +1125,10 @@ function buildStepResult(
     ...(scope.scopeLevels === undefined ? {} : { scopeLevels: scope.scopeLevels }),
     // QA-BL-064: disclosed only when the name-only fallback resolved the action target.
     ...(targetResolution === null ? {} : { targetResolution }),
-    ...(targetChangedRetry ? { targetChangedRetry: true as const } : {}),
+    // QA-BL-070: the bounded identity-staleness retry count (replaces the
+    // QA-BL-064 boolean) and its exhaustion message.
+    ...(targetChangedRetries > 0 ? { targetChangedRetries } : {}),
+    ...(message === undefined ? {} : { message }),
   };
 }
 
@@ -1292,12 +1313,18 @@ export async function runScenario(
   let evidence: QaEvidence | QaEvidenceCollectionFailure | null = null;
   let failure: QaRunFailure | null = null;
   let settleWidened: QaSettleWidening | null = null;
-  // QA-BL-062/069: the count of UNPROVEN required results (scopeResolution
-  // 'provisional' / INCONCLUSIVE_SCOPE, or a scoped container not located in
-  // a still-truncated view / INCONCLUSIVE_TRUNCATED). Any unproven result
-  // keeps the run off 'pass' — and when nothing definitely failed, the run
-  // aggregates to 'inconclusive'.
+  // QA-BL-062/069/070: the count of UNPROVEN required results
+  // (scopeResolution 'provisional' / INCONCLUSIVE_SCOPE, a scoped container
+  // not located in a still-truncated view / INCONCLUSIVE_TRUNCATED, or an
+  // identity-staleness retry that exhausted its settle budget /
+  // INCONCLUSIVE_UNSTABLE). Any unproven result keeps the run off 'pass' —
+  // and when nothing definitely failed, the run aggregates to 'inconclusive'.
   let unprovenCount = 0;
+  // QA-BL-070: a step whose target kept changing identity for the whole
+  // settle budget proves nothing, so the run must NEVER re-decide its final
+  // assertions (a spurious definite failure there would contradict the
+  // inconclusive classification).
+  let identityExhaustedStep = false;
 
   try {
     await session.start({
@@ -1355,10 +1382,17 @@ export async function runScenario(
 
       let resolved: QaAction;
       // QA-BL-064: disclosed on the step when the name-only fallback resolved
-      // a drifted action target (see resolveStepAction), and when a
-      // TARGET_CHANGED refusal was retried once (see the act block).
+      // a drifted action target (see resolveStepAction).
       let targetResolution: QaTargetResolutionDisclosure | null = null;
-      let targetChangedRetry = false;
+      // QA-BL-070: the bounded identity-staleness retry accounting (replaces
+      // the QA-BL-064 one-shot boolean): the TARGET_CHANGED refusal count,
+      // the last verbatim refusal receipt, the once-only widening the retry
+      // performed through the shared gate, the exhaustion message, and
+      // whether the step was classified unproven.
+      let targetChangedRetries = 0;
+      let targetChangedLastReceipt: QaActionReceipt | null = null;
+      let identityWidened: QaSettleWidened | null = null;
+      let identityExhausted: string | null = null;
       try {
         // A step whose assertion carries a container scope resolves its action
         // target INSIDE that container (see resolveStepAction), so a target
@@ -1392,7 +1426,7 @@ export async function runScenario(
             },
             QA_INCONCLUSIVE_TRUNCATED, 1, 0,
             { scopeNotLocated: true, scopeLevels: error.levels },
-            null, false,
+            null, 0,
           ));
           unprovenCount += 1;
           break;
@@ -1410,36 +1444,58 @@ export async function runScenario(
 
       let result: QaActResult;
       try {
-        result = await session.act(resolved);
-        // QA-BL-064: the hydration swap can also land BETWEEN target
+        // QA-BL-064/070: the hydration swap can also land BETWEEN target
         // resolution and dispatch — the driver then refuses the action with
         // TARGET_CHANGED (identity staleness: the page replaced the bound
-        // element mid-flight, and NOTHING was dispatched). That is the same
-        // re-render the name-only fallback exists for, so retry the dispatch
-        // ONCE: a fresh settled observation, a re-resolution of the SAME
-        // semantic target, and a second dispatch. Only the
-        // identity-staleness code TARGET_CHANGED is ever retried — every
-        // other rejection (a safety/policy refusal) stays a hard stop — and
-        // a second TARGET_CHANGED fails honestly like before.
-        if (result.outcome === 'failed' && result.receipt.code === 'TARGET_CHANGED') {
-          targetChangedRetry = true;
+        // element mid-flight, and NOTHING was dispatched). Nothing about the
+        // scenario's claim definitely failed: the page mutated under the
+        // runner. Retry the resolve->dispatch pair WITHIN the session settle
+        // budget — a fresh settled observation, a re-resolution of the SAME
+        // semantic target, and a re-dispatch — re-reading the budget every
+        // iteration and widening it ONCE through the shared session gate when
+        // the retry exhausts it (the QA-BL-039/041 machinery assertions use,
+        // cause 'assertion-retry'). Only the identity-staleness code
+        // TARGET_CHANGED is ever retried — every other rejection (a
+        // safety/policy refusal) stays a hard stop. When the budget is
+        // exhausted with the target still changing identity, the step is
+        // INCONCLUSIVE_UNSTABLE (inconclusive, never a failure): the page did
+        // not hold still, so the step is unproven.
+        const identityStartedAt = Date.now();
+        result = await session.act(resolved);
+        while (result.outcome === 'failed' && result.receipt.code === 'TARGET_CHANGED') {
+          targetChangedRetries += 1;
+          targetChangedLastReceipt = result.receipt;
+          if (Date.now() - identityStartedAt >= session.settlePolicy.budgetMs) {
+            // Exhausted the budget without a landed dispatch. Widen ONCE
+            // through the same session gate as the unstable/assertion paths
+            // (a session widens at most once, whichever path gets there
+            // first) and keep retrying; otherwise classify the step
+            // unproven.
+            if (identityWidened === null) {
+              const widened = session.widenForRetry();
+              if (widened !== null) {
+                identityWidened = widened;
+                if (settleWidened === null) settleWidened = { ...widened, at: step.index };
+              } else {
+                identityExhausted = identityExhaustionMessage(targetChangedRetries, identityWidened);
+                break;
+              }
+            } else {
+              identityExhausted = identityExhaustionMessage(targetChangedRetries, identityWidened);
+              break;
+            }
+          }
           const refresh = await session.observeSettled();
           if (settleWidened === null && refresh.widened !== null) {
             settleWidened = { ...refresh.widened, at: step.index };
           }
           if (!refresh.stable) {
-            stepResults.push(
-              buildStepResult(
-                base, step.assert, result.receipt, result.outcome, false, null,
-                null, undefined, undefined, undefined, {}, null, targetChangedRetry,
-              ),
-            );
-            failure = {
-              stepIndex: step.index,
-              message: unsettledMessage('post-TARGET_CHANGED refresh', refresh.budgetMs),
-              code: QA_INCONCLUSIVE_UNSTABLE,
-              reproduction: toReproduction(stepResults),
-            };
+            // The refresh never settled: the page did not hold still, so the
+            // step is unproven exactly like the budget-exhaustion exit.
+            identityExhausted =
+              'the post-TARGET_CHANGED refresh observation never settled within the '
+              + String(refresh.budgetMs) + 'ms settle budget (after ' + String(targetChangedRetries)
+              + ' retries): the page did not hold still, so the step is unproven';
             break;
           }
           const retryResolution = await resolveStepAction(
@@ -1473,7 +1529,7 @@ export async function runScenario(
             },
             QA_INCONCLUSIVE_TRUNCATED, 1, 0,
             { scopeNotLocated: true, scopeLevels: error.levels },
-            null, targetChangedRetry,
+            null, targetChangedRetries,
           ));
           unprovenCount += 1;
           break;
@@ -1486,6 +1542,23 @@ export async function runScenario(
         };
         break;
       }
+
+      // QA-BL-070 classification: the bounded identity retry exhausted its
+      // budget (or its refresh never settled) with the target still changing
+      // identity — the step is INCONCLUSIVE_UNSTABLE (inconclusive), NEVER an
+      // ordinary failure, and the driver's last refusal rides verbatim so
+      // triage sees WHAT changed. The run aggregates to 'inconclusive' and
+      // never re-decides the final assertions.
+      if (identityExhausted !== null) {
+        stepResults.push(buildStepResult(
+          base, step.assert, targetChangedLastReceipt, 'failed', false, null,
+          null, QA_INCONCLUSIVE_UNSTABLE, undefined, undefined, {}, null, targetChangedRetries,
+          identityExhausted,
+        ));
+        unprovenCount += 1;
+        identityExhaustedStep = true;
+        break;
+      }
       if (settleWidened === null && result.settle !== null && result.settle.widened !== null) {
         settleWidened = { ...result.settle.widened, at: step.index };
       }
@@ -1494,7 +1567,7 @@ export async function runScenario(
         stepResults.push(
           buildStepResult(
             base, step.assert, result.receipt, result.outcome, false, null,
-            null, undefined, undefined, undefined, {}, null, targetChangedRetry,
+            null, undefined, undefined, undefined, {}, null, targetChangedRetries,
           ),
         );
         failure = {
@@ -1643,7 +1716,7 @@ export async function runScenario(
             ...(decision.scopeLevels === undefined ? {} : { scopeLevels: decision.scopeLevels }),
           },
           targetResolution,
-          targetChangedRetry,
+          targetChangedRetries,
         ),
       );
       if (scopedScrollProof) lastScrollProofDecision = decision;
@@ -1690,7 +1763,7 @@ export async function runScenario(
       }
     }
 
-    if (failure === null) {
+    if (failure === null && !identityExhaustedStep) {
       const finalSettle = await session.observeSettled();
       if (settleWidened === null && finalSettle.widened !== null) {
         settleWidened = { ...finalSettle.widened, at: 'final' };

@@ -178,12 +178,26 @@ export class ComputerAdapter implements QaDriverAdapter {
     // Exactly one driver.act call: never retried around any rejection/unknown.
     const receipt = await this.#driver.act(computerAction, context);
     const code = receiptCode(receipt);
-    return {
+    const projected: QaActionReceipt = {
       status: receipt.status,
       ...(code === undefined ? {} : { code }),
       ...(receipt.reason === '' ? {} : { reason: receipt.reason }),
       dispatched: receipt.nativeAccepted || receipt.status === 'confirmed' || receipt.status === 'unknown',
     };
+    // QA-BL-070: additive driver fields ride through VERBATIM (e.g. a
+    // `changed` field naming WHAT the driver saw change), so triage can read
+    // the refusal detail on the step result. Driver-native bookkeeping stays
+    // excluded.
+    const DRIVER_BOOKKEEPING = new Set([
+      'receiptId', 'sequence', 'status', 'action', 'ref', 'observationId',
+      'observationFingerprint', 'startedAt', 'finishedAt', 'reason',
+      'nativeAccepted', 'postAction',
+    ]);
+    for (const [key, value] of Object.entries(receipt as unknown as Record<string, unknown>)) {
+      if (DRIVER_BOOKKEEPING.has(key) || value === undefined) continue;
+      (projected as unknown as Record<string, unknown>)[key] = value;
+    }
+    return projected;
   }
 
   /**

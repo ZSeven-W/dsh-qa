@@ -254,9 +254,19 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   zero-match failure otherwise distinguishes "the target is absent from the returned window"
   (truncated, \`INCONCLUSIVE_TRUNCATED\`) from "the target is absent from a complete view".
   The same hydration swap can land BETWEEN resolution and dispatch: a \`TARGET_CHANGED\` refusal
-  (identity staleness — nothing was dispatched) is retried ONCE (fresh settled observation, same
-  semantic target, second dispatch; \`targetChangedRetry: true\` on the step); every other
-  rejection stays a hard stop and a second \`TARGET_CHANGED\` fails honestly.
+  (identity staleness — nothing was dispatched) is retried WITHIN the settle budget, never once
+  (QA-BL-070): a fresh settled observation, a re-resolution of the SAME semantic target, and a
+  re-dispatch, repeated until the pair lands, widening the budget ONCE through the shared session
+  gate when the retry exhausts it (the same machinery assertion retries use; cause
+  \`assertion-retry\`). The step discloses \`targetChangedRetries: N\` (the refusal count) in
+  report.json/report.md, and the driver's last refusal receipt (verbatim \`reason\` plus any
+  additive fields such as \`changed\`) rides on the step so triage sees WHAT changed. Every other
+  rejection — a policy/safety refusal, \`TARGET_NOT_UNIQUE\`, a target absent from a COMPLETE
+  view — stays a hard stop with zero retries. When the budget is exhausted with the target still
+  changing identity, the step is \`inconclusive\` with reason \`INCONCLUSIVE_UNSTABLE\` and
+  \`assertionPassed: false\` (the run is \`inconclusive\`, NEVER \`fail\`): "the target kept
+  changing identity between resolution and dispatch for the whole settle budget (N retries): the
+  page did not hold still, so the step is unproven".
 - \`qa_session_stop\` releases the owner scope. Stop on success and failure; the trajectory remains
   exportable until another session starts for that owner or the plugin disposes.
 

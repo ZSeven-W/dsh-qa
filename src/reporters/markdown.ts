@@ -258,14 +258,22 @@ export function renderReportMarkdown(report: QaRunReport, roots?: RedactionRoots
         ),
       );
     }
-    if (step.targetChangedRetry === true) {
+    if (step.targetChangedRetries !== undefined) {
+      // QA-BL-070: the bounded identity-staleness retry count (replaces the
+      // QA-BL-064 boolean): how many TARGET_CHANGED refusals the runner
+      // retried within the settle budget before the resolve->dispatch pair
+      // landed or the budget was exhausted.
       lines.push(
-        '  - target changed retry: ' + mdInline(
-          'the driver refused the first dispatch with TARGET_CHANGED (the page replaced the bound '
-          + 'element mid-flight); the runner re-observed, re-resolved the same semantic target, '
-          + 'and dispatched once more',
+        '  - target changed retries: ' + String(step.targetChangedRetries) + ' — ' + mdInline(
+          'the driver refused the dispatch with TARGET_CHANGED (the page replaced the bound '
+          + 'element between resolution and dispatch) ' + String(step.targetChangedRetries)
+          + ' time(s); the runner re-observed, re-resolved the same semantic target, and '
+          + 're-dispatched within the settle budget',
         ),
       );
+    }
+    if (step.message !== undefined) {
+      lines.push('  - message: ' + mdInline(step.message));
     }
     if (step.completeness !== undefined) {
       lines.push('  - view completeness: ' + mdInline(completenessLine(step.completeness)));

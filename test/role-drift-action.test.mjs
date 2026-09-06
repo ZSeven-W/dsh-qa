@@ -11,7 +11,7 @@ import {
 import { loadScenarioFromPath, runScenario, validateScenario } from '../src/replay/index.ts'
 import { renderReportMarkdown } from '../src/reporters/index.ts'
 import { QaSession } from '../src/session/index.ts'
-import { QA_INCONCLUSIVE_TRUNCATED, QA_TARGET_NOT_UNIQUE } from '../src/contracts.ts'
+import { QA_INCONCLUSIVE_TRUNCATED, QA_INCONCLUSIVE_UNSTABLE, QA_TARGET_NOT_UNIQUE } from '../src/contracts.ts'
 
 // QA-BL-064 role-drift ACTION-target regression (unit level; the real-Chrome
 // twins live in test/role-drift-action.integration.test.mjs). The recorded
@@ -275,7 +275,7 @@ test('zero matches in a complete view fail with "absent from a complete view"', 
   assert.doesNotMatch(report.failure?.message ?? '', /truncated/, 'a complete view is never called truncated')
 })
 
-test('a TARGET_CHANGED refusal retries the dispatch once and discloses the retry', async () => {
+test('a TARGET_CHANGED refusal is retried within the settle budget and discloses the retry count', async () => {
   const report = await runScenario(pressScenario(), targetChangedOnceAdapter(), {
     ownerId: 'rd-target-changed-retry',
     settle: SETTLE,
@@ -284,14 +284,17 @@ test('a TARGET_CHANGED refusal retries the dispatch once and discloses the retry
   const step = report.steps[0]
   assert.equal(step.status, 'pass')
   assert.equal(step.assertionPassed, true, 'the retried dispatch landed and its proof passed')
-  assert.equal(step.targetChangedRetry, true, 'the identity-staleness retry is disclosed')
+  // QA-BL-070: the boolean one-shot disclosure is now the retry COUNT (one
+  // TARGET_CHANGED refusal, one bounded re-dispatch) — renamed field only.
+  assert.equal(step.targetChangedRetries, 1, 'the identity-staleness retry is disclosed as a count')
   assert.deepEqual(
     step.targetResolution,
     { mode: 'name-only', recordedRole: 'combobox', observedRole: 'textbox' },
     'the retry re-resolved the same semantic target (name-only fallback again)',
   )
   const md = renderReportMarkdown(report)
-  assert.match(md, /target changed retry: the driver refused the first dispatch with TARGET_CHANGED/)
+  assert.match(md, /target changed retries: 1/, 'report.md discloses the retry count (renamed from the boolean targetChangedRetry, QA-BL-070)')
+  assert.match(md, /the driver refused the dispatch with TARGET_CHANGED/)
 })
 
 test('a non-TARGET_CHANGED rejection stays a hard stop (never retried)', async () => {
@@ -301,18 +304,32 @@ test('a non-TARGET_CHANGED rejection stays a hard stop (never retried)', async (
   })
   assert.equal(report.status, 'fail')
   assert.match(report.failure?.message ?? '', /action receipt rejected \(DESTRUCTIVE_ACTION\)/)
-  assert.equal(report.steps[0].targetChangedRetry, undefined, 'only TARGET_CHANGED is ever retried')
+  assert.equal(report.steps[0].targetChangedRetries, undefined, 'only TARGET_CHANGED is ever retried (renamed field, QA-BL-070)')
   assert.equal(report.steps[0].receipt.status, 'rejected')
 })
 
-test('two consecutive TARGET_CHANGED refusals fail honestly (one retry, no loop)', async () => {
+test('a target that keeps changing identity exhausts the settle budget: INCONCLUSIVE_UNSTABLE, never fail', async () => {
   const report = await runScenario(pressScenario(), rejectingAdapter('TARGET_CHANGED'), {
     ownerId: 'rd-target-changed-twice',
     settle: SETTLE,
   })
-  assert.equal(report.status, 'fail')
-  assert.match(report.failure?.message ?? '', /action receipt rejected \(TARGET_CHANGED\)/)
-  assert.equal(report.steps[0].targetChangedRetry, true, 'the single retry is disclosed even on the failure')
+  // QA-BL-070: identity staleness is now retried WITHIN the settle budget
+  // (not once); exhausting the budget with the target still changing means
+  // the page did not hold still — the step is unproven, so the run is
+  // INCONCLUSIVE, never a failure. (SETTLE.adaptiveBudgetMs is 0, so the
+  // once-per-session widening is a no-op here, exactly like assertions.)
+  assert.equal(report.status, 'inconclusive')
+  assert.equal(report.failure, undefined, 'nothing definitely failed')
+  const step = report.steps[0]
+  assert.equal(step.status, 'inconclusive')
+  assert.equal(step.reason, QA_INCONCLUSIVE_UNSTABLE)
+  assert.equal(step.assertionPassed, false)
+  assert.ok(step.targetChangedRetries >= 1, 'the retry count is disclosed even on exhaustion')
+  assert.equal(step.receipt.code, 'TARGET_CHANGED', 'the last refusal rides verbatim')
+  assert.match(
+    step.message ?? '',
+    /the target kept changing identity between resolution and dispatch for the whole settle budget \(\d+ retries\): the page did not hold still, so the step is unproven/,
+  )
 })
 
 test('export: a role-drift action target exports NAME-only with the live role as roleHint', async () => {
