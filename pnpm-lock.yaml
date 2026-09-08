@@ -18,12 +18,18 @@ importers:
       '@types/node':
         specifier: ^26.2.0
         version: 26.4.0
+      '@zseven-w/dsh-android':
+        specifier: link:../dsh-android
+        version: link:../dsh-android
       '@zseven-w/dsh-browser':
         specifier: link:../dsh-browser
         version: link:../dsh-browser
       '@zseven-w/dsh-computer':
         specifier: link:../dsh-computer
         version: link:../dsh-computer
+      '@zseven-w/dsh-ios':
+        specifier: link:../dsh-ios
+        version: link:../dsh-ios
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12

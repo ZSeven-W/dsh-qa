@@ -22,10 +22,13 @@ import type {
   QaTargetResolutionDisclosure,
   QaViewCompleteness,
 } from '../contracts.ts';
-import type { QaAction, QaActionReceipt, QaDriverAdapter, QaEvidence, QaObservation, QaObserveOptions, QaSettleWidened, QaSemanticNode, QaVisualCapture } from '../session/adapter.ts';
+import type { QaAction, QaActionReceipt, QaApprovalGate, QaDriverAdapter, QaEvidence, QaObservation, QaObserveOptions, QaSettleWidened, QaSemanticNode, QaVisualCapture } from '../session/adapter.ts';
 import { captureLatestVisual, QaSession, type QaActResult } from '../session/session.ts';
+import { scenarioStartOptions } from './drivers.ts';
 import type { QaSettlePolicy, QaSettleResult } from '../session/settle.ts';
 import { evaluateVisualQuestion, persistCaptureFile, type QaVisualServices } from '../vision.ts';
+import { buildVisualRuntimeAction, captureAndGroundVisualTarget } from '../visual-action.ts';
+import { groundVisualTarget } from '../visual-grounding.ts';
 import {
   decideAssertionWithRetry,
   evaluateAssertion,
@@ -43,8 +46,20 @@ export interface ReplayRunOptions {
   headless?: boolean;
   /** Override target.launch (e.g. a dynamically bound fixture port). */
   launchUrl?: string;
-  /** Optional vision services for advisory visual assertions. */
+  /**
+   * Mobile-only explicit device override. When supplied it wins over the
+   * recorded scenario.target.deviceId. It is an exact routing selector for
+   * this replay run, never a globally durable device identity claim.
+   */
+  deviceId?: string;
+  /** Optional vision services for advisory visual assertions AND visual-action re-grounding. */
   visual?: QaVisualServices;
+  /**
+   * Optional host-owned approval gate for visual actions. Absent means the
+   * driver will report approval unavailable (explicit rejection), never an
+   * implicit allow.
+   */
+  approval?: QaApprovalGate;
   /**
    * Bounded settle policy for every verification observation. It MUST match the
    * policy Explore used at export time (both default to resolveSettlePolicy):
@@ -226,6 +241,7 @@ function describeTarget(target: QaNodePredicate): string {
   if (target.role !== undefined) parts.push('role "' + target.role + '"');
   if (target.name !== undefined) parts.push('name "' + target.name + '"');
   if (target.tag !== undefined) parts.push('tag "' + target.tag + '"');
+  if (target.identifier !== undefined) parts.push('identifier "' + target.identifier + '"');
   return parts.length === 0 ? 'no fields' : parts.join(', ');
 }
 
@@ -1049,6 +1065,7 @@ function resolveRef(target: QaNodePredicate, observation: QaObservation): string
 function targetOf(action: QaScenarioAction): QaNodePredicate | null {
   if (action.kind === 'navigate') return null;
   if (action.kind === 'scroll' && !('target' in action)) return null;
+  if (action.kind === 'visual_click' || action.kind === 'visual_drag' || action.kind === 'visual_scroll') return null;
   return action.target;
 }
 
@@ -1114,15 +1131,41 @@ function resolveAction(
   // role+name predicate stays untouched (and echoed on the step result).
   const target = (recorded: QaNodePredicate): string => resolveRef(targetOverride ?? recorded, observation);
   if (action.kind === 'navigate') return { kind: 'navigate', url: action.url };
+  if (action.kind === 'visual_click' || action.kind === 'visual_drag' || action.kind === 'visual_scroll') {
+    throw new Error('visual action must be resolved through the visual grounding path, not resolveAction');
+  }
   if (action.kind === 'click') return { kind: 'click', ref: target(action.target) };
+  if (action.kind === 'focus') return { kind: 'focus', ref: target(action.target) };
   if (action.kind === 'fill') {
     return { kind: 'fill', ref: target(action.target), text: action.text };
+  }
+  if (action.kind === 'type') {
+    return { kind: 'type', ref: target(action.target), text: action.text };
   }
   if (action.kind === 'press') {
     return { kind: 'press', ref: target(action.target), key: action.key };
   }
+  if (action.kind === 'key') {
+    return {
+      kind: 'key',
+      ref: target(action.target),
+      key: action.key,
+      ...(action.modifiers === undefined ? {} : { modifiers: [...action.modifiers] }),
+    };
+  }
   if (action.kind === 'scroll') {
-    if ('target' in action) return { kind: 'scroll', ref: target(action.target) };
+    if ('target' in action) {
+      // Computer container scroll preserves the recorded direction/amount;
+      // browser scroll-into-view has neither.
+      return action.direction === undefined
+        ? { kind: 'scroll', ref: target(action.target) }
+        : {
+            kind: 'scroll',
+            ref: target(action.target),
+            direction: action.direction,
+            ...(action.amount === undefined ? {} : { amount: action.amount }),
+          };
+    }
     return {
       kind: 'scroll',
       direction: action.direction,
@@ -1133,6 +1176,56 @@ function resolveAction(
     return { kind: 'select', ref: target(action.target), option: action.option };
   }
   return { kind: 'hover', ref: target(action.target) };
+}
+
+/**
+ * Resolve a visual scenario action by re-grounding on a FRESH capture through
+ * the injected vision service. Never reuses a recorded coordinate or capture
+ * SHA-256. Returns a runtime QaAction with the fresh capture binding.
+ */
+async function resolveVisualStepAction(
+  action: QaScenarioAction,
+  session: QaSession,
+  visual: QaVisualServices | undefined,
+  wholePage: QaObservation,
+): Promise<{ resolved: QaAction; observation: QaObservation; targetResolution: null }> {
+  if (action.kind === 'visual_click' || action.kind === 'visual_scroll') {
+    const targetDescription = action.targetDescription;
+    const grounded = await captureAndGroundVisualTarget(session, targetDescription, visual);
+    if (action.kind === 'visual_click') {
+      return {
+        resolved: buildVisualRuntimeAction('click', grounded.capture, targetDescription, grounded.nativePoint, { provenance: grounded.grounding }),
+        observation: wholePage,
+        targetResolution: null,
+      };
+    }
+    return {
+      resolved: buildVisualRuntimeAction('scroll', grounded.capture, targetDescription, grounded.nativePoint, {
+        direction: action.direction,
+        ...(action.amount === undefined ? {} : { amount: action.amount }),
+        provenance: grounded.grounding,
+      }),
+      observation: wholePage,
+      targetResolution: null,
+    };
+  }
+  if (action.kind !== 'visual_drag') {
+    throw new Error('unsupported visual action kind');
+  }
+  const grounded = await captureAndGroundVisualTarget(session, action.targetDescription, visual);
+  const result = await groundVisualTarget(action.toDescription, grounded.capture, visual, {});
+  if (!result.ok) {
+    throw new Error('qa_act visual drag destination grounding failed: ' + result.reason);
+  }
+  return {
+    resolved: buildVisualRuntimeAction('drag', grounded.capture, action.targetDescription, grounded.nativePoint, {
+      toDescription: action.toDescription,
+      nativeTo: result.nativePoint,
+      provenance: grounded.grounding,
+    }),
+    observation: wholePage,
+    targetResolution: null,
+  };
 }
 
 /**
@@ -1159,6 +1252,7 @@ async function resolveStepAction(
   session: QaSession,
   reobserve: QaReobserve,
   options: ScopeResolutionOptions = {},
+  visual?: QaVisualServices,
 ): Promise<{
   resolved: QaAction;
   observation: QaObservation;
@@ -1166,6 +1260,9 @@ async function resolveStepAction(
   /** QA-BL-073: true when the walk's scoped reads reported the informational scope.nameChanged. */
   scopeNameChanged: boolean;
 }> {
+  if (action.kind === 'visual_click' || action.kind === 'visual_drag' || action.kind === 'visual_scroll') {
+    return { ...(await resolveVisualStepAction(action, session, visual, wholePage)), scopeNameChanged: false };
+  }
   if (assert.scope === undefined) {
     return { ...(await resolveActionWithBudget(action, wholePage, reobserve)), scopeNameChanged: false };
   }
@@ -1672,11 +1769,7 @@ export async function runScenario(
   let identityExhaustedStep = false;
 
   try {
-    await session.start({
-      url: launch,
-      ...(options.headless === undefined ? {} : { headless: options.headless }),
-      ...(scenario.target.loginState === undefined ? {} : { loginState: scenario.target.loginState }),
-    });
+    await session.start(scenarioStartOptions(scenario, launch, options.headless, options.deviceId));
   } catch (error) {
     await session.stop().catch(() => {});
     return blockedReport(scenario, startedAt, 'failed to start driver: ' + errorMessage(error));
@@ -1760,6 +1853,7 @@ export async function runScenario(
           session,
           reobserve,
           stepScopeOptions(),
+          options.visual,
         );
         resolved = resolution.resolved;
         current = resolution.observation;
@@ -1840,7 +1934,7 @@ export async function runScenario(
           session,
           identityAccount,
           async () => {
-            const attempt = await session.act(resolved);
+            const attempt = await session.act(resolved, options.approval);
             if (attempt.outcome === 'failed' && attempt.receipt.code === 'TARGET_CHANGED') {
               targetChangedLastReceipt = attempt.receipt;
               return {
@@ -1876,6 +1970,7 @@ export async function runScenario(
                 session,
                 reobserve,
                 stepScopeOptions(),
+                options.visual,
               );
               resolved = retryResolution.resolved;
               if (retryResolution.targetResolution !== null) {

@@ -161,12 +161,17 @@ function actionEcho(action: QaAction, before: QaObservation | null): QaEchoMask 
   if (before === null) return null;
   const node = before.nodes.find((candidate) => candidate.ref === action.ref);
   if (node === undefined) return null;
-  if (node.role === '' && node.name === '' && node.tag === '') return null;
+  if (node.role === '' && node.name === '' && node.tag === '' && node.identifier === undefined) return null;
   const value = valueWrite
     ? normalizeObservableValue(action.kind === 'select' ? action.option : action.text)
     : null;
   return {
-    predicate: { role: node.role, name: node.name, tag: node.tag },
+    predicate: {
+      role: node.role,
+      name: node.name,
+      tag: node.tag,
+      ...(node.identifier === undefined ? {} : { identifier: node.identifier }),
+    },
     ref: action.ref,
     // An empty written value is as good as unknowable: masking every empty
     // value-bearing node would be over-masking, so it degrades to the
@@ -186,6 +191,7 @@ function scrollProofNodeEquivalent(left: QaSemanticNode, right: QaSemanticNode):
     && (left.href ?? null) === (right.href ?? null)
     && (left.inViewport ?? null) === (right.inViewport ?? null)
     && (left.secure ?? null) === (right.secure ?? null)
+    && (left.identifier ?? null) === (right.identifier ?? null)
     && (left.value ?? null) === (right.value ?? null)
     && (left.valueWithheld ?? false) === (right.valueWithheld ?? false)
     && (left.valueTruncated ?? false) === (right.valueTruncated ?? false);
@@ -861,7 +867,12 @@ export class QaSession {
       // QA-BL-067: the silent exit is DISCLOSED with the fixed vocabulary.
       return { accepted: false, refusal: { reason: 'target-not-in-baseline' } };
     }
-    const target = { role: targetNode.role, name: targetNode.name, tag: targetNode.tag };
+    const target = {
+      role: targetNode.role,
+      name: targetNode.name,
+      tag: targetNode.tag,
+      ...(targetNode.identifier === undefined ? {} : { identifier: targetNode.identifier }),
+    };
     const alreadyInViewport = settledObservation.nodes.some(
       (candidate) => matchesNode(candidate, target) && candidate.inViewport === true,
     );
@@ -879,7 +890,12 @@ export class QaSession {
       // role+name+tag identity — a HINT to pick the within subtree; the
       // proof itself is decided by the anchor, so a re-key can never turn a
       // non-ancestor into a false proof. Zero or twin matches: not re-keyable.
-      const predicate = { role: container.role, name: container.name, tag: container.tag };
+      const predicate = {
+        role: container.role,
+        name: container.name,
+        tag: container.tag,
+        ...(container.identifier === undefined ? {} : { identifier: container.identifier }),
+      };
       const settledMatches = settledObservation.nodes.filter((candidate) => matchesNode(candidate, predicate));
       const containerRefInSettled = settledMatches.length === 1 ? (settledMatches[0] as QaSemanticNode).ref : undefined;
       if (containerRefInSettled !== undefined) {

@@ -103,12 +103,17 @@ test('a replay run that never settles fails with failure.code INCONCLUSIVE_UNSTA
   assert.match(md, new RegExp('- code: ' + QA_INCONCLUSIVE_UNSTABLE), 'report.md renders the code')
 })
 
-test('src/server.mjs qa_replay_run passes settle policy and visual services like src/tools.ts', () => {
-  const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'server.mjs'), 'utf8')
-  const replayRegion = serverSource.slice(serverSource.indexOf("server.tool(\n  'qa_replay_run'"), serverSource.indexOf('await server.connect'))
-  assert.match(replayRegion, /runScenario\(scenario, adapter, \{[\s\S]*settle/, 'the MCP replay must pass the settle policy')
+test('src/mcp-server.ts qa_replay_run passes settle policy and visual services like src/tools.ts', () => {
+  const serverSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'mcp-server.ts'), 'utf8')
+  const replayStart = serverSource.indexOf("server.tool(\n    'qa_replay_run'")
+  assert.ok(replayStart >= 0, 'qa_replay_run tool registration found in mcp-server.ts')
+  const replayRegion = serverSource.slice(replayStart, serverSource.indexOf('return server;'))
+  assert.match(replayRegion, /runScenario\(scenario, loaded\.adapter, \{[\s\S]*settle/, 'the MCP replay must pass the settle policy')
   assert.ok(replayRegion.includes('visual:'), 'the MCP replay must pass visual services')
-  const evidenceRegion = serverSource.slice(serverSource.indexOf('captureVisualEvidenceMCP'), serverSource.indexOf('function guard'))
+  const evidenceStart = serverSource.indexOf('captureVisualEvidenceMCP')
+  const evidenceEnd = serverSource.indexOf('function guard')
+  assert.ok(evidenceStart >= 0 && evidenceEnd > evidenceStart, 'captureVisualEvidenceMCP found in mcp-server.ts')
+  const evidenceRegion = serverSource.slice(evidenceStart, evidenceEnd)
   assert.ok(evidenceRegion.includes('captureSettled'), 'the MCP qa_evidence visual must carry the captureSettled marker')
 })
 

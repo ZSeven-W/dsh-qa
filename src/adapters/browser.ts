@@ -157,6 +157,12 @@ export class BrowserAdapter implements QaDriverAdapter {
       case 'type':
       case 'key':
         throw new Error('browser driver does not support the computer "' + action.kind + '" action');
+      case 'visual_click':
+      case 'visual_drag':
+      case 'visual_scroll':
+        throw new Error('browser driver does not support the CU visual fallback action "' + action.kind + '"');
+      default:
+        throw new Error('browser driver does not support the unknown action kind');
     }
   }
 

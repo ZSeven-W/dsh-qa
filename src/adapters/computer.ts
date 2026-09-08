@@ -8,6 +8,8 @@ import type {
   ComputerObservation,
   ComputerObserveRequest,
   ComputerTarget,
+  ComputerVisualAction,
+  ComputerVisualActionReceipt,
 } from '@zseven-w/dsh-computer';
 import type {
   QaAction,
@@ -60,7 +62,7 @@ interface Binding {
 
 const EDITABLE_ROLES = new Set(['AXTextField', 'AXTextArea', 'AXSearchField']);
 
-function receiptCode(receipt: ComputerActionReceipt): string | undefined {
+function receiptCode(receipt: ComputerActionReceipt | ComputerVisualActionReceipt): string | undefined {
   // The computer receipt has no structured code field; derive the stable
   // safety code from the driver's reason where it is deterministic. Every
   // reason string below is matched verbatim against dsh-computer's
@@ -170,12 +172,18 @@ export class ComputerAdapter implements QaDriverAdapter {
   }
 
   async act(ownerId: string, action: QaAction, approval?: QaApprovalGate): Promise<QaActionReceipt> {
-    const computerAction = this.#mapAction(action);
     const context: ComputerDriverContext = {
       scopeId: ownerId,
       ...(approval === undefined ? {} : { approval }),
     };
-    // Exactly one driver.act call: never retried around any rejection/unknown.
+    // Exactly one driver.act/visualAct call: never retried around any
+    // rejection/unknown.
+    if (action.kind === 'visual_click' || action.kind === 'visual_drag' || action.kind === 'visual_scroll') {
+      const visualAction = this.#mapVisualAction(action);
+      const receipt = await this.#driver.visualAct(visualAction, context);
+      return this.#projectVisualReceipt(receipt);
+    }
+    const computerAction = this.#mapAction(action);
     const receipt = await this.#driver.act(computerAction, context);
     const code = receiptCode(receipt);
     const projected: QaActionReceipt = {
@@ -191,6 +199,29 @@ export class ComputerAdapter implements QaDriverAdapter {
     const DRIVER_BOOKKEEPING = new Set([
       'receiptId', 'sequence', 'status', 'action', 'ref', 'observationId',
       'observationFingerprint', 'startedAt', 'finishedAt', 'reason',
+      'nativeAccepted', 'postAction',
+    ]);
+    for (const [key, value] of Object.entries(receipt as unknown as Record<string, unknown>)) {
+      if (DRIVER_BOOKKEEPING.has(key) || value === undefined) continue;
+      (projected as unknown as Record<string, unknown>)[key] = value;
+    }
+    return projected;
+  }
+
+  #projectVisualReceipt(receipt: ComputerVisualActionReceipt): QaActionReceipt {
+    const code = receiptCode(receipt);
+    const projected: QaActionReceipt = {
+      status: receipt.status,
+      ...(code === undefined ? {} : { code }),
+      ...(receipt.reason === '' ? {} : { reason: receipt.reason }),
+      dispatched: receipt.nativeAccepted || receipt.status === 'confirmed' || receipt.status === 'unknown',
+      ...(receipt.captureSha256 === null || receipt.captureSha256 === undefined ? {} : { captureSha256: receipt.captureSha256 }),
+    };
+    // Additive visual receipt fields (captureSha256, postAction-safe fields)
+    // ride through verbatim; driver-native bookkeeping stays excluded.
+    const DRIVER_BOOKKEEPING = new Set([
+      'receiptId', 'sequence', 'status', 'action', 'observationId',
+      'observationFingerprint', 'captureSha256', 'startedAt', 'finishedAt', 'reason',
       'nativeAccepted', 'postAction',
     ]);
     for (const [key, value] of Object.entries(receipt as unknown as Record<string, unknown>)) {
@@ -293,6 +324,38 @@ export class ComputerAdapter implements QaDriverAdapter {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  #mapVisualAction(action: Extract<QaAction, { kind: 'visual_click' | 'visual_drag' | 'visual_scroll' }>): ComputerVisualAction {
+    const point = { x: action.point.x, y: action.point.y };
+    if (action.kind === 'visual_click') {
+      return {
+        kind: 'point',
+        op: 'click',
+        observationId: action.observationId,
+        captureSha256: action.captureSha256,
+        point,
+      };
+    }
+    if (action.kind === 'visual_drag') {
+      return {
+        kind: 'point',
+        op: 'drag',
+        observationId: action.observationId,
+        captureSha256: action.captureSha256,
+        point,
+        to: { x: action.to.x, y: action.to.y },
+      };
+    }
+    return {
+      kind: 'point',
+      op: 'scroll',
+      observationId: action.observationId,
+      captureSha256: action.captureSha256,
+      point,
+      direction: action.direction,
+      ...(action.amount === undefined ? {} : { amount: action.amount }),
+    };
+  }
+
   #mapAction(action: QaAction): ComputerAction {
     switch (action.kind) {
       case 'click':
@@ -331,6 +394,12 @@ export class ComputerAdapter implements QaDriverAdapter {
         throw new Error('computer driver does not support the "select" action (browser-only)');
       case 'hover':
         throw new Error('computer driver does not support the "hover" action (browser-only)');
+      case 'visual_click':
+      case 'visual_drag':
+      case 'visual_scroll':
+        throw new Error('computer driver visual actions must go through driver.visualAct');
+      default:
+        throw new Error('computer driver does not support the unknown action kind');
     }
   }
 

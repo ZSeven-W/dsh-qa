@@ -26,3 +26,13 @@ export {
 } from './loader.ts';
 export { normalizeReportForDeterminism } from './determinism.ts';
 export { runScenario, type ReplayRunOptions } from './runner.ts';
+export {
+  loadReplayDriver,
+  scenarioStartOptions,
+  type AndroidDriverLoader,
+  type BrowserDriverLoader,
+  type ComputerDriverLoader,
+  type IosDriverLoader,
+  type LoadedReplayDriver,
+  type ReplayDriverLoaders,
+} from './drivers.ts';

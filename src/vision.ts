@@ -145,7 +145,7 @@ export function parseVerdict(text: string): QaVisualFinding {
   return { verdict, confidence, reasoning };
 }
 
-function normalizeImageRef(value: unknown): QaImageRef {
+export function normalizeImageRef(value: unknown): QaImageRef {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('attachment service returned no image reference');
   }

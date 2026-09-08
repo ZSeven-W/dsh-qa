@@ -8,10 +8,10 @@ import type { QaActionReceipt, QaEvidence } from './session/adapter.ts';
 import type { QaSettlePolicy } from './session/settle.ts';
 import type { QaLoginStateConfig } from './loginState.ts';
 
-export type QaDriverKind = 'browser' | 'computer';
+export type QaDriverKind = 'browser' | 'computer' | 'ios' | 'android';
 
 /** Driver kinds dsh-qa v0.1 targets, in adapter registration order. */
-export const QA_DRIVERS = ['browser', 'computer'] as const;
+export const QA_DRIVERS = ['browser', 'computer', 'ios', 'android'] as const;
 
 /** The MCP tool surface the Explore agent drives; fixed for v0.1. */
 export const QA_TOOL_NAMES = [
@@ -58,10 +58,26 @@ export interface QaSettleOverride {
 }
 
 export interface QaScenarioTarget {
-  /** How the driver reaches the app under test (fixture URL or app bundle id). */
+  /** How the driver reaches the app under test (fixture URL, app bundle id, or Android package). */
   launch: string;
+  /**
+   * Mobile-only durable device selector (ADDITIVE, schemaVersion stays 1):
+   * the iOS simulator UDID or Android device serial the Explore session bound
+   * to. Replay REFUSES to choose a connected default device; if the recorded
+   * device is not present or the caller supplies qa_replay_run device_id, the
+   * runtime override wins. Deliberately not coordinates/refs/PID.
+   */
+  deviceId?: string;
   /** Browser-only: owner-authorized, scoped login-state injection (see loginState.ts). */
   loginState?: QaLoginStateConfig;
+  /**
+   * Computer-only durable window selector (ADDITIVE, schemaVersion stays 1):
+   * the Accessibility window title the Explore session bound to. Replay binds
+   * the SAME window so a multi-window app cannot be replayed against the wrong
+   * surface. Deliberately NOT the window number, PID, or any coordinate: those
+   * are launch-ephemeral and are never serialized as a durable selector.
+   */
+  windowTitle?: string;
 }
 
 /** Semantic predicate a scenario action/assertion matches against observable nodes. */
@@ -69,6 +85,13 @@ export interface QaNodePredicate {
   role?: string;
   name?: string;
   tag?: string;
+  /**
+   * Mobile-only optional stable identifier (Android resourceId / iOS
+   * accessibilityIdentifier). Export writes it when safe; names alone are only
+   * used when uniquely provable. When present replay re-resolves by this exact
+   * stable identity before any coordinate-derived dispatch.
+   */
+  identifier?: string;
   /**
    * ADDITIVE (QA-BL-064): the role the recorded live target carried when the
    * exporter chose a NAME-only predicate because the accessible name was
@@ -91,22 +114,63 @@ export interface QaTargetResolutionDisclosure {
   observedRole: string;
 }
 
+/** Model/harness provenance for a durable visual action (never raw pixels). */
+export interface QaVisualGroundingProvenance {
+  source: 'model-grounding' | 'harness-point' | 'replay-grounding';
+  provider?: string;
+  model?: string;
+  /** Model-reported advisory confidence (0..1), not proof. */
+  confidence?: number;
+}
+
 /**
  * A scenario action: the act plus a semantic target. Refs are opaque and
  * session-local, so scenarios address nodes semantically; the runner resolves
  * the target to a concrete ref from the current observation. Scroll has two
  * forms: scroll-to-target (semantic ref) and positional viewport scroll
  * (direction + optional amount); the exporter prefers the target form.
+ *
+ * Visual actions are computer-only CU v5 fallback steps. They deliberately
+ * carry NO raw coordinates, capture SHA-256, observation id, or image path:
+ * a durable selector is the target DESCRIPTION that Replay re-grounds against
+ * a FRESH capture each run. Provenance is explicit model-dependence metadata,
+ * never a deterministic action claim.
  */
 export type QaScenarioAction =
   | { kind: 'click'; target: QaNodePredicate }
   | { kind: 'fill'; target: QaNodePredicate; text: string }
   | { kind: 'press'; target: QaNodePredicate; key: string }
+  /** Computer-only: move focus to the resolved target. */
+  | { kind: 'focus'; target: QaNodePredicate }
+  /** Computer-only: type text into the resolved target (the computer analog of fill). */
+  | { kind: 'type'; target: QaNodePredicate; text: string }
+  /** Computer-only: press a key (optionally with modifiers) on the resolved target. */
+  | { kind: 'key'; target: QaNodePredicate; key: string; modifiers?: string[] }
   | { kind: 'navigate'; url: string }
-  | { kind: 'scroll'; target: QaNodePredicate }
+  /**
+   * Browser scroll-into-view (target only) OR computer container scroll
+   * (target + direction + optional amount). The computer form preserves the
+   * recorded direction/amount so replay reproduces the same scroll, never a
+   * directionless scroll-into-view.
+   */
+  | { kind: 'scroll'; target: QaNodePredicate; direction?: 'up' | 'down'; amount?: 'line' | 'page' | number }
   | { kind: 'scroll'; direction: 'up' | 'down'; amount?: 'page' | number }
   | { kind: 'select'; target: QaNodePredicate; option: string }
-  | { kind: 'hover'; target: QaNodePredicate };
+  | { kind: 'hover'; target: QaNodePredicate }
+  | { kind: 'visual_click'; targetDescription: string; provenance?: QaVisualGroundingProvenance }
+  | {
+      kind: 'visual_drag';
+      targetDescription: string;
+      toDescription: string;
+      provenance?: QaVisualGroundingProvenance;
+    }
+  | {
+      kind: 'visual_scroll';
+      targetDescription: string;
+      direction: 'up' | 'down';
+      amount?: 'line' | 'page' | number;
+      provenance?: QaVisualGroundingProvenance;
+    };
 
 export type QaAssertionKind = 'node-present' | 'node-absent' | 'page-url' | 'node-in-viewport' | 'node-value';
 
@@ -372,6 +436,8 @@ export interface QaObservedNode {
   role: string;
   name: string;
   tag: string;
+  /** Mobile-only stable identifier echoed from a node predicate (iOS/Android). */
+  identifier?: string;
 }
 
 /**

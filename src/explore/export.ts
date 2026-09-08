@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   QaAssertion,
+  QaDriverKind,
   QaNodePredicate,
   QaScenario,
   QaScenarioAction,
@@ -54,9 +55,42 @@ function containsRedactionMarker(value: string): boolean {
   return value.includes('[REDACTED');
 }
 
-function predicateFor(node: QaSemanticNode): QaNodePredicate | null {
+function predicateFor(node: QaSemanticNode, driver: QaDriverKind): QaNodePredicate | null {
   const role = clean(node.role);
   const name = clean(node.name);
+  if (driver === 'computer') {
+    // Computer semantics: the Accessibility IDENTIFIER (projected as tag) is the
+    // most durable selector — more stable than the AX role/name, which can
+    // drift across launches. Preserve role + name + identifier so replay
+    // matches all three; an identifier-only node is still exportable (the
+    // loader accepts a tag-only predicate).
+    const tag = clean(node.tag);
+    const predicate: QaNodePredicate = {};
+    if (role !== '') predicate.role = role;
+    if (name !== '') predicate.name = name;
+    if (tag !== '') predicate.tag = tag;
+    if (predicate.role === undefined && predicate.name === undefined && predicate.tag === undefined) return null;
+    for (const value of [predicate.role, predicate.name, predicate.tag]) {
+      if (value !== undefined && containsRedactionMarker(value)) return null;
+    }
+    return predicate;
+  }
+  if (driver === 'ios' || driver === 'android') {
+    // Mobile semantics: the stable identifier (iOS accessibilityIdentifier /
+    // AXUniqueId or Android resourceId) is the preferred durable selector.
+    // Include the accessible role/name when non-empty, but never coordinates,
+    // refs, PID, or any launch-ephemeral path.
+    const identifier = clean(node.identifier ?? '');
+    const predicate: QaNodePredicate = {};
+    if (role !== '') predicate.role = role;
+    if (name !== '') predicate.name = name;
+    if (identifier !== '') predicate.identifier = identifier;
+    if (predicate.role === undefined && predicate.name === undefined && predicate.identifier === undefined) return null;
+    for (const value of [predicate.role, predicate.name, predicate.identifier]) {
+      if (value !== undefined && containsRedactionMarker(value)) return null;
+    }
+    return predicate;
+  }
   if (role === '' || name === '') return null;
   if (containsRedactionMarker(role) || containsRedactionMarker(name)) return null;
   return { role, name };
@@ -65,7 +99,8 @@ function predicateFor(node: QaSemanticNode): QaNodePredicate | null {
 function matchesPredicate(node: QaSemanticNode, predicate: QaNodePredicate): boolean {
   return (predicate.role === undefined || node.role === predicate.role)
     && (predicate.name === undefined || node.name === predicate.name)
-    && (predicate.tag === undefined || node.tag === predicate.tag);
+    && (predicate.tag === undefined || node.tag === predicate.tag)
+    && (predicate.identifier === undefined || node.identifier === predicate.identifier);
 }
 
 function countMatches(observation: QaObservation, predicate: QaNodePredicate): number {
@@ -73,7 +108,7 @@ function countMatches(observation: QaObservation, predicate: QaNodePredicate): n
 }
 
 function predicateName(predicate: QaNodePredicate): string {
-  return predicate.name ?? predicate.role ?? predicate.tag ?? 'semantic target';
+  return predicate.name ?? predicate.role ?? predicate.tag ?? predicate.identifier ?? 'semantic target';
 }
 
 /** True when the node went from off-viewport (or absent) in `before` to in-viewport in `after`. */
@@ -89,10 +124,10 @@ function isRevealed(before: QaObservation, after: QaObservation, predicate: QaNo
  * the viewport. Prefers nodes that were already present off-viewport (a
  * scroll reveals them by moving the viewport, not by creating them).
  */
-function firstRevealedPredicate(before: QaObservation, after: QaObservation): QaNodePredicate | null {
+function firstRevealedPredicate(before: QaObservation, after: QaObservation, driver: QaDriverKind): QaNodePredicate | null {
   const present = after.nodes
     .filter((node) => node.inViewport === true)
-    .map((node) => ({ node, predicate: predicateFor(node) }))
+    .map((node) => ({ node, predicate: predicateFor(node, driver) }))
     .filter((item): item is { node: QaSemanticNode; predicate: QaNodePredicate } => (
       item.predicate !== null && countMatches(after, item.predicate) === 1
     ))
@@ -119,17 +154,11 @@ function exclusion(
 function durableAction(
   recorded: QaRecordedAction,
   before: QaObservation | null,
+  driver: QaDriverKind,
 ): DurableAction | QaExportExclusion {
   const action = recorded.action;
   if (action.kind === 'navigate') {
     return { action: { kind: 'navigate', url: action.url }, target: null };
-  }
-  if (action.kind === 'focus' || action.kind === 'type' || action.kind === 'key') {
-    return exclusion(
-      recorded,
-      'UNSUPPORTED_REPLAY_ACTION',
-      'Replay v0.1 has no scenario action for ' + action.kind + '; the step was not exported.',
-    );
   }
   if (action.kind === 'scroll' && !('ref' in action)) {
     // Viewport direction-scroll: inherently positional. buildScenario resolves
@@ -140,6 +169,51 @@ function durableAction(
         kind: 'scroll',
         direction: action.direction,
         ...(action.amount === undefined ? {} : { amount: action.amount }),
+      },
+      target: null,
+    };
+  }
+  if (action.kind === 'visual_click' || action.kind === 'visual_drag' || action.kind === 'visual_scroll') {
+    // Visual action durable form: target DESCRIPTION + provenance only. No raw
+    // coordinate, capture SHA-256, observation id, or image path is serialized.
+    // Replay re-grounds on a fresh screenshot. The proof assertion is built
+    // from the semantic post-action observation, exactly like other actions.
+    const provenance = action.grounding === undefined
+      ? undefined
+      : {
+          source: action.grounding.source,
+          ...(action.grounding.provider === undefined ? {} : { provider: action.grounding.provider }),
+          ...(action.grounding.model === undefined ? {} : { model: action.grounding.model }),
+          ...(action.grounding.confidence === undefined ? {} : { confidence: action.grounding.confidence }),
+        };
+    if (action.kind === 'visual_click') {
+      return {
+        action: {
+          kind: 'visual_click',
+          targetDescription: action.targetDescription,
+          ...(provenance === undefined ? {} : { provenance }),
+        },
+        target: null,
+      };
+    }
+    if (action.kind === 'visual_drag') {
+      return {
+        action: {
+          kind: 'visual_drag',
+          targetDescription: action.targetDescription,
+          toDescription: action.toDescription,
+          ...(provenance === undefined ? {} : { provenance }),
+        },
+        target: null,
+      };
+    }
+    return {
+      action: {
+        kind: 'visual_scroll',
+        targetDescription: action.targetDescription,
+        direction: action.direction,
+        ...(action.amount === undefined ? {} : { amount: action.amount }),
+        ...(provenance === undefined ? {} : { provenance }),
       },
       target: null,
     };
@@ -159,12 +233,16 @@ function durableAction(
         : 'The action ref was not present in its preceding observation.',
     );
   }
-  const target = predicateFor(node);
+  const target = predicateFor(node, driver);
   if (target === null) {
     return exclusion(
       recorded,
       'TARGET_HAS_NO_ACCESSIBLE_NAME',
-      'Replay export requires a non-empty, unredacted role plus accessible name.',
+      driver === 'computer'
+        ? 'Replay export requires a non-empty, unredacted role, accessible name, or Accessibility identifier.'
+        : driver === 'ios' || driver === 'android'
+          ? 'Replay export requires a non-empty, unredacted stable identifier (Android resourceId / iOS AXUniqueId), role, or accessible name.'
+          : 'Replay export requires a non-empty, unredacted role plus accessible name.',
     );
   }
   // QA-BL-064 (mirrors QA-BL-039's name-only discriminator for drifted
@@ -180,9 +258,15 @@ function durableAction(
   // is empty or not unique keeps the role+name form — and its uniqueness
   // exclusion. The DurableAction.target stays the role+name predicate: proof
   // synthesis (node-value discriminator, scroll proof) still anchors on it.
+  // COMPUTER: the Accessibility identifier (tag) is the durable selector, so
+  // the browser-only name-only role-drift fallback does not apply — the
+  // role+name+identifier predicate (or an identifier-only predicate) is the
+  // target, and it must match exactly one node in the recorded baseline.
   const name = target.name;
   const role = target.role;
-  const nameOnly = name !== undefined && countMatches(before, { name }) === 1;
+  const nameOnly = driver === 'browser'
+    && name !== undefined
+    && countMatches(before, { name }) === 1;
   const exportedTarget: QaNodePredicate = nameOnly && role !== undefined
     ? { name, roleHint: role }
     : target;
@@ -190,15 +274,39 @@ function durableAction(
     return exclusion(
       recorded,
       QA_TARGET_NOT_UNIQUE,
-      'Role plus accessible name did not uniquely identify the action target.',
+      driver === 'computer'
+        ? 'The role/name/identifier predicate did not uniquely identify the action target.'
+        : driver === 'ios' || driver === 'android'
+          ? 'The stable-identifier/role/name predicate did not uniquely identify the action target.'
+          : 'Role plus accessible name did not uniquely identify the action target.',
     );
   }
   if (action.kind === 'click') return { action: { kind: 'click', target: exportedTarget }, target };
-  if (action.kind === 'fill') {
+  if (action.kind === 'focus') return { action: { kind: 'focus', target: exportedTarget }, target };
+  if (action.kind === 'type') {
     if (clean(action.text) === '') {
-      return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay fill text must be non-empty.');
+      return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay type text must be non-empty.');
     }
+    return { action: { kind: 'type', target: exportedTarget, text: action.text }, target };
+  }
+  if (action.kind === 'fill') {
+    // Empty fill is a real replace operation: clear the bound input. It
+    // still requires the same unique target and independently observed proof.
     return { action: { kind: 'fill', target: exportedTarget, text: action.text }, target };
+  }
+  if (action.kind === 'key') {
+    if (clean(action.key) === '') {
+      return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay key key must be non-empty.');
+    }
+    return {
+      action: {
+        kind: 'key',
+        target: exportedTarget,
+        key: action.key,
+        ...(action.modifiers === undefined ? {} : { modifiers: [...action.modifiers] }),
+      },
+      target,
+    };
   }
   if (action.kind === 'select') {
     if (clean(action.option) === '') {
@@ -210,7 +318,19 @@ function durableAction(
     return { action: { kind: 'hover', target: exportedTarget }, target };
   }
   if (action.kind === 'scroll') {
-    return { action: { kind: 'scroll', target: exportedTarget }, target };
+    // Computer container scroll preserves the recorded direction/amount; the
+    // browser scroll-into-view target form carries neither.
+    return 'direction' in action
+      ? {
+          action: {
+            kind: 'scroll',
+            target: exportedTarget,
+            direction: action.direction,
+            ...(action.amount === undefined ? {} : { amount: action.amount }),
+          },
+          target,
+        }
+      : { action: { kind: 'scroll', target: exportedTarget }, target };
   }
   if (clean(action.key) === '') {
     return exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'Replay press key must be non-empty.');
@@ -307,24 +427,30 @@ function semanticDelta(
   before: QaObservation | null,
   after: QaObservation,
   target: QaNodePredicate | null,
+  driver: QaDriverKind,
 ): DeltaEvidence {
   if (before === null) return { delta: null, rejectedFragile: null };
   const anchor = targetAnchor(before, after, target);
   const candidates = after.nodes
     .map((node, order) => {
-      const base = predicateFor(node);
-      if (base === null || base.name === undefined) return null;
-      // Role drift: when the node's accessible name existed in `before` under a
-      // DIFFERENT role, the role changed within the trajectory (Wikipedia's
-      // search input: textbox -> combobox). Prefer the name-only predicate for
-      // the emitted proof when the name is unique in the settled view, exactly
-      // like the node-value discriminator; "new" is still decided against the
-      // role+name predicate, so a role drift stays a legitimate delta.
-      const roleDrifted = before.nodes.some(
-        (candidate) => candidate.name === base.name && candidate.role !== base.role,
+      const base = predicateFor(node, driver);
+      if (base === null) return null;
+      // Browser deltas need an accessible name; a computer delta may be
+      // identifier-only (the AX identifier is the durable selector).
+      const baseName = base.name;
+      if (driver === 'browser' && baseName === undefined) return null;
+      // Role drift (browser-only): when the node's accessible name existed in
+      // `before` under a DIFFERENT role, the role changed within the trajectory
+      // (Wikipedia's search input: textbox -> combobox). Prefer the name-only
+      // predicate for the emitted proof when the name is unique in the settled
+      // view, exactly like the node-value discriminator; "new" is still decided
+      // against the role+name predicate, so a role drift stays a legitimate
+      // delta. The computer identifier makes this fallback unnecessary there.
+      const roleDrifted = driver === 'browser' && baseName !== undefined && before.nodes.some(
+        (candidate) => candidate.name === baseName && candidate.role !== base.role,
       );
-      const predicate = roleDrifted && countMatches(after, { name: base.name }) === 1
-        ? { name: base.name }
+      const predicate = roleDrifted && baseName !== undefined && countMatches(after, { name: baseName }) === 1
+        ? { name: baseName }
         : base;
       return { node, order, base, predicate };
     })
@@ -440,9 +566,8 @@ function synthesizeValueAssertion(
   target: QaNodePredicate | null,
   action: QaScenarioAction | null,
 ): SynthesizedAssertion | null {
-  // Only a fill writes a value on its own target. The computer `type` verb is
-  // not replayable (durableAction excludes it), so it never reaches export.
-  if (action === null || action.kind !== 'fill' || target === null) return null;
+  // A fill/type writes a value on its own target (browser fill, computer type).
+  if (action === null || (action.kind !== 'fill' && action.kind !== 'type') || target === null) return null;
   const expected = normalizeObservableValue(action.text);
   const node = after.nodes.find((candidate) => matchesPredicate(candidate, target));
   if (node === undefined) {
@@ -517,6 +642,7 @@ function synthesizeAssertion(
   after: QaObservation,
   target: QaNodePredicate | null,
   action: QaScenarioAction | null,
+  driver: QaDriverKind,
 ): SynthesisResult {
   // A fill proven by its own value outranks every other candidate.
   const valueAssertion = synthesizeValueAssertion(after, target, action);
@@ -534,7 +660,7 @@ function synthesizeAssertion(
       fragileOnly: null,
     };
   }
-  const evidence = semanticDelta(before, after, target);
+  const evidence = semanticDelta(before, after, target, driver);
   if (evidence.delta !== null) {
     const delta = evidence.delta;
     const distant = delta.proximity === 'distant';
@@ -1064,6 +1190,17 @@ function synthesizeScrollAssertion(target: QaNodePredicate): QaAssertion {
 }
 
 /**
+ * True for the BROWSER scroll-into-view shape (a target with no direction).
+ * The computer container scroll (target + direction + optional amount) is a
+ * DIFFERENT action: it has no viewport notion, so its proof must be a semantic
+ * delta (a newly-revealed node), never a node-in-viewport assertion that a
+ * computer observation can never satisfy.
+ */
+function isScrollIntoViewAction(action: QaScenarioAction): boolean {
+  return action.kind === 'scroll' && 'target' in action && action.direction === undefined;
+}
+
+/**
  * Scroll-specific ASSERTION_NOT_PROVABLE detail for a scroll-by-target step
  * whose synthesized node-in-viewport proof failed against the recorded
  * post-action observation. It names the ACTUAL cause — the target was not
@@ -1107,9 +1244,22 @@ function intentFor(action: QaScenarioAction): string {
     if ('target' in action) return 'Scroll to "' + predicateName(action.target) + '".';
     return 'Scroll the viewport ' + action.direction + (action.amount === undefined ? '.' : ' by ' + String(action.amount) + '.');
   }
+  if (action.kind === 'visual_click') {
+    return 'Visually click "' + action.targetDescription + '" (CU visual fallback; replay re-grounds on a fresh screenshot).';
+  }
+  if (action.kind === 'visual_drag') {
+    return 'Visually drag "' + action.targetDescription + '" to "' + action.toDescription + '" (CU visual fallback; replay re-grounds on a fresh screenshot).';
+  }
+  if (action.kind === 'visual_scroll') {
+    return 'Visually scroll "' + action.targetDescription + '" ' + action.direction
+      + (action.amount === undefined ? '' : ' by ' + String(action.amount)) + ' (CU visual fallback; replay re-grounds on a fresh screenshot).';
+  }
   const targetName = action.target.name ?? action.target.role ?? 'semantic target';
   if (action.kind === 'click') return 'Click "' + targetName + '".';
   if (action.kind === 'fill') return 'Fill "' + targetName + '".';
+  if (action.kind === 'focus') return 'Focus "' + targetName + '".';
+  if (action.kind === 'type') return 'Type "' + action.text + '" into "' + targetName + '".';
+  if (action.kind === 'key') return 'Press ' + action.key + ' on "' + targetName + '".';
   if (action.kind === 'select') return 'Select option "' + action.option + '" on "' + targetName + '".';
   if (action.kind === 'hover') return 'Hover "' + targetName + '".';
   return 'Press ' + action.key + ' on "' + targetName + '".';
@@ -1143,7 +1293,7 @@ interface ResolvedScrollStep {
  * silently drops a scroll: a scroll with no observable in-viewport transition
  * is excluded with an explicit reason.
  */
-function resolveDirectionScroll(candidates: Candidate[], index: number): ResolvedScrollStep | null {
+function resolveDirectionScroll(candidates: Candidate[], index: number, driver: QaDriverKind): ResolvedScrollStep | null {
   const candidate = candidates[index];
   if (candidate === undefined || candidate.before === null || candidate.after === null || candidate.action === null) {
     return null;
@@ -1161,7 +1311,7 @@ function resolveDirectionScroll(candidates: Candidate[], index: number): Resolve
       };
     }
   }
-  const anyRevealed = firstRevealedPredicate(before, after);
+  const anyRevealed = firstRevealedPredicate(before, after, driver);
   if (anyRevealed !== null) {
     return {
       intent: 'Scroll the viewport ' + positional.direction
@@ -1309,7 +1459,7 @@ function buildScenario(
       });
       continue;
     }
-    const durable = durableAction(recorded, before);
+    const durable = durableAction(recorded, before, trajectory.driver);
     if ('reason' in durable) {
       candidates.push({ recorded, before, after, exclusion: durable, action: null, target: null });
       continue;
@@ -1335,11 +1485,15 @@ function buildScenario(
     }
     const recorded = candidate.recorded;
     const receipt = recorded.receipt;
+    // A DIRECTION-ONLY (positional viewport) scroll has no target; the
+    // computer container scroll carries BOTH target and direction and must
+    // NOT be resolved as a positional scroll (it already has its own target).
     const isDirectionScroll = candidate.action !== null
       && candidate.action.kind === 'scroll'
-      && 'direction' in candidate.action;
+      && 'direction' in candidate.action
+      && !('target' in candidate.action);
     if (isDirectionScroll) {
-      const resolved = resolveDirectionScroll(candidates, i);
+      const resolved = resolveDirectionScroll(candidates, i, trajectory.driver);
       if (resolved === null) {
         excluded.push(exclusion(
           recorded,
@@ -1399,9 +1553,13 @@ function buildScenario(
       excluded.push(exclusion(recorded, 'UNSUPPORTED_REPLAY_ACTION', 'The action had no durable replay form.'));
       continue;
     }
-    const synthesized: SynthesisResult = stepAction.kind === 'scroll' && candidate.target !== null
+    // Browser scroll-into-view proves node-in-viewport; computer container
+    // scroll proves a semantic delta (the computer driver has no viewport, so
+    // a node-in-viewport assertion could never replay).
+    const scrollIntoView = isScrollIntoViewAction(stepAction);
+    const synthesized: SynthesisResult = scrollIntoView && candidate.target !== null
       ? { assertion: { assertion: synthesizeScrollAssertion(candidate.target), weakness: null }, fragileOnly: null }
-      : synthesizeAssertion(candidate.before, after, candidate.target, stepAction);
+      : synthesizeAssertion(candidate.before, after, candidate.target, stepAction, trajectory.driver);
     if (synthesized.fragileOnly !== null) {
       // The only observable change was an ordering-fragile container whose
       // accessible name concatenates its children's text. Exporting it would
@@ -1424,7 +1582,7 @@ function buildScenario(
       excluded.push(exclusion(
         recorded,
         'ASSERTION_NOT_PROVABLE',
-        stepAction.kind === 'scroll' && candidate.target !== null
+        scrollIntoView && candidate.target !== null
           ? scrollProofFailureDetail(candidate.target, after)
           : receipt?.status === 'unknown'
             ? 'Unknown receipt had no semantic state change in the settled observation.'
@@ -1531,7 +1689,11 @@ function buildScenario(
       ...(visualNotes.length === 0 ? {} : { notes: visualNotes }),
       ...(settleOverride === undefined ? {} : { settle: settleOverride }),
     },
-    target: { launch: trajectory.launch },
+    target: {
+      launch: trajectory.launch,
+      ...(trajectory.windowTitle === null ? {} : { windowTitle: trajectory.windowTitle }),
+      ...(trajectory.deviceId === null ? {} : { deviceId: trajectory.deviceId }),
+    },
     steps,
     // The recorded (passed) qa_assert decisions replace the synthesized
     // steps-copy when any were exported; otherwise the final assertion stays
@@ -1593,15 +1755,12 @@ export async function exportRecordedScenario(
       excludedAssertions: [],
     };
   }
-  if (trajectory.driver !== 'browser') {
-    return {
-      ok: false,
-      code: 'DRIVER_NOT_REPLAYABLE',
-      error: 'Replay v0.1 supports browser scenarios only; the computer trajectory was retained but not exported.',
-      excludedActions: [],
-      excludedAssertions: [],
-    };
-  }
+  // Computer trajectories ARE exportable (WP6 closure): the computer driver
+  // schema preserves focus/type/key/scroll verbs and the Accessibility
+  // identifier (tag) as the durable selector, and the scenario target carries
+  // the recorded durable window title. The DRIVER_NOT_REPLAYABLE gate was the
+  // WP5 gap this slice closes; the remaining gate (NO_PROVEN_STEPS) applies to
+  // every driver alike.
   const built = buildScenario(trajectory, options);
   if (built.scenario === null) {
     return {

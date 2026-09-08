@@ -58,6 +58,8 @@
     "@types/node": "^26.2.0",
     "@zseven-w/dsh-browser": "link:../dsh-browser",
     "@zseven-w/dsh-computer": "link:../dsh-computer",
+    "@zseven-w/dsh-android": "link:../dsh-android",
+    "@zseven-w/dsh-ios": "link:../dsh-ios",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3"
   },
@@ -81,7 +83,8 @@
     "services": [
       "tools",
       "attachments",
-      "llm"
+      "llm",
+      "approval"
     ],
     "typing": "structural"
   }

@@ -25,18 +25,19 @@ export const QA_SKILL_DESCRIPTION =
 export const QA_SKILL_WHEN_TO_USE =
   'Any autonomous QA exploration through the qa_* tools — observing an unfamiliar UI, following '
   + 'semantic controls, preserving a failure, exporting a trajectory, or replaying the exported '
-  + 'scenario — over a Browser (BU) or Computer (CU) driver.'
+  + 'scenario — over a Browser (BU), Computer (CU), iOS, or Android driver.'
 
 export const QA_SKILL_CONTENT = `# Explore with dsh-qa
 
 The loop is **start → observe → choose one semantic target → act → inspect the fresh observation →
 assert → capture evidence at the moment a problem appears → export → replay → stop**. The same
-eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are never routed around.
+eight verbs serve Browser (BU), Computer (CU), iOS, and Android; driver safety decisions are never routed around.
 
 ## Explore method
 
 - \`qa_session_start\` binds one owner scope to one driver. Choose an explicit owner and keep it
-  unchanged through export. Browser takes \`url\`; Computer binds strong app/window identity.
+  unchanged through export. Browser takes \`url\`; Computer binds strong app/window identity;
+  iOS/Android require an explicit \`device_id\` (no default first device) and an app/package id.
 - A heavy site can widen the settle budget at start: pass \`settle_budget_ms\` (and \`settle_quiet_ms\`) to \`qa_session_start\`, clamped to the schema bounds (budget <= 15000ms). Separately, the session widens its budget ONCE automatically (the adaptive budget, \`settle_adaptive_budget_ms\` / env \`DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS\`, default 6000ms, \`0\`/\`off\` disables) when a settle window is still churning at the starting budget, OR when a positive-existence assertion retry exhausts its budget without finding its target (cause "unstable" vs "assertion-retry" respectively): the same window keeps polling until the adaptive budget, and every settle result reports \`settle.widened\` (\`{ fromMs, toMs, cause }\` or \`null\`). Whatever effective policy Explore ran with (the widened budget when it widened) is what \`qa_record_export\` records into \`meta.settle\`, and \`qa_replay_run\` applies it (env/host defaults otherwise), printing the effective policy plus \`settleWidened\` in report.json / report.md.
 - Begin with \`qa_observe\`. Prefer a unique role plus accessible name, take one purposeful action,
   then inspect the fresh observation returned by \`qa_act\`. Re-observe when diagnosing and never
@@ -47,6 +48,10 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
   observation. An \`unknown\` receipt is NEVER success: require a semantic delta or URL change in
   that observation. A \`rejected\` / \`failed\` receipt is a hard stop. Never approve, rephrase, or
   retarget around a driver safety rejection.
+- Mobile text input is conditional and driver-native: iOS \`fill\`/\`type\` use the dsh-ios
+  element-bound \`fillTarget\`/\`typeTarget\` only when the live driver exposes them (never raw
+  global type or invented focus), Android \`type\` is append-faithful after real focus
+  verification, and Android \`fill\` remains unavailable.
 - A \`fill\` is proven by its OWN target's value: when the fresh observation shows the target
   carrying the typed text, the exporter synthesizes a \`node-value\` assertion on that target (the
   most durable evidence), not on some other node that happened to change — including when the fill
@@ -281,9 +286,9 @@ eight verbs serve Browser (BU) and Computer (CU); driver safety decisions are ne
 
 ## Missing drivers
 
-The Browser and Computer drivers load lazily. When one is absent, the first tool call that needs it
-fails with a clear error naming the missing package. Plugin activation and tools/list do not require
-the drivers to be installed.
+The Browser, Computer, iOS, and Android drivers load lazily. When one is absent, the first tool call
+that needs it fails with a clear error naming the missing package. Plugin activation and tools/list
+do not require the drivers to be installed.
 `
 
 /** Register the playbook when the host provides the skill service. */

@@ -167,10 +167,13 @@ test('scroll with a bogus amount is rejected', () => {
   expectPosition(() => validateScenario(negative), 'steps[0].action.amount');
 });
 
-test('scroll must specify exactly one of target or direction', () => {
-  const both = validScenario();
-  both.steps[0].action = { kind: 'scroll', target: { role: 'button' }, direction: 'down' };
-  expectPosition(() => validateScenario(both), 'steps[0].action');
+test('scroll requires a target and/or a direction; target+direction is the computer container scroll', () => {
+  // Computer container scroll: target + direction + optional amount is the
+  // computer replay shape (distinct from browser scroll-into-view).
+  const container = validScenario();
+  container.steps[0].action = { kind: 'scroll', target: { role: 'button', name: 'Menu' }, direction: 'down', amount: 'line' };
+  assert.equal(validateScenario(container).steps[0].action.direction, 'down');
+  assert.equal(validateScenario(container).steps[0].action.amount, 'line');
 
   const neither = validScenario();
   neither.steps[0].action = { kind: 'scroll' };
@@ -195,13 +198,20 @@ test('node-value assertion validates a predicate plus an exact value', () => {
   assert.deepEqual(assertion.expected, { role: 'textbox', name: 'Release name', value: 'v1.0.0' });
 });
 
-test('node-value rejects a missing, empty, or non-string value', () => {
-  for (const expected of [{ role: 'textbox' }, { role: 'textbox', value: '  ' }, { role: 'textbox', value: 123 }]) {
+test('node-value rejects a missing or non-string value', () => {
+  for (const expected of [{ role: 'textbox' }, { role: 'textbox', value: null }, { role: 'textbox', value: 123 }]) {
     assert.throws(() => validateAssertion({ kind: 'node-value', expected }, 'qa_assert'), (error) => {
       assert.ok(error instanceof ScenarioValidationError);
       assert.equal(error.position, 'qa_assert.expected.value');
       return true;
     });
+  }
+});
+
+test('node-value preserves exact empty and whitespace values for clear assertions', () => {
+  for (const value of ['', '  ']) {
+    const assertion = validateAssertion({ kind: 'node-value', expected: { role: 'textbox', value } }, 'qa_assert');
+    assert.equal(assertion.expected.value, value);
   }
 });
 
@@ -273,4 +283,38 @@ test('meta.settle validates, clamps, and rejects garbage', () => {
     g.meta.settle = { adaptiveBudgetMs: bad };
     expectPosition(() => validateScenario(g), 'meta.settle.adaptiveBudgetMs');
   }
+});
+
+test('mobile ios/android scenarios accept deviceId and stable identifier predicates', () => {
+  const ios = validScenario();
+  ios.meta.driver = 'ios';
+  ios.target = { launch: 'com.example.app', deviceId: 'UDID-1' };
+  ios.steps[0].action = { kind: 'click', target: { identifier: 'com.example.button' } };
+  ios.steps[0].assert = { kind: 'node-present', expected: { identifier: 'com.example.done' } };
+  const parsedIos = validateScenario(ios);
+  assert.equal(parsedIos.meta.driver, 'ios');
+  assert.equal(parsedIos.target.deviceId, 'UDID-1');
+  assert.equal(parsedIos.steps[0].action.target.identifier, 'com.example.button');
+
+  const android = validScenario();
+  android.meta.driver = 'android';
+  android.target = { launch: 'com.example.android', deviceId: 'emulator-5554' };
+  android.steps[0].action = { kind: 'fill', target: { identifier: 'input.search' }, text: 'x' };
+  android.steps[0].assert = { kind: 'node-value', expected: { identifier: 'input.search', value: 'x' } };
+  const parsedAndroid = validateScenario(android);
+  assert.equal(parsedAndroid.meta.driver, 'android');
+  assert.equal(parsedAndroid.target.deviceId, 'emulator-5554');
+  assert.equal(parsedAndroid.steps[0].action.target.identifier, 'input.search');
+  assert.equal(parsedAndroid.steps[0].assert.expected.identifier, 'input.search');
+});
+
+test('mobile deviceId is rejected on non-mobile scenarios and as an empty value', () => {
+  const browserBad = validScenario();
+  browserBad.target.deviceId = 'UDID-1';
+  expectPosition(() => validateScenario(browserBad), 'target.deviceId');
+
+  const iosEmpty = validScenario();
+  iosEmpty.meta.driver = 'ios';
+  iosEmpty.target = { launch: 'com.example.app', deviceId: '   ' };
+  expectPosition(() => validateScenario(iosEmpty), 'target.deviceId');
 });

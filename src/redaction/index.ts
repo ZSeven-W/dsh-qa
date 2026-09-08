@@ -56,6 +56,66 @@ function joinProjectionPath(parent: string, _key: string): string {
 
 type ProjectionSegment = string | number;
 
+const ANDROID_IDENTIFIER_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const ANDROID_RESOURCE_SEPARATOR = ':id/';
+
+/**
+ * NARROW typed structural projection for real Android resource IDs.
+ *
+ * A fully qualified Android resource ID is `package.name:id/resourceName`.
+ * The generic free-text redactor treats `dev.zseven.qa.fixture.android:id/qa_input_name`
+ * as a URI/credential-shaped token and replaces the whole string, which makes
+ * the stable resourceId unusable as a durable Replay selector. This projection
+ * preserves ONLY strings that:
+ *
+ *   1. occur under a stable-identifier/tag JSON key (mobile observations,
+ *      predicates, assertions; never arbitrary prose),
+ *   2. match the Android resource-id grammar exactly,
+ *   3. contain no credential-shaped component (password/token/secret/...).
+ *
+ * Everything else keeps the existing fail-closed redaction path.
+ */
+function androidResourceShape(value: string): { pkg: string; resource: string; packageSegments: string[] } | null {
+  const marker = value.indexOf(ANDROID_RESOURCE_SEPARATOR);
+  if (marker <= 0) return null;
+  if (value.indexOf(ANDROID_RESOURCE_SEPARATOR, marker + 1) !== -1) return null;
+  const pkg = value.slice(0, marker);
+  const resource = value.slice(marker + ANDROID_RESOURCE_SEPARATOR.length);
+  if (pkg === '' || resource === '') return null;
+  if (pkg.includes('/') || resource.includes('/') || resource.includes('.')) return null;
+  const packageSegments = pkg.split('.');
+  for (const segment of packageSegments) {
+    if (!ANDROID_IDENTIFIER_SEGMENT.test(segment)) return null;
+  }
+  if (!ANDROID_IDENTIFIER_SEGMENT.test(resource)) return null;
+  return { pkg, resource, packageSegments };
+}
+
+export function isAndroidResourceId(value: string): boolean {
+  const shape = androidResourceShape(value);
+  if (shape === null) return false;
+  for (const segment of shape.packageSegments) {
+    if (isSensitiveKey(segment)) return false;
+  }
+  if (isSensitiveKey(shape.resource)) return false;
+  return true;
+}
+
+/** True only for an otherwise-valid Android resource ID shape that must be redacted (credential-shaped). */
+function isRejectedAndroidResourceId(value: string): boolean {
+  const shape = androidResourceShape(value);
+  if (shape === null) return false;
+  for (const segment of shape.packageSegments) {
+    if (isSensitiveKey(segment)) return true;
+  }
+  return isSensitiveKey(shape.resource);
+}
+
+function isStableIdentifierPosition(segments: readonly ProjectionSegment[]): boolean {
+  const last = segments[segments.length - 1];
+  return last === 'identifier' || last === 'tag';
+}
+
 // dsh-qa-specific: the ONLY structured artifact-path positions in QaRunReport
 // are report.artifacts[].path and report.advisory[].artifact.path. These route
 // through the fail-closed path projection (projectArtifactPath) instead of the
@@ -104,6 +164,20 @@ function projectJsonValue(
   if (typeof value === 'string') {
     if (isArtifactPathPosition(segments)) {
       return projectArtifactPathWithRoots(value, roots);
+    }
+    if (isStableIdentifierPosition(segments)) {
+      if (isAndroidResourceId(value)) {
+        // Android resource IDs are operational stable selectors, not prose or
+        // credentials. The typed grammar check above refuses credential-shaped
+        // components, so this is not a broad identifier/tag bypass.
+        return value;
+      }
+      if (isRejectedAndroidResourceId(value)) {
+        // A structurally Android resource-shaped value whose package or
+        // resource name is credential-shaped fails closed to a full redaction,
+        // never a partial echo of the stable selector.
+        return '[REDACTED]';
+      }
     }
     return redactTextWithRoots(value, roots);
   }

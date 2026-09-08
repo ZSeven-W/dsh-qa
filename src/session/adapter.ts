@@ -8,6 +8,10 @@ import type { QaSettlePolicy } from './settle.ts';
 
 export type QaReceiptStatus = 'confirmed' | 'unknown' | 'rejected' | 'failed';
 
+/** Driver kinds supported by the QA session/replay layer (shared with contracts). */
+export type QaRuntimeDriverKind = 'browser' | 'computer' | 'ios' | 'android';
+
+
 export interface QaPageRef {
   url: string;
   title: string;
@@ -26,6 +30,12 @@ export interface QaSemanticNode {
   role: string;
   name: string;
   tag: string;
+  /**
+   * Mobile-only stable identifier: Android resourceId or iOS
+   * accessibilityIdentifier (AXUniqueId). Used as the durable replay
+   * selector; absent when the driver did not expose one.
+   */
+  identifier?: string;
   interactive: boolean;
   editable: boolean;
   disabled: boolean;
@@ -218,6 +228,21 @@ export interface QaObservationScope {
 export interface QaObservation {
   page: QaPageRef;
   nodes: QaSemanticNode[];
+  /**
+   * Mobile-only identity/reporting block present exactly on iOS/Android
+   * observations. `deviceId` is the explicit simulator UDID / device serial
+   * the session bound; `appId` is the bundle/package launched; `verified`
+   * tells whether foregroundApp evidence confirmed the app actually fronts.
+   */
+  mobile?: {
+    deviceId: string;
+    appId: string;
+    kind: 'ios' | 'android';
+    backend: 'simulator' | 'physical' | 'emulator' | 'device';
+    verified: boolean;
+    coordinateSpace: 'point' | 'display-pixels';
+    screen: { width: number; height: number };
+  };
   truncated: boolean;
   /**
    * Browser-only (driver contract v8): the scope root of a scoped observation
@@ -315,6 +340,16 @@ export interface QaEvidence {
   dropped?: { console: number; network: number };
   /** Computer-only: full driver-native evidence (helper status + receipts). */
   computer?: QaComputerEvidence;
+  /** Mobile-only: minimal honest evidence block (no fabricated console/network). */
+  mobile?: {
+    kind: 'ios' | 'android';
+    deviceId: string;
+    appId: string;
+    backend: string;
+    /** What the backend reported when last observed, with verified status. */
+    foregroundVerified: boolean;
+    detail: string;
+  };
 }
 
 export interface QaSessionInfo {
@@ -336,6 +371,10 @@ export interface QaStartOptions {
   bundleId?: string;
   /** Computer-only: exact live PID (optionally paired with bundleId). */
   pid?: number;
+  /** Mobile-only: exact explicit device identifier (iOS simulator/physical UDID, Android serial). */
+  deviceId?: string;
+  /** Android-only: exact Android package identity (accepts bundleId as a fallback alias). */
+  packageName?: string;
   /** Computer-only: exact window number. */
   windowNumber?: number;
   /** Computer-only: exact window title. */
@@ -409,7 +448,7 @@ export interface QaVisualObserveOptions {
  * report JSON must project metadata only (see toVisualCaptureInfo).
  */
 export interface QaVisualCapture {
-  driver: 'browser' | 'computer';
+  driver: 'browser' | 'computer' | 'ios' | 'android';
   /** Exact observation fingerprint the capture is bound to (null when unknown). */
   observationFingerprint: string | null;
   /** Computer-only observation id the capture is bound to. */
@@ -427,7 +466,7 @@ export interface QaVisualCapture {
 
 /** Tool/report-facing capture projection: metadata only, never the raw PNG bytes. */
 export interface QaVisualCaptureInfo {
-  driver: 'browser' | 'computer';
+  driver: 'browser' | 'computer' | 'ios' | 'android';
   observationFingerprint: string | null;
   observationId: string | null;
   width: number;
@@ -542,10 +581,60 @@ export type QaAction =
   /** Browser: select an option in a native <select> by label or value. */
   | { kind: 'select'; ref: string; option: string }
   /** Browser: move the pointer over the element and keep it there. */
-  | { kind: 'hover'; ref: string };
+  | { kind: 'hover'; ref: string }
+  /**
+   * Computer-only CU v5 visual fallback. These are RUNTIME actions carrying
+   * exact native-pixel points plus the trusted capture/observation binding;
+   * the durable scenario layer never stores these raw points (see contracts.ts).
+   * `targetDescription` is the human/semantic description used for Explore
+   * records and replay re-grounding.
+   */
+  | {
+      kind: 'visual_click';
+      targetDescription: string;
+      observationId: string;
+      captureSha256: string;
+      point: { x: number; y: number };
+      grounding?: {
+        source: 'model-grounding' | 'harness-point' | 'replay-grounding';
+        provider?: string;
+        model?: string;
+        confidence?: number;
+      };
+    }
+  | {
+      kind: 'visual_drag';
+      targetDescription: string;
+      toDescription: string;
+      observationId: string;
+      captureSha256: string;
+      point: { x: number; y: number };
+      to: { x: number; y: number };
+      grounding?: {
+        source: 'model-grounding' | 'harness-point' | 'replay-grounding';
+        provider?: string;
+        model?: string;
+        confidence?: number;
+      };
+    }
+  | {
+      kind: 'visual_scroll';
+      targetDescription: string;
+      observationId: string;
+      captureSha256: string;
+      point: { x: number; y: number };
+      direction: 'up' | 'down';
+      amount?: 'line' | 'page' | number;
+      grounding?: {
+        source: 'model-grounding' | 'harness-point' | 'replay-grounding';
+        provider?: string;
+        model?: string;
+        confidence?: number;
+      };
+    };
 
 export interface QaDriverAdapter {
-  readonly kind: 'browser' | 'computer';
+  readonly kind: 'browser' | 'computer' | 'ios' | 'android';
   start(ownerId: string, options?: QaStartOptions): Promise<QaSessionInfo>;
   observe(ownerId: string, options?: QaObserveOptions): Promise<QaObservation>;
   act(ownerId: string, action: QaAction, approval?: QaApprovalGate): Promise<QaActionReceipt>;

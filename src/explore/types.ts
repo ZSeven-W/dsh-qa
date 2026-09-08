@@ -209,6 +209,10 @@ export interface QaTrajectorySnapshot {
   driver: QaDriverKind;
   startedAt: string;
   launch: string;
+  /** Computer-only durable window title recorded at start (null otherwise). */
+  windowTitle: string | null;
+  /** Mobile-only explicit device routing id recorded at start (null otherwise). */
+  deviceId: string | null;
   events: readonly QaTrajectoryEvent[];
   observations: Readonly<Record<string, QaObservation>>;
   actions: readonly QaRecordedAction[];
@@ -275,7 +279,7 @@ export interface QaRecordExportSuccess {
 
 export interface QaRecordExportFailure {
   ok: false;
-  code: 'NO_TRAJECTORY' | 'DRIVER_NOT_REPLAYABLE' | 'NO_PROVEN_STEPS';
+  code: 'NO_TRAJECTORY' | 'NO_PROVEN_STEPS';
   error: string;
   excludedActions: readonly QaExportExclusion[];
   /** Passed recorded assertions excluded with a reason (see QaAssertionExportExclusion). */

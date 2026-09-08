@@ -56,6 +56,22 @@ test('evaluateAssertion node-value matches the predicate AND the exact value', (
   assert.equal(noValue.passed, false, 'a node without the expected value is not a match')
 })
 
+test('empty value proof requires an observed exact value, never absence or withheld data', () => {
+  const assertion = { kind: 'node-value', expected: { role: 'textbox', name: 'Search', value: '' } }
+  for (const [extra, expected] of [
+    [{ value: '' }, true],
+    [{}, false],
+    [{ value: null }, false],
+    [{ value: ' ' }, false],
+    [{ value: '', secure: true }, false],
+    [{ value: '', valueWithheld: true }, false],
+    [{ value: '', valueTruncated: true }, false],
+  ]) {
+    const observation = { page: { url: LAUNCH, title: 'fixture' }, nodes: [node('a', 'textbox', 'Search', 'input', extra)], truncated: false }
+    assert.equal(evaluateAssertion(assertion, observation).passed, expected, JSON.stringify(extra))
+  }
+})
+
 function fillValueAdapter({ withheld = false, changeOnFill = false } = {}) {
   let inputValue = ''
   let result = 'IDLE'

@@ -56,14 +56,16 @@ test('.mcp.json points the plugin at the committed bundle', () => {
 });
 
 test('server registers the full v0.1 tool roster', () => {
-  const src = readFileSync(join(ROOT, 'src', 'server.mjs'), 'utf8');
+  // The MCP tool registrations live in src/mcp-server.ts; src/server.mjs is the
+  // thin stdio entrypoint that constructs createQaMcpServer().
+  const src = readFileSync(join(ROOT, 'src', 'mcp-server.ts'), 'utf8');
   for (const name of QA_TOOL_NAMES) {
-    assert.ok(src.includes(`'${name}'`), `server.mjs must register ${name}`);
+    assert.ok(src.includes(`'${name}'`), `mcp-server.ts must register ${name}`);
   }
 });
 
 test('qa_record_export is wired on MCP and the Explore playbook ships', () => {
-  const src = readFileSync(join(ROOT, 'src', 'server.mjs'), 'utf8');
+  const src = readFileSync(join(ROOT, 'src', 'mcp-server.ts'), 'utf8');
   assert.ok(src.includes('exportRecordedScenario'));
   assert.ok(!src.includes("stubFor('qa_record_export'"));
   assert.ok(pkg.files.includes('skills'));

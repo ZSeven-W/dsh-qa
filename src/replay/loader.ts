@@ -92,12 +92,12 @@ function assertLossless(value: unknown, position: string): void {
   fail(position, 'value is not lossless JSON');
 }
 
-const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer'];
+const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer', 'ios', 'android'];
 const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value'];
 const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as const;
 const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes', 'settle'] as const;
 const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'intervalMs', 'adaptiveBudgetMs'] as const;
-const TARGET_FIELDS = ['launch', 'loginState'] as const;
+const TARGET_FIELDS = ['launch', 'loginState', 'windowTitle', 'deviceId'] as const;
 // QA-BL-067: the recorded record-time proof refusal rides on the step
 // (additive; schemaVersion stays 1) so report.md step lines can surface it.
 const STEP_FIELDS = ['index', 'intent', 'action', 'assert', 'escalationRefused'] as const;
@@ -108,13 +108,13 @@ const ASSERTION_SCOPE_FIELDS = ['role', 'name', 'tag', 'path'] as const;
 // order-fragile (> 80 chars) or empty. `tag` is optional and rides only as an
 // extra discriminator.
 const ASSERTION_SCOPE_PATH_ITEM_FIELDS = ['role', 'name', 'tag'] as const;
-const NODE_VALUE_EXPECTATION_FIELDS = ['role', 'name', 'tag', 'value'] as const;
+const NODE_VALUE_EXPECTATION_FIELDS = ['role', 'name', 'tag', 'identifier', 'value'] as const;
 const VISUAL_ASSERTION_FIELDS = ['kind', 'question', 'description'] as const;
 // QA-BL-064: roleHint is the advisory live role the exporter recorded beside
 // a NAME-only action target (role drift on real pages). The loader accepts it
 // and replay IGNORES it for matching; it never counts toward the
-// "at least one of role/name/tag" requirement.
-const PREDICATE_FIELDS = ['role', 'name', 'tag', 'roleHint'] as const;
+// "at least one of role/name/tag/identifier" requirement.
+const PREDICATE_FIELDS = ['role', 'name', 'tag', 'roleHint', 'identifier'] as const;
 
 function isDriverKind(value: unknown): value is QaDriverKind {
   return typeof value === 'string' && DRIVER_KINDS.includes(value as QaDriverKind);
@@ -218,7 +218,22 @@ function validateTarget(value: unknown, position: string, driver: QaDriverKind):
       throw error;
     }
   }
-  return { launch, ...(loginState === undefined ? {} : { loginState }) };
+  let windowTitle: string | undefined;
+  if (obj.windowTitle !== undefined) {
+    if (driver !== 'computer') fail(position + '.windowTitle', 'computer-only field');
+    windowTitle = expectNonEmptyString(obj.windowTitle, position + '.windowTitle');
+  }
+  let deviceId: string | undefined;
+  if (obj.deviceId !== undefined) {
+    if (driver !== 'ios' && driver !== 'android') fail(position + '.deviceId', 'mobile-only field');
+    deviceId = expectNonEmptyString(obj.deviceId, position + '.deviceId');
+  }
+  return {
+    launch,
+    ...(loginState === undefined ? {} : { loginState }),
+    ...(windowTitle === undefined ? {} : { windowTitle }),
+    ...(deviceId === undefined ? {} : { deviceId }),
+  };
 }
 
 function validatePredicate(value: unknown, position: string): QaNodePredicate {
@@ -229,26 +244,29 @@ function validatePredicate(value: unknown, position: string): QaNodePredicate {
   if (obj.name !== undefined) out.name = expectNonEmptyString(obj.name, position + '.name');
   if (obj.tag !== undefined) out.tag = expectNonEmptyString(obj.tag, position + '.tag');
   // QA-BL-064: validated as a non-empty string and CARRIED on the predicate,
-  // but never used for matching (matchesNode reads role/name/tag only).
+  // but never used for matching (matchesNode reads role/name/tag/identifier).
   if (obj.roleHint !== undefined) out.roleHint = expectNonEmptyString(obj.roleHint, position + '.roleHint');
-  if (out.role === undefined && out.name === undefined && out.tag === undefined) {
-    fail(position, 'expected at least one of role/name/tag');
+  if (obj.identifier !== undefined) out.identifier = expectNonEmptyString(obj.identifier, position + '.identifier');
+  if (out.role === undefined && out.name === undefined && out.tag === undefined && out.identifier === undefined) {
+    fail(position, 'expected at least one of role/name/tag/identifier');
   }
   return out;
 }
 
 /** Validates a `node-value` expectation: predicate fields plus a required exact value. */
-function validateNodeValueExpectation(value: unknown, position: string): { role?: string; name?: string; tag?: string; value: string } {
+function validateNodeValueExpectation(value: unknown, position: string): { role?: string; name?: string; tag?: string; identifier?: string; value: string } {
   const obj = expectObject(value, position);
   assertKnownFields(obj, NODE_VALUE_EXPECTATION_FIELDS, position);
-  const out: { role?: string; name?: string; tag?: string; value: string } = {
-    value: expectNonEmptyString(obj.value, position + '.value'),
+  const out: { role?: string; name?: string; tag?: string; identifier?: string; value: string } = {
+    // An observed empty value is distinct from an absent/withheld value.
+    value: expectString(obj.value, position + '.value'),
   };
   if (obj.role !== undefined) out.role = expectNonEmptyString(obj.role, position + '.role');
   if (obj.name !== undefined) out.name = expectNonEmptyString(obj.name, position + '.name');
   if (obj.tag !== undefined) out.tag = expectNonEmptyString(obj.tag, position + '.tag');
-  if (out.role === undefined && out.name === undefined && out.tag === undefined) {
-    fail(position, 'expected at least one of role/name/tag');
+  if (obj.identifier !== undefined) out.identifier = expectNonEmptyString(obj.identifier, position + '.identifier');
+  if (out.role === undefined && out.name === undefined && out.tag === undefined && out.identifier === undefined) {
+    fail(position, 'expected at least one of role/name/tag/identifier');
   }
   return out;
 }
@@ -265,7 +283,7 @@ function validateAction(value: unknown, position: string): QaScenarioAction {
     return {
       kind: 'fill',
       target: validatePredicate(obj.target, position + '.target'),
-      text: expectNonEmptyString(obj.text, position + '.text'),
+      text: expectString(obj.text, position + '.text'),
     };
   }
   if (kind === 'press') {
@@ -276,6 +294,32 @@ function validateAction(value: unknown, position: string): QaScenarioAction {
       key: expectNonEmptyString(obj.key, position + '.key'),
     };
   }
+  if (kind === 'focus') {
+    assertKnownFields(obj, ['kind', 'target'], position);
+    return { kind: 'focus', target: validatePredicate(obj.target, position + '.target') };
+  }
+  if (kind === 'type') {
+    assertKnownFields(obj, ['kind', 'target', 'text'], position);
+    return {
+      kind: 'type',
+      target: validatePredicate(obj.target, position + '.target'),
+      text: expectNonEmptyString(obj.text, position + '.text'),
+    };
+  }
+  if (kind === 'key') {
+    assertKnownFields(obj, ['kind', 'target', 'key', 'modifiers'], position);
+    const modifiers = obj.modifiers === undefined
+      ? undefined
+      : expectArray(obj.modifiers, position + '.modifiers').map((item, i) =>
+          expectNonEmptyString(item, position + '.modifiers[' + i + ']'),
+        );
+    return {
+      kind: 'key',
+      target: validatePredicate(obj.target, position + '.target'),
+      key: expectNonEmptyString(obj.key, position + '.key'),
+      ...(modifiers === undefined ? {} : { modifiers }),
+    };
+  }
   if (kind === 'navigate') {
     assertKnownFields(obj, ['kind', 'url'], position);
     return { kind: 'navigate', url: expectNonEmptyString(obj.url, position + '.url') };
@@ -283,12 +327,34 @@ function validateAction(value: unknown, position: string): QaScenarioAction {
   if (kind === 'scroll') {
     const hasTarget = obj.target !== undefined;
     const hasDirection = obj.direction !== undefined;
-    if (hasTarget === hasDirection) {
-      fail(position, 'scroll must specify exactly one of target (scroll-to-target) or direction (viewport scroll)');
+    // The three valid shapes: browser scroll-into-view (target only), browser
+    // viewport scroll (direction only), and computer container scroll
+    // (target + direction + optional amount). Only an EMPTY scroll is invalid.
+    if (!hasTarget && !hasDirection) {
+      fail(position, 'scroll must specify a target (scroll-to-target or computer container scroll) and/or a direction (viewport scroll)');
     }
     if (hasTarget) {
-      assertKnownFields(obj, ['kind', 'target'], position);
-      return { kind: 'scroll', target: validatePredicate(obj.target, position + '.target') };
+      // The target form is shared: browser scroll-into-view (target only) and
+      // computer container scroll (target + direction + optional amount). A
+      // direction without a target is the positional viewport form handled below.
+      assertKnownFields(obj, ['kind', 'target', 'direction', 'amount'], position);
+      const target = validatePredicate(obj.target, position + '.target');
+      const direction = obj.direction;
+      const amount = obj.amount;
+      if (direction === undefined) {
+        if (amount !== undefined) fail(position + '.amount', 'amount requires direction');
+        return { kind: 'scroll', target };
+      }
+      if (direction !== 'up' && direction !== 'down') {
+        fail(position + '.direction', 'expected "up" or "down"');
+      }
+      const validatedAmount = amount === undefined ? undefined : validateScrollAmount(amount, position + '.amount', true);
+      return {
+        kind: 'scroll',
+        target,
+        direction,
+        ...(validatedAmount === undefined ? {} : { amount: validatedAmount }),
+      };
     }
     assertKnownFields(obj, ['kind', 'direction', 'amount'], position);
     const direction = expectNonEmptyString(obj.direction, position + '.direction');
@@ -310,17 +376,76 @@ function validateAction(value: unknown, position: string): QaScenarioAction {
     assertKnownFields(obj, ['kind', 'target'], position);
     return { kind: 'hover', target: validatePredicate(obj.target, position + '.target') };
   }
+  if (kind === 'visual_click') {
+    assertKnownFields(obj, ['kind', 'targetDescription', 'provenance'], position);
+    const out: QaScenarioAction = {
+      kind: 'visual_click',
+      targetDescription: expectNonEmptyString(obj.targetDescription, position + '.targetDescription'),
+    };
+    if (obj.provenance !== undefined) out.provenance = validateVisualProvenance(obj.provenance, position + '.provenance');
+    return out;
+  }
+  if (kind === 'visual_drag') {
+    assertKnownFields(obj, ['kind', 'targetDescription', 'toDescription', 'provenance'], position);
+    const out: QaScenarioAction = {
+      kind: 'visual_drag',
+      targetDescription: expectNonEmptyString(obj.targetDescription, position + '.targetDescription'),
+      toDescription: expectNonEmptyString(obj.toDescription, position + '.toDescription'),
+    };
+    if (obj.provenance !== undefined) out.provenance = validateVisualProvenance(obj.provenance, position + '.provenance');
+    return out;
+  }
+  if (kind === 'visual_scroll') {
+    assertKnownFields(obj, ['kind', 'targetDescription', 'direction', 'amount', 'provenance'], position);
+    const direction = obj.direction;
+    if (direction !== 'up' && direction !== 'down') fail(position + '.direction', 'expected "up" or "down"');
+    const amount = obj.amount === undefined ? undefined : validateScrollAmount(obj.amount, position + '.amount', true);
+    const out: QaScenarioAction = {
+      kind: 'visual_scroll',
+      targetDescription: expectNonEmptyString(obj.targetDescription, position + '.targetDescription'),
+      direction,
+      ...(amount === undefined ? {} : { amount }),
+    };
+    if (obj.provenance !== undefined) out.provenance = validateVisualProvenance(obj.provenance, position + '.provenance');
+    return out;
+  }
   fail(position + '.kind', 'unsupported action kind');
 }
 
-/** Validates a browser viewport-scroll amount: undefined, "page", or a finite non-negative pixel count. */
-function validateScrollAmount(value: unknown, position: string): 'page' | number | undefined {
+/** Validates durable visual grounding provenance (advisory, not a proof). */
+function validateVisualProvenance(value: unknown, position: string) {
+  const obj = expectObject(value, position);
+  assertKnownFields(obj, ['source', 'provider', 'model', 'confidence'], position);
+  const source = obj.source;
+  if (source !== 'model-grounding' && source !== 'harness-point' && source !== 'replay-grounding') {
+    fail(position + '.source', 'expected model-grounding, harness-point, or replay-grounding');
+  }
+  const out: { source: 'model-grounding' | 'harness-point' | 'replay-grounding'; provider?: string; model?: string; confidence?: number } = {
+    source,
+  };
+  if (obj.provider !== undefined) out.provider = expectNonEmptyString(obj.provider, position + '.provider');
+  if (obj.model !== undefined) out.model = expectNonEmptyString(obj.model, position + '.model');
+  if (obj.confidence !== undefined) {
+    const confidence = obj.confidence;
+    if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+      fail(position + '.confidence', 'expected a number between 0 and 1');
+    }
+    out.confidence = confidence;
+  }
+  return out;
+}
+
+/** Validates a scroll amount: undefined, "page" (and "line" when allowLine), or a finite non-negative pixel count. */
+function validateScrollAmount(value: unknown, position: string, allowLine: true): 'page' | 'line' | number | undefined;
+function validateScrollAmount(value: unknown, position: string, allowLine?: false): 'page' | number | undefined;
+function validateScrollAmount(value: unknown, position: string, allowLine = false): 'page' | 'line' | number | undefined {
   if (value === undefined) return undefined;
   if (value === 'page') return 'page';
+  if (allowLine && value === 'line') return 'line';
   if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && !Object.is(value, -0)) {
     return value;
   }
-  fail(position, 'expected "page" or a finite non-negative number');
+  fail(position, 'expected "page"' + (allowLine ? ', "line",' : '') + ' or a finite non-negative number');
 }
 
 /**

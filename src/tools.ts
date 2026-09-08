@@ -12,8 +12,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserAdapter } from './adapters/browser.ts'
 import { ComputerAdapter } from './adapters/computer.ts'
-import { BROWSER_DRIVER_SPECIFIER, loadBrowserManager } from './adapters/loadBrowser.ts'
+import { loadBrowserManager } from './adapters/loadBrowser.ts'
 import { loadComputerDriver } from './adapters/loadComputer.ts'
+import { loadAndroidBackend } from './adapters/loadAndroid.ts'
+import { loadIosBackend } from './adapters/loadIos.ts'
 import { QA_ADVISORY_REASONING_TRUST, QA_COVERAGE_UNVERIFIED, QA_INCONCLUSIVE_UNSTABLE } from './contracts.ts'
 import { QA_TOOL_DESCRIPTIONS } from './tool-descriptions.ts'
 import type { QaDriverKind } from './contracts.ts'
@@ -23,25 +25,49 @@ import {
   RecordingQaDriverAdapter,
 } from './explore/index.ts'
 import type { QaRecordExportOptions, QaRecordExportResult } from './explore/index.ts'
-import { decideAssertionWithRetry, loadScenarioFromPath, runScenario, sessionReobserve, validateAssertion } from './replay/index.ts'
+import {
+  decideAssertionWithRetry,
+  loadReplayDriver,
+  loadScenarioFromPath,
+  runScenario,
+  sessionReobserve,
+  validateAssertion,
+} from './replay/index.ts'
+import type { ReplayDriverLoaders } from './replay/index.ts'
 import { writeReports } from './reporters/index.ts'
 import { captureLatestVisual, QaSessionManager, settleStartOverride, toLosslessJson } from './session/index.ts'
-import type { QaAction, QaVisualObserveOptions } from './session/adapter.ts'
+import type { QaAction, QaApprovalGate, QaDriverAdapter, QaVisualObserveOptions } from './session/adapter.ts'
 import type { QaSettlePolicy } from './session/settle.ts'
 import { toVisualCaptureInfo } from './session/adapter.ts'
 import type { QaSession } from './session/session.ts'
 import {
   evaluateVisualQuestion,
+  normalizeImageRef,
   persistCaptureFile,
   type QaVisualServices,
   type StructuralAttachmentStore,
   type StructuralLlmService,
 } from './vision.ts'
+import { groundVisualTarget } from './visual-grounding.ts'
+import {
+  approvalGateFromHost,
+  buildVisualRuntimeAction,
+  buildVisualRuntimeActionFromMetadata,
+  captureAndGroundVisualTarget,
+  requireVisualPointBinding,
+  validateVisualToolArgs,
+  visualCaptureMetadata,
+  QaVisualCaptureStore,
+  assertCaptureBinding,
+  type QaTrustedVisualCaptureMetadata,
+} from './visual-action.ts'
 
 /** Structural host execution context (mirrors dsh-browser/dsh-computer). */
 export interface ToolExecutionContext {
   signal?: AbortSignal
   agent?: { id?: unknown }
+  callId?: unknown
+  rootCallId?: string
 }
 
 /** The tool shape the DSH host's tools service registers. */
@@ -101,9 +127,23 @@ const enumOf = (...values: string[]) => ({ type: 'string', enum: values })
 const intProp = { type: 'integer' }
 const strProp = { type: 'string' }
 
+interface QaMobileAdapterConstructor {
+  new (backend: unknown): QaDriverAdapter;
+}
+
+async function loadMobileAdapterClass(kind: 'ios' | 'android'): Promise<QaMobileAdapterConstructor> {
+  const barrel = await import('./adapters/index.ts');
+  const exportName = kind === 'ios' ? 'IosAdapter' : 'AndroidAdapter';
+  const ctor = (barrel as unknown as Record<string, unknown>)[exportName];
+  if (typeof ctor !== 'function') {
+    throw new Error('Cannot load the ' + kind + ' QA adapter: src/adapters/index.ts does not export ' + exportName + ' yet; the separate adapter worker must add it before Explore can use the ' + kind + ' driver.');
+  }
+  return ctor as QaMobileAdapterConstructor;
+}
+
 export interface QaToolHostOptions {
   /** Lazy structural service resolution (host ctx.get), like dsh-computer. */
-  getService?: (name: 'llm' | 'attachments') => unknown
+  getService?: (name: 'llm' | 'attachments' | 'approval') => unknown
   /** Vision route defaults come from configuration, not inline constants. */
   visionProvider?: string
   visionModel?: string
@@ -115,6 +155,19 @@ export interface QaToolHostOptions {
    * never judge different views of the same page.
    */
   settle?: Partial<QaSettlePolicy>
+  /**
+   * Injectable replay driver loaders (test/di seam). qa_replay_run resolves
+   * the concrete driver through the shared loadReplayDriver factory, so a test
+   * can substitute fake browser/computer/ios/android drivers without touching
+   * the real sibling packages. Omit to use the lazy real loaders.
+   */
+  replayLoaders?: ReplayDriverLoaders
+  /**
+   * Injectable Explore session adapters (test/di seam). When an adapter is
+   * present for a driver, qa_session_start/observe/act/evidence use it instead
+   * of lazily loading the real sibling driver package. Additive and optional.
+   */
+  managerAdapters?: Partial<Record<QaDriverKind, QaDriverAdapter>>
 }
 
 /** One lazy QaSessionManager per driver, mirroring src/server.mjs getManager(). */
@@ -123,6 +176,7 @@ export class QaToolHost {
   readonly #ownerDrivers = new Map<string, QaDriverKind>()
   readonly #recorder = new QaTrajectoryRecorder()
   readonly #options: QaToolHostOptions
+  readonly #visualCaptures = new QaVisualCaptureStore()
 
   constructor(options: QaToolHostOptions = {}) {
     this.#options = options
@@ -144,9 +198,28 @@ export class QaToolHost {
     if (manager === undefined) {
       manager = (async () => {
         const sessionOptions = this.#sessionOptions()
+        const adapterOverride = this.#options.managerAdapters?.[driver]
+        if (adapterOverride !== undefined) {
+          if (adapterOverride.kind !== driver) {
+            throw new Error('manager adapter kind ' + adapterOverride.kind + ' does not match requested driver ' + driver)
+          }
+          return new QaSessionManager(new RecordingQaDriverAdapter(adapterOverride, this.#recorder), sessionOptions)
+        }
         if (driver === 'browser') {
           const browserManager = await loadBrowserManager()
           const adapter = new BrowserAdapter(browserManager)
+          return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder), sessionOptions)
+        }
+        if (driver === 'ios') {
+          const backend = await loadIosBackend()
+          const IosAdapter = await loadMobileAdapterClass('ios')
+          const adapter = new IosAdapter(backend)
+          return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder), sessionOptions)
+        }
+        if (driver === 'android') {
+          const backend = await loadAndroidBackend()
+          const AndroidAdapter = await loadMobileAdapterClass('android')
+          const adapter = new AndroidAdapter(backend)
           return new QaSessionManager(new RecordingQaDriverAdapter(adapter, this.#recorder), sessionOptions)
         }
         const computerDriver = await loadComputerDriver()
@@ -195,6 +268,20 @@ export class QaToolHost {
   /** The settle policy qa_replay_run must reuse, so replay matches export. */
   settleOptions(): { settle?: Partial<QaSettlePolicy> } {
     return this.#sessionOptions()
+  }
+
+  /** Injectable replay driver loaders, or undefined to use the real lazy loaders. */
+  replayLoaders(): ReplayDriverLoaders | undefined {
+    return this.#options.replayLoaders
+  }
+
+  /** Optional host approval gate for visual replay steps. Absent = unavailable. */
+  approvalGate(exec: ToolExecutionContext): QaApprovalGate | undefined {
+    return approvalGateFromHost(
+      this.#options.getService === undefined ? {} : { getService: this.#options.getService },
+      exec,
+      'qa_replay_run',
+    )
   }
 
   /** Lazily resolve the host vision services (llm + attachments) for one call. */
@@ -250,9 +337,36 @@ export class QaToolHost {
     const { capture, settle } = await captureLatestVisual(session, options)
     const artifactPath = await persistCaptureFile(capture, this.#capturesDir())
     const info = toVisualCaptureInfo(capture)
+    const computer = capture.driver === 'computer';
+    const metadata = computer ? visualCaptureMetadata(capture) : null;
+    let coordinateSpace: 'native' | 'attachment' = 'native';
+    if (metadata !== null) {
+      const attachments = this.#options.getService?.('attachments') as StructuralAttachmentStore | undefined;
+      if (attachments !== undefined && typeof attachments.saveImage === 'function') {
+        try {
+          const ref = normalizeImageRef(await attachments.saveImage({ data: capture.png, mediaType: 'image/png', name: 'dsh-qa-visual.png' }));
+          metadata.attachmentWidth = ref.width;
+          metadata.attachmentHeight = ref.height;
+          coordinateSpace = 'attachment';
+        } catch {
+          // Attachment persistence is evidence sugar; if it fails the capture
+          // remains usable as native-file metadata (fail closed on the side of
+          // not claiming a delivered-image coordinate space we cannot prove).
+        }
+      }
+      this.#visualCaptures.put(metadata);
+    }
     return {
       ...info,
       artifactPath,
+      ...(metadata === null ? {} : {
+        nativeWidth: metadata.pixelWidth,
+        nativeHeight: metadata.pixelHeight,
+        coordinateSpace,
+      }),
+      ...(metadata === null || metadata.attachmentWidth === undefined
+        ? {}
+        : { attachmentWidth: metadata.attachmentWidth, attachmentHeight: metadata.attachmentHeight }),
       ...(settle === null ? {} : {
         settle,
         // Same vocabulary as qa_assert kind:"visual": a capture taken from a
@@ -262,10 +376,73 @@ export class QaToolHost {
     }
   }
 
+  /** Execute one qa_act visual action through the session core. */
+  async actVisual(owner: string, session: QaSession, args: unknown, exec: ToolExecutionContext): Promise<unknown> {
+    const parsed = validateVisualToolArgs(args)
+    if (session.kind !== 'computer') {
+      throw new Error('qa_act visual actions are computer-only (CU visual fallback)')
+    }
+    const approval = approvalGateFromHost(
+      this.#options.getService === undefined ? {} : { getService: this.#options.getService },
+      exec,
+      'qa_act',
+    )
+    let action: QaAction
+    if (parsed.point !== undefined) {
+      // Harness/agent-supplied point route: requires an exact trusted capture
+      // from qa_evidence in THIS process and never trusts a model scale.
+      if (parsed.captureSha256 === undefined || parsed.observationId === undefined) {
+        throw new Error('qa_act visual point route requires capture_sha256 and observation_id from qa_evidence visual')
+      }
+      const metadata = this.#visualCaptures.get(parsed.captureSha256)
+      if (metadata === undefined) {
+        throw new Error('qa_act visual: no trusted capture metadata for this capture_sha256 in this process; run qa_evidence visual again')
+      }
+      assertCaptureBinding(metadata, parsed.observationId)
+      const native = requireVisualPointBinding(parsed, metadata)
+      const provenance = { source: 'harness-point' as const }
+      action = buildVisualRuntimeActionFromMetadata(parsed.op, metadata, parsed.targetDescription, native.point, {
+        ...(parsed.toDescription === undefined ? {} : { toDescription: parsed.toDescription }),
+        ...(native.to === undefined ? {} : { nativeTo: native.to }),
+        ...(parsed.direction === undefined ? {} : { direction: parsed.direction }),
+        ...(parsed.amount === undefined ? {} : { amount: parsed.amount }),
+        provenance,
+      })
+    } else {
+      // Textual target grounding route: fresh settled capture + injected
+      // llm/attachments seam; no stored capture or model dimensions required.
+      const grounded = await captureAndGroundVisualTarget(session, parsed.targetDescription, this.visualServices(), exec.signal)
+      if (parsed.op === 'drag') {
+        if (parsed.toDescription === undefined) {
+          throw new Error('qa_act visual drag requires to_description')
+        }
+        const destination = await groundVisualTarget(parsed.toDescription, grounded.capture, this.visualServices(), {
+          ...(exec.signal === undefined ? {} : { signal: exec.signal }),
+        })
+        if (!destination.ok) {
+          throw new Error('qa_act visual drag destination grounding failed: ' + destination.reason)
+        }
+        action = buildVisualRuntimeAction(parsed.op, grounded.capture, parsed.targetDescription, grounded.nativePoint, {
+          toDescription: parsed.toDescription,
+          nativeTo: destination.nativePoint,
+          provenance: grounded.grounding,
+        })
+      } else {
+        action = buildVisualRuntimeAction(parsed.op, grounded.capture, parsed.targetDescription, grounded.nativePoint, {
+          ...(parsed.direction === undefined ? {} : { direction: parsed.direction }),
+          ...(parsed.amount === undefined ? {} : { amount: parsed.amount }),
+          provenance: grounded.grounding,
+        })
+      }
+    }
+    return session.act(action, approval)
+  }
+
   async dispose(): Promise<void> {
     const pending = [...this.#managers.values()]
     this.#managers.clear()
     this.#ownerDrivers.clear()
+    this.#visualCaptures.clear()
     const settled = await Promise.allSettled(pending)
     for (const outcome of settled) {
       if (outcome.status === 'fulfilled') {
@@ -324,10 +501,14 @@ function tool<TArgs, TResult>(spec: Omit<StructuralToolDefinition, 'execute'> & 
 
 interface SessionStartArgs {
   owner?: string
-  driver?: 'browser' | 'computer'
+  driver?: 'browser' | 'computer' | 'ios' | 'android'
   url?: string
   headless?: boolean
   bundle_id?: string
+  /** Mobile-only: exact iOS simulator/physical UDID or Android emulator/USB serial. */
+  device_id?: string
+  /** Android-only: package identity (bundle_id is accepted as an alias). */
+  package_name?: string
   pid?: number
   window_number?: number
   window_title?: string
@@ -353,6 +534,7 @@ interface ObserveArgs {
 interface ActArgs {
   owner?: string
   action: 'click' | 'fill' | 'press' | 'navigate' | 'focus' | 'type' | 'key' | 'scroll' | 'select' | 'hover'
+    | 'visual_click' | 'visual_drag' | 'visual_scroll'
   ref?: string
   text?: string
   key?: string
@@ -361,6 +543,12 @@ interface ActArgs {
   direction?: 'up' | 'down'
   amount?: string | number
   option?: string
+  target_description?: string
+  to_description?: string
+  capture_sha256?: string
+  observation_id?: string
+  point?: { x: number; y: number }
+  to?: { x: number; y: number }
 }
 
 /**
@@ -428,6 +616,8 @@ interface ReplayArgs {
   scenario: string
   owner?: string
   headless?: boolean
+  /** Mobile-only explicit device override; wins over scenario.target.deviceId. */
+  device_id?: string
   outputDir?: string
 }
 
@@ -437,10 +627,12 @@ export function createQaTools(host: QaToolHost): QaTools {
     description: QA_TOOL_DESCRIPTIONS.qa_session_start,
     parameters: closedObject({
       owner: strProp,
-      driver: enumOf('browser', 'computer'),
+      driver: enumOf('browser', 'computer', 'ios', 'android'),
       url: strProp,
       headless: { type: 'boolean' },
       bundle_id: strProp,
+      device_id: strProp,
+      package_name: strProp,
       pid: intProp,
       window_number: intProp,
       window_title: strProp,
@@ -461,15 +653,20 @@ export function createQaTools(host: QaToolHost): QaTools {
       host.bindOwner(owner, driver)
       const manager = await host.managerFor(driver)
       const settle = settleStartOverride(args)
-      return manager.session(owner, settle === undefined ? {} : { settle }).start({
+      const startOptions = {
         ...(args.url === undefined ? {} : { url: args.url }),
         ...(args.headless === undefined ? {} : { headless: args.headless }),
-        ...(args.bundle_id === undefined ? {} : { bundleId: args.bundle_id }),
+        ...(args.device_id === undefined ? {} : { deviceId: args.device_id }),
+        ...(driver === 'ios' && args.bundle_id !== undefined ? { bundleId: args.bundle_id } : {}),
+        ...(driver === 'android' && args.package_name !== undefined ? { packageName: args.package_name } : {}),
+        ...(driver === 'android' && args.bundle_id !== undefined ? { packageName: args.bundle_id } : {}),
+        ...(driver === 'computer' && args.bundle_id !== undefined ? { bundleId: args.bundle_id } : {}),
         ...(args.pid === undefined ? {} : { pid: args.pid }),
         ...(args.window_number === undefined ? {} : { windowNumber: args.window_number }),
         ...(args.window_title === undefined ? {} : { windowTitle: args.window_title }),
         ...(args.login_state === undefined ? {} : { loginState: args.login_state }),
-      })
+      }
+      return manager.session(owner, settle === undefined ? {} : { settle }).start(startOptions)
     },
     presentCall: () => ({ card: 'generic', title: 'Start QA session' }),
   })
@@ -509,7 +706,8 @@ export function createQaTools(host: QaToolHost): QaTools {
     description: QA_TOOL_DESCRIPTIONS.qa_act,
     parameters: closedObject({
       owner: strProp,
-      action: enumOf('click', 'fill', 'press', 'navigate', 'focus', 'type', 'key', 'scroll', 'select', 'hover'),
+      action: enumOf('click', 'fill', 'press', 'navigate', 'focus', 'type', 'key', 'scroll', 'select', 'hover',
+        'visual_click', 'visual_drag', 'visual_scroll'),
       ref: strProp,
       text: strProp,
       key: strProp,
@@ -518,6 +716,12 @@ export function createQaTools(host: QaToolHost): QaTools {
       direction: enumOf('up', 'down'),
       amount: { type: ['string', 'number'] },
       option: strProp,
+      target_description: strProp,
+      to_description: strProp,
+      capture_sha256: strProp,
+      observation_id: strProp,
+      point: closedObject({ x: intProp, y: intProp }, ['x', 'y']),
+      to: closedObject({ x: intProp, y: intProp }, ['x', 'y']),
     }, ['action']),
     output: outputFor(),
     timeoutMs: 30_000,
@@ -525,6 +729,9 @@ export function createQaTools(host: QaToolHost): QaTools {
     async execute(args, exec) {
       const owner = ownerFrom(args, exec)
       const manager = await host.managerForOwner(owner)
+      if (args.action === 'visual_click' || args.action === 'visual_drag' || args.action === 'visual_scroll') {
+        return host.actVisual(owner, manager.session(owner), args, exec)
+      }
       let action: QaAction
       if (args.action === 'click') {
         if (args.ref === undefined) throw new Error('qa_act click requires ref')
@@ -752,6 +959,7 @@ export function createQaTools(host: QaToolHost): QaTools {
       scenario: strProp,
       owner: strProp,
       headless: { type: 'boolean' },
+      device_id: strProp,
       outputDir: strProp,
     }, ['scenario']),
     output: outputFor(),
@@ -759,25 +967,21 @@ export function createQaTools(host: QaToolHost): QaTools {
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       const scenario = loadScenarioFromPath(args.scenario)
-      if (scenario.meta.driver !== 'browser') {
-        return { ok: false, error: 'scenario driver is not supported yet (computer replay lands in a later WP)' }
-      }
-      let origin: string | undefined
+      // One driver factory seam for every driver kind: browser and computer
+      // (and later ios/android) route through loadReplayDriver, so the Cordis
+      // and MCP dispatch paths cannot drift on which adapter/launch a scenario
+      // uses. A missing sibling driver throws here and surfaces as
+      // { ok:false, error } through the guard.
+      const loaders = host.replayLoaders()
+      const loaded = await loadReplayDriver(scenario, loaders === undefined ? {} : { loaders })
       try {
-        origin = new URL(scenario.target.launch).origin
-      } catch {
-        origin = undefined
-      }
-      const browserManager = await loadBrowserManager(BROWSER_DRIVER_SPECIFIER, {
-        ...(origin === undefined ? {} : { allowedOrigins: [origin] }),
-      })
-      const adapter = new BrowserAdapter(browserManager)
-      try {
-        const report = await runScenario(scenario, adapter, {
+        const report = await runScenario(scenario, loaded.adapter, {
           ownerId: ownerFrom(args, exec),
           ...(args.headless === undefined ? {} : { headless: args.headless }),
           launchUrl: scenario.target.launch,
+          ...(args.device_id === undefined ? {} : { deviceId: args.device_id }),
           visual: host.visualServices(),
+          ...(host.approvalGate(exec) === undefined ? {} : { approval: host.approvalGate(exec) as QaApprovalGate }),
           ...host.settleOptions(),
         })
         if (args.outputDir !== undefined) {
@@ -785,7 +989,7 @@ export function createQaTools(host: QaToolHost): QaTools {
         }
         return report
       } finally {
-        await browserManager.dispose()
+        await loaded.dispose()
       }
     },
     presentCall: () => ({ card: 'generic', title: 'Replay QA scenario' }),

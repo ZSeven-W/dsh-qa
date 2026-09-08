@@ -58,6 +58,14 @@ if (!bundleText.includes('@zseven-w/dsh-computer')) fail('bundle is missing the 
 if (/class ComputerController|classifyComputerActionRisk|COMPUTER_DRIVER_SERVICE/.test(bundleText)) {
   fail('bundle contains inlined @zseven-w/dsh-computer code');
 }
+if (!bundleText.includes('@zseven-w/dsh-ios/driver')) fail('bundle is missing the external @zseven-w/dsh-ios driver import');
+if (/class SimHostController|class WdaController|serve-sim/.test(bundleText)) {
+  fail('bundle contains inlined @zseven-w/dsh-ios code');
+}
+if (!bundleText.includes('@zseven-w/dsh-android/driver')) fail('bundle is missing the external @zseven-w/dsh-android driver import');
+if (/class AdbToolchain|class AdbBinary|uiautomator dump/.test(bundleText)) {
+  fail('bundle contains inlined @zseven-w/dsh-android code');
+}
 console.log('[smoke:bundle] bundle assertions OK: no host-owned packages inlined');
 
 // 1c. Same guard for the plugin entry: no host-owned packages inlined, and no
@@ -70,6 +78,14 @@ if (/class BrowserManager|discoverInstalledBrowser|SEMANTIC_SELECTOR/.test(entry
 }
 if (/class ComputerController|classifyComputerActionRisk|COMPUTER_DRIVER_SERVICE/.test(entryText)) {
   fail('entry contains inlined @zseven-w/dsh-computer code');
+}
+if (!entryText.includes('@zseven-w/dsh-ios/driver')) fail('entry is missing the external @zseven-w/dsh-ios driver import');
+if (/class SimHostController|class WdaController|serve-sim/.test(entryText)) {
+  fail('entry contains inlined @zseven-w/dsh-ios code');
+}
+if (!entryText.includes('@zseven-w/dsh-android/driver')) fail('entry is missing the external @zseven-w/dsh-android driver import');
+if (/class AdbToolchain|class AdbBinary|uiautomator dump/.test(entryText)) {
+  fail('entry contains inlined @zseven-w/dsh-android code');
 }
 console.log('[smoke:bundle] entry bundle assertions OK: no host-owned packages inlined');
 

@@ -44,12 +44,18 @@ export function matchesNode(node: QaSemanticNode, predicate: QaNodePredicate): b
   if (predicate.role !== undefined && node.role !== predicate.role) return false;
   if (predicate.name !== undefined && node.name !== predicate.name) return false;
   if (predicate.tag !== undefined && node.tag !== predicate.tag) return false;
+  if (predicate.identifier !== undefined && node.identifier !== predicate.identifier) return false;
   return true;
 }
 
 /** Semantic projection of a node: no ref, href, or other session-local data. */
 export function toObservedNode(node: QaSemanticNode): QaObservedNode {
-  return { role: node.role, name: node.name, tag: node.tag };
+  return {
+    role: node.role,
+    name: node.name,
+    tag: node.tag,
+    ...(node.identifier === undefined ? {} : { identifier: node.identifier }),
+  };
 }
 
 /**
@@ -67,6 +73,7 @@ function toObservedValueNode(node: QaSemanticNode): QaObservedNode & {
     role: node.role,
     name: node.name,
     tag: node.tag,
+    ...(node.identifier === undefined ? {} : { identifier: node.identifier }),
     value: node.value ?? null,
     ...(node.valueWithheld === true ? { valueWithheld: true as const } : {}),
     ...(node.secure === true ? { secure: true as const } : {}),

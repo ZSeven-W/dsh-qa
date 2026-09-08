@@ -10,11 +10,19 @@ deterministic **Replay** scenario that runs on every release.
 - **Replay mode** — declarative `QaScenario` files (lossless JSON) executed
   deterministically with per-step re-observe assertions, producing redacted
   JSON / Markdown / JSONL reports.
-- **Drivers** — `@zseven-w/dsh-browser` (BU, contract v9) and
-  `@zseven-w/dsh-computer` (CU, contract v4). Driver safety semantics are
-  inherited, never loosened: `EXTERNAL_COMMIT_TARGET` refused, secure fields
-  permanently refused, approval gates passed through, `unknown` receipts require
-  re-observation.
+- **Drivers** — `@zseven-w/dsh-browser` (BU, contract v9),
+  `@zseven-w/dsh-computer` (CU, contract v5),
+  `@zseven-w/dsh-ios`, and `@zseven-w/dsh-android`.
+  Driver safety semantics are inherited, never loosened:
+  `EXTERNAL_COMMIT_TARGET` refused, secure fields permanently refused, approval
+  gates passed through, `unknown` receipts require re-observation. Mobile
+  sessions require an explicit device id and never fall back to a default
+  device. Mobile text input is conditional, never blanket-implemented: iOS
+  `fill`/`type` use the dsh-ios native element-bound `fillTarget`/`typeTarget`
+  primitives when the live driver exposes them, with missing methods or missing
+  native identifiers left explicitly unavailable and no raw global-type
+  fallback; Android `type` remains append-faithful after real focus
+  verification and Android `fill` remains `FILL_PRIMITIVE_UNAVAILABLE`.
 
 Status: **private, v0.1 in development** (WP1 scaffold, WP2 QA session core,
 WP4 deterministic Replay, WP5 Computer driver, WP6 Explore→Replay loop).
@@ -73,12 +81,13 @@ existing fail-closed loader. Rejected/failed actions, actions without a fresh
 observation, and actions whose view never settled are returned in
 `excludedActions`, never silently promoted to steps.
 
-Selector durability is intentionally strict: an action is exportable only when its
-target resolves uniquely in the preceding observation by non-empty **role plus
-accessible name**. Indices, coordinates, observation ids, generated ids, duplicate
-names, unnamed nodes, and ephemeral refs are refused instead of guessed. An
-`unknown` receipt additionally needs an observable semantic delta or URL change;
-the old target merely remaining present is not proof.
+Selector durability is intentionally strict. Browser targets require a unique
+non-empty **role plus accessible name**; computer targets use the durable
+Accessibility identifier; mobile targets prefer the stable Android resourceId /
+iOS AXUniqueId identifier. Indices, coordinates, observation ids, generated ids,
+duplicate names, unnamed nodes, and ephemeral refs are refused instead of
+guessed. An `unknown` receipt additionally needs an observable semantic delta or
+URL change; the old target merely remaining present is not proof.
 
 The Explore methodology ships as two artifacts: a human-readable copy at
 `skills/qa-explore/SKILL.md` (included in the package `files`), and the playbook

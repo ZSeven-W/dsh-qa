@@ -34,6 +34,10 @@ interface MutableTrajectory {
   driver: QaDriverAdapter['kind'];
   startedAt: string;
   launch: string;
+  /** Computer-only durable window title recorded at start (null otherwise). */
+  windowTitle: string | null;
+  /** Mobile-only explicit device routing id recorded at start (null otherwise). */
+  deviceId: string | null;
   sequence: number;
   nextObservation: number;
   nextAction: number;
@@ -100,6 +104,8 @@ function safeReason(error: unknown): string {
 
 function launchFrom(options: QaStartOptions | undefined, info: QaSessionInfo, kind: QaDriverAdapter['kind']): string {
   if (kind === 'computer') return options?.bundleId ?? info.page.url;
+  if (kind === 'ios') return options?.bundleId ?? info.page.url;
+  if (kind === 'android') return options?.packageName ?? options?.bundleId ?? info.page.url;
   return options?.url || info.page.url;
 }
 
@@ -158,10 +164,26 @@ export class QaTrajectoryRecorder {
       const safeInfo = cloneRedacted(info).value;
       const rawLaunch = launchFrom(options, info, driver);
       const safeLaunch = driver === 'browser' ? projectReplayUrl(rawLaunch) : cloneRedacted(rawLaunch).value;
+      // The computer window title is a DURABLE selector (the fixture/owner
+      // window); the window number, PID, and geometry are deliberately NOT
+      // recorded. An empty title is recorded as null, never as a selector.
+      const rawWindowTitle = driver === 'computer'
+        ? (safeOptions.windowTitle ?? safeInfo.page.title ?? '')
+        : '';
+      const safeWindowTitle = rawWindowTitle.trim() === '' ? null : rawWindowTitle;
+      // The mobile device id is recorded only as an exact routing selector
+      // from this session's explicit start option. Replay can override it;
+      // it is never claimed as a globally durable device identity.
+      const rawDeviceId = driver === 'ios' || driver === 'android'
+        ? (safeOptions.deviceId ?? '')
+        : '';
+      const safeDeviceId = rawDeviceId.trim() === '' ? null : rawDeviceId;
       const trajectory: MutableTrajectory = {
         driver,
         startedAt: new Date().toISOString(),
         launch: safeLaunch,
+        windowTitle: safeWindowTitle,
+        deviceId: safeDeviceId,
         sequence: 0,
         nextObservation: 1,
         nextAction: 1,
@@ -672,6 +694,8 @@ export class QaTrajectoryRecorder {
       driver: trajectory.driver,
       startedAt: trajectory.startedAt,
       launch: trajectory.launch,
+      windowTitle: trajectory.windowTitle,
+      deviceId: trajectory.deviceId,
       events: trajectory.events,
       observations,
       actions: trajectory.actions,
@@ -703,6 +727,40 @@ export class QaTrajectoryRecorder {
         kind: 'scroll',
         direction: action.direction,
         ...(action.amount === undefined ? {} : { amount: action.amount }),
+      };
+    }
+    if (action.kind === 'visual_click') {
+      return {
+        kind: 'visual_click',
+        targetDescription: action.targetDescription,
+        observationId: action.observationId,
+        captureSha256: action.captureSha256,
+        point: { ...action.point },
+        ...(action.grounding === undefined ? {} : { grounding: { ...action.grounding } }),
+      };
+    }
+    if (action.kind === 'visual_drag') {
+      return {
+        kind: 'visual_drag',
+        targetDescription: action.targetDescription,
+        toDescription: action.toDescription,
+        observationId: action.observationId,
+        captureSha256: action.captureSha256,
+        point: { ...action.point },
+        to: { ...action.to },
+        ...(action.grounding === undefined ? {} : { grounding: { ...action.grounding } }),
+      };
+    }
+    if (action.kind === 'visual_scroll') {
+      return {
+        kind: 'visual_scroll',
+        targetDescription: action.targetDescription,
+        observationId: action.observationId,
+        captureSha256: action.captureSha256,
+        point: { ...action.point },
+        direction: action.direction,
+        ...(action.amount === undefined ? {} : { amount: action.amount }),
+        ...(action.grounding === undefined ? {} : { grounding: { ...action.grounding } }),
       };
     }
     const ref = this.#refAlias(trajectory, action.ref);
@@ -805,6 +863,8 @@ export class QaTrajectoryRecorder {
       driver,
       startedAt: new Date().toISOString(),
       launch: '',
+      windowTitle: null,
+      deviceId: null,
       sequence: 0,
       nextObservation: 1,
       nextAction: 1,

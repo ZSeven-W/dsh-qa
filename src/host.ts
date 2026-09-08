@@ -34,7 +34,7 @@ export interface StructuralCordisContext {
     callback: (skillCtx: StructuralSkillContext) => void,
   ): { dispose(): void }
   /** Optional same-process host services, resolved lazily (like dsh-computer). */
-  get(name: 'attachments' | 'llm'): unknown
+  get(name: 'attachments' | 'llm' | 'approval'): unknown
   on?(
     event: 'agent/disposed',
     listener: (payload: { agent?: { id?: unknown } }) => void | Promise<void>,

@@ -3,14 +3,14 @@
 // plugin from a plain directory copy with no node_modules.
 //
 // Host-owned packages stay external: @deepseek-ai/* (DSH host runtime) and the
-// sibling driver packages @zseven-w/dsh-browser / @zseven-w/dsh-computer are
-// never inlined — the drivers are imported lazily at runtime with a clear error
-// when absent. The library itself uses only node builtins, so the entry carries
-// no third-party code.
+// sibling driver packages @zseven-w/dsh-browser / @zseven-w/dsh-computer /
+// @zseven-w/dsh-ios / @zseven-w/dsh-android are never inlined — the drivers are
+// imported lazily at runtime with a clear error when absent. The library itself
+// uses only node builtins, so the entry carries no third-party code.
 //
 // Equivalent esbuild CLI:
 //   esbuild src/plugin.ts --bundle --platform=node --format=esm \
-//     --external:@deepseek-ai/* --external:@zseven-w/dsh-browser --external:@zseven-w/dsh-computer \
+//     --external:@deepseek-ai/* --external:@zseven-w/dsh-browser --external:@zseven-w/dsh-computer --external:@zseven-w/dsh-ios --external:@zseven-w/dsh-android \
 //     --target=node24 --outfile=lib/index.js
 
 import { build } from 'esbuild'
@@ -30,6 +30,8 @@ await build({
     '@deepseek-ai/*',
     '@zseven-w/dsh-browser',
     '@zseven-w/dsh-computer',
+    '@zseven-w/dsh-ios',
+    '@zseven-w/dsh-android',
   ],
   target: 'node24',
   outfile: join(ROOT, 'lib', 'index.js'),

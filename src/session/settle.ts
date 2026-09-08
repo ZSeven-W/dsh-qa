@@ -378,6 +378,7 @@ function matchesEchoPredicate(node: QaSemanticNode, predicate: QaNodePredicate):
   if (predicate.role !== undefined && node.role !== predicate.role) return false;
   if (predicate.name !== undefined && node.name !== predicate.name) return false;
   if (predicate.tag !== undefined && node.tag !== predicate.tag) return false;
+  if (predicate.identifier !== undefined && node.identifier !== predicate.identifier) return false;
   return true;
 }
 
@@ -412,8 +413,13 @@ function isEchoMasked(node: QaSemanticNode, echo: QaEchoMask, predicateMatchCoun
   if (node.ref === echo.ref) return true;
   const matches = matchesEchoPredicate(node, echo.predicate);
   if (echo.value !== null) {
-    const roleTag = echo.predicate.role !== undefined && echo.predicate.tag !== undefined
-      && node.role === echo.predicate.role && node.tag === echo.predicate.tag;
+    const roleTag = (
+      echo.predicate.role !== undefined && echo.predicate.tag !== undefined
+      && node.role === echo.predicate.role && node.tag === echo.predicate.tag
+    ) || (
+      echo.predicate.identifier !== undefined
+      && node.identifier === echo.predicate.identifier
+    );
     // 2. The node carrying the written value, by predicate or name-agnostic role/tag.
     if (node.value === echo.value && (matches || roleTag)) return true;
     // 3. A renamed pre-action target whose new name announces the written value.
@@ -451,6 +457,15 @@ export function projectSemanticView(observation: QaObservation, echo?: QaEchoMas
           title: observation.window.title,
           identity: observation.window.identity,
         },
+    mobile: observation.mobile === undefined
+      ? null
+      : {
+          deviceId: observation.mobile.deviceId,
+          appId: observation.mobile.appId,
+          kind: observation.mobile.kind,
+          backend: observation.mobile.backend,
+          verified: observation.mobile.verified,
+        },
     nodes: observation.nodes.map((node) => {
       const masked = echo !== undefined && isEchoMasked(node, echo, predicateMatchCount);
       return [
@@ -462,6 +477,7 @@ export function projectSemanticView(observation: QaObservation, echo?: QaEchoMas
         // carries the real name, so the rename restarts the quiet window.
         masked ? null : node.name,
         node.tag,
+        node.identifier ?? null,
         node.interactive,
         node.editable,
         node.disabled,
