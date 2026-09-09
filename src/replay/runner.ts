@@ -1781,6 +1781,13 @@ export async function runScenario(
   const reobserve = sessionReobserve(session);
 
   try {
+    // Replay-only iOS cold-start bootstrap: accessibility/WDA preparation can
+    // consume time before the first stable UI view exists. This raw read is
+    // deliberately discarded as business evidence; the following settled
+    // read receives the full independent settle budget. Browser/computer
+    // replay keeps its original read count, and ordinary launchApp is never
+    // made dependent on AX/WDA.
+    if (scenario.meta.driver === 'ios') await session.observe();
     // Symmetry with export: every verification observation is SETTLED, and an
     // unstable view is a failure, never a silent pass.
     const initial = await session.observeSettled();
@@ -2506,7 +2513,22 @@ export async function runScenario(
       reproduction: toReproduction(stepResults),
     };
   } finally {
-    await session.stop().catch(() => {});
+    try {
+      await session.stop();
+    } catch (error) {
+      const cleanupMessage = 'session cleanup failed: ' + errorMessage(error);
+      if (failure === null) {
+        failure = {
+          stepIndex: null,
+          message: cleanupMessage,
+          reproduction: toReproduction(stepResults),
+        };
+      } else {
+        // Preserve the original failure/code while making cleanup failure
+        // decisive; a BUSY/unproven teardown must never yield PASS.
+        failure = { ...failure, message: failure.message + '; ' + cleanupMessage };
+      }
+    }
   }
 
   const report: QaRunReport = {

@@ -42,7 +42,7 @@ import {
   sessionReobserve,
   validateAssertion,
 } from './replay/index.ts';
-import type { ReplayDriverLoaders } from './replay/index.ts';
+import type { LoadedReplayDriver, ReplayDriverLoaders } from './replay/index.ts';
 import { writeReports } from './reporters/index.ts';
 import { captureLatestVisual, QaSessionManager, resolveSettlePolicy, settleStartOverride, toLosslessJson } from './session/index.ts';
 import type { QaSession } from './session/index.ts';
@@ -82,6 +82,8 @@ export interface QaMcpServerOptions {
   adapters?: Partial<Record<QaDriverKind, QaDriverAdapter>>;
 }
 
+export type QaMcpServer = McpServer & { dispose(): Promise<void> };
+
 interface QaMobileAdapterConstructor {
   new (backend: unknown): QaDriverAdapter;
 }
@@ -100,7 +102,7 @@ async function loadMobileAdapterClass(kind: 'ios' | 'android'): Promise<QaMobile
  * Build one MCP server. The returned server is NOT connected: the caller owns
  * the transport (stdio in src/server.mjs, InMemoryTransport in tests).
  */
-export function createQaMcpServer(options: QaMcpServerOptions = {}): McpServer {
+export function createQaMcpServer(options: QaMcpServerOptions = {}): QaMcpServer {
   const VERSION = readVersion();
   const server = new McpServer({ name: 'dsh-qa', version: VERSION });
 
@@ -132,8 +134,18 @@ export function createQaMcpServer(options: QaMcpServerOptions = {}): McpServer {
   const ownerDrivers = new Map<string, QaDriverKind>();
   const recorder = new QaTrajectoryRecorder();
   const visualCaptures = new QaVisualCaptureStore();
+  type ActiveReplay = {
+    loadedPromise: Promise<LoadedReplayDriver>;
+    loaded?: LoadedReplayDriver;
+    runPromise?: ReturnType<typeof runScenario>;
+    disposePromise?: Promise<void>;
+  };
+  const activeReplays = new Set<ActiveReplay>();
+  let closing = false;
+  let disposePromise: Promise<void> | undefined;
 
   async function getManager(kind: QaDriverKind) {
+    if (closing) throw new Error('dsh-qa MCP server is shutting down');
     if (!managers[kind]) {
       managers[kind] = (async () => {
         const adapterOverride = options.adapters?.[kind];
@@ -151,7 +163,7 @@ export function createQaMcpServer(options: QaMcpServerOptions = {}): McpServer {
           ));
         }
         if (kind === 'ios') {
-          const backend = await loadIosBackend();
+          const backend = await (options.loaders?.ios ?? loadIosBackend)();
           const IosAdapter = await loadMobileAdapterClass('ios');
           return new QaSessionManager(new RecordingQaDriverAdapter(
             new IosAdapter(backend),
@@ -159,7 +171,7 @@ export function createQaMcpServer(options: QaMcpServerOptions = {}): McpServer {
           ));
         }
         if (kind === 'android') {
-          const backend = await loadAndroidBackend();
+          const backend = await (options.loaders?.android ?? loadAndroidBackend)();
           const AndroidAdapter = await loadMobileAdapterClass('android');
           return new QaSessionManager(new RecordingQaDriverAdapter(
             new AndroidAdapter(backend),
@@ -517,7 +529,15 @@ export function createQaMcpServer(options: QaMcpServerOptions = {}): McpServer {
     { owner: z.string().optional() },
     guard(async (args: any) => {
       const owner = ownerFrom(args);
-      const manager = await managerForOwner(owner);
+      // Stopping a nonexistent session must not resolve or initialize any
+      // optional driver. Match the Cordis stopOwner no-op behavior.
+      const driver = ownerDrivers.get(owner);
+      const existing = driver === undefined ? undefined : managers[driver];
+      if (existing === undefined) {
+        ownerDrivers.delete(owner);
+        return textResult({ stopped: false, reason: 'not-running' });
+      }
+      const manager = await existing;
       const result = await manager.stop(owner);
       ownerDrivers.delete(owner);
       return textResult(result);
@@ -609,6 +629,7 @@ export function createQaMcpServer(options: QaMcpServerOptions = {}): McpServer {
       outputDir: z.string().optional(),
     },
     guard(async (args: any) => {
+      if (closing) throw new Error('dsh-qa MCP server is shutting down');
       const scenario = loadScenarioFromPath(args.scenario);
       // One driver factory seam for every driver kind (browser + computer, and
       // later ios/android): the MCP path and the Cordis path share
@@ -616,9 +637,14 @@ export function createQaMcpServer(options: QaMcpServerOptions = {}): McpServer {
       // adapter/launch a scenario uses. A missing sibling driver throws here
       // and surfaces as { ok:false, error } through the guard.
       const loaders = options.loaders;
-      const loaded = await loadReplayDriver(scenario, loaders === undefined ? {} : { loaders });
+      const entry: ActiveReplay = { loadedPromise: undefined as never };
+      entry.loadedPromise = loadReplayDriver(scenario, loaders === undefined ? {} : { loaders });
+      activeReplays.add(entry);
       try {
-        const report = await runScenario(scenario, loaded.adapter, {
+        const loaded = await entry.loadedPromise;
+        entry.loaded = loaded;
+        if (closing) throw new Error('dsh-qa MCP server is shutting down');
+        entry.runPromise = runScenario(scenario, loaded.adapter, {
           ownerId: ownerFrom(args),
           ...(args.headless === undefined ? {} : { headless: args.headless }),
           launchUrl: scenario.target.launch,
@@ -626,15 +652,90 @@ export function createQaMcpServer(options: QaMcpServerOptions = {}): McpServer {
           settle: resolveSettlePolicy(),
           visual: { capturesDir: MCP_CAPTURES_DIR },
         });
+        const report = await entry.runPromise;
         if (args.outputDir !== undefined) {
           await writeReports(report, { directory: args.outputDir });
         }
         return textResult(report);
       } finally {
-        await loaded.dispose();
+        await disposeReplay(entry);
+        activeReplays.delete(entry);
       }
     }),
   );
 
-  return server;
+  const disposeReplay = async (entry: ActiveReplay): Promise<void> => {
+    if (entry.disposePromise !== undefined) return entry.disposePromise;
+    entry.disposePromise = (async () => {
+      const loaded = await entry.loadedPromise.catch(() => undefined);
+      if (loaded !== undefined) await loaded.dispose();
+    })();
+    return entry.disposePromise;
+  };
+
+  const dispose = async (): Promise<void> => {
+    if (disposePromise !== undefined) return disposePromise;
+    closing = true;
+    disposePromise = (async () => {
+      const pending = Object.values(managers).filter((manager): manager is Promise<QaSessionManager> => manager !== undefined);
+      const replayEntries = [...activeReplays];
+      ownerDrivers.clear();
+      visualCaptures.clear();
+      let firstError: unknown;
+      const managerDisposals = pending.map(async managerPromise => (await managerPromise).dispose());
+      const cleanupSettled = await Promise.allSettled([
+        ...managerDisposals,
+        ...replayEntries.map(entry => disposeReplay(entry)),
+      ]);
+      for (const outcome of cleanupSettled.slice(0, managerDisposals.length)) {
+        if (outcome.status === 'rejected') firstError ??= outcome.reason;
+      }
+      for (let index = 0; index < replayEntries.length; index += 1) {
+        const outcome = cleanupSettled[managerDisposals.length + index];
+        const entry = replayEntries[index];
+        if (outcome?.status === 'rejected') firstError ??= outcome.reason;
+        else if (outcome?.status === 'fulfilled' && entry !== undefined) activeReplays.delete(entry);
+      }
+      // Do not wait for a run after its adapter has been disposed: a driver
+      // may be blocked in an uninterruptible observe, but resource ownership
+      // has already been ended and the handler's finally shares disposeOnce.
+      recorder.clear();
+      if (firstError !== undefined) throw firstError;
+    })();
+    return disposePromise;
+  };
+  const lifecycleServer = server as QaMcpServer;
+  const originalConnect = lifecycleServer.connect.bind(lifecycleServer);
+  lifecycleServer.connect = async (transport) => {
+    await originalConnect(transport);
+    const transportOnClose = transport.onclose;
+    transport.onclose = () => {
+      try {
+        transportOnClose?.();
+      } finally {
+        void dispose().catch(() => {
+          console.error('[dsh-qa] shutdown cleanup failed');
+        });
+      }
+    };
+  };
+  const originalClose = lifecycleServer.close.bind(lifecycleServer);
+  lifecycleServer.close = async () => {
+    let closeError;
+    try {
+      await originalClose();
+    } catch (error) {
+      closeError = error;
+    }
+    let disposeError;
+    try {
+      await dispose();
+    } catch (error) {
+      disposeError = error;
+    }
+    if (closeError !== undefined) throw closeError;
+    if (disposeError !== undefined) throw disposeError;
+  };
+  lifecycleServer.dispose = dispose;
+  return lifecycleServer;
 }

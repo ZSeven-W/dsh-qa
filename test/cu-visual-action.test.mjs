@@ -228,21 +228,38 @@ async function mcpVisualEvidence(server, owner) {
 test('MCP qa_act visual point route maps trusted native-file pixels to driver.visualAct and unavailable approval rejects no dispatch', async () => {
   const { driver, calls } = fakeDriver({ approval: 'unavailable' })
   const server = createQaMcpServer({ adapters: { computer: new ComputerAdapter(driver) } })
-  const visual = await mcpVisualEvidence(server, 'mcp-unavailable')
-  assert.equal(visual.coordinateSpace, 'native')
-  const result = await callMCP(server, 'qa_act', {
-    owner: 'mcp-unavailable',
-    action: 'visual_click',
-    target_description: 'the Press Me control',
-    capture_sha256: visual.sha256,
-    observation_id: visual.observationId,
-    point: { x: 200, y: 150 },
-  })
-  assert.equal(result.receipt.status, 'rejected')
-  assert.equal(result.receipt.code, 'APPROVAL_REQUIRED')
-  assert.equal(result.receipt.dispatched, false)
-  assert.equal(calls.visualAct.length, 1)
-  assert.equal(calls.visualAct[0].approvalPresent, false)
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: 'dsh-qa-cu-visual-mcp', version: '0.1.0' })
+  await server.connect(serverTransport)
+  await client.connect(clientTransport)
+  try {
+    const call = async (name, args) => {
+      const result = await client.callTool({ name, arguments: args })
+      const text = result.content.find((item) => item.type === 'text')?.text
+      assert.equal(typeof text, 'string')
+      return JSON.parse(text)
+    }
+    await call('qa_session_start', { owner: 'mcp-unavailable', driver: 'computer', bundle_id: BUNDLE, window_title: WINDOW_TITLE })
+    const evidence = await call('qa_evidence', { owner: 'mcp-unavailable', visual: true })
+    const visual = evidence.visual
+    assert.equal(visual.coordinateSpace, 'native')
+    const result = await call('qa_act', {
+      owner: 'mcp-unavailable',
+      action: 'visual_click',
+      target_description: 'the Press Me control',
+      capture_sha256: visual.sha256,
+      observation_id: visual.observationId,
+      point: { x: 200, y: 150 },
+    })
+    assert.equal(result.receipt.status, 'rejected')
+    assert.equal(result.receipt.code, 'APPROVAL_REQUIRED')
+    assert.equal(result.receipt.dispatched, false)
+    assert.equal(calls.visualAct.length, 1)
+    assert.equal(calls.visualAct[0].approvalPresent, false)
+  } finally {
+    await client.close().catch(() => {})
+    await server.close().catch(() => {})
+  }
 })
 
 test('Cordis qa_act visual point route forwards host approval and dispatches exactly once; unknown receipt re-observes without retry', async () => {
@@ -387,7 +404,10 @@ test('exported visual trajectory carries description/provenance, never raw coord
     const action = {
       kind: 'visual_click',
       targetDescription: 'the Press Me control',
-      observationId: 'obs_1',
+      // A file-like observation binding is ephemeral runtime metadata. It is
+      // intentionally redacted by the generic text projector, but must not
+      // make the durable visual action ineligible for export.
+      observationId: 'file:///private/tmp/capture.png',
       captureSha256: createHash('sha256').update(makePng()).digest('hex'),
       point: { x: 200, y: 150 },
       grounding: { source: 'harness-point' },
@@ -407,6 +427,62 @@ test('exported visual trajectory carries description/provenance, never raw coord
     assert.equal(serialized.includes('observationId'), false)
     assert.equal(serialized.includes('"point"'), false)
     assert.equal(serialized.includes('"to"'), false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('visual export blocks sensitive descriptions but ignores redaction of transient bindings', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-cu-visual-redaction-'))
+  try {
+    const { driver } = fakeDriver()
+    const adapter = new ComputerAdapter(driver)
+    const recorder = new QaTrajectoryRecorder()
+    const session = new QaSession(new RecordingQaDriverAdapter(adapter, recorder), 'visual-redaction', { settle: SETTLE })
+    await session.start({ bundleId: BUNDLE, windowTitle: WINDOW_TITLE })
+    await session.observeSettled()
+    await session.act({
+      kind: 'visual_click',
+      targetDescription: 'click secret-token=do-not-leak',
+      observationId: 'file:///private/tmp/secret-capture.png',
+      captureSha256: createHash('sha256').update(makePng()).digest('hex'),
+      point: { x: 200, y: 150 },
+      grounding: { source: 'harness-point' },
+    }, allowedApproval)
+    await session.stop()
+    const outputPath = join(dir, 'sensitive.json')
+    const exported = await exportRecordedScenario(recorder, 'visual-redaction', { outputPath })
+    assert.equal(exported.ok, false)
+    assert.equal(exported.code, 'NO_PROVEN_STEPS')
+    assert.equal(exported.excludedActions[0].reason, 'ACTION_PAYLOAD_REDACTED')
+    assert.doesNotMatch(JSON.stringify(exported), /do-not-leak|secret-token/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('visual export stays NO_PROVEN_STEPS without a fresh post-action observation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-qa-cu-visual-no-proof-'))
+  try {
+    const recorder = new QaTrajectoryRecorder()
+    recorder.start('visual-no-proof', 'computer', { bundleId: BUNDLE, windowTitle: WINDOW_TITLE }, { page: { url: 'http://127.0.0.1:1/', title: WINDOW_TITLE } })
+    const actionId = recorder.action('visual-no-proof', {
+      kind: 'visual_click',
+      targetDescription: 'the Press Me control',
+      observationId: 'obs_1',
+      captureSha256: createHash('sha256').update(makePng()).digest('hex'),
+      point: { x: 200, y: 150 },
+      grounding: { source: 'harness-point' },
+    })
+    recorder.receipt('visual-no-proof', actionId, {
+      receiptId: 'r1', sequence: 1, status: 'unknown', action: 'visual_click',
+      observationId: 'obs_1', observationFingerprint: null, captureSha256: 'hash', dispatched: true,
+      startedAt: 'a', finishedAt: 'b', reason: 'dispatched', nativeAccepted: true, postAction: null,
+    })
+    const exported = await exportRecordedScenario(recorder, 'visual-no-proof', { outputPath: join(dir, 'no-proof.json') })
+    assert.equal(exported.ok, false)
+    assert.equal(exported.code, 'NO_PROVEN_STEPS')
+    assert.equal(exported.excludedActions[0].reason, 'FRESH_OBSERVATION_MISSING')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

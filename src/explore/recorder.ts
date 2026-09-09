@@ -97,6 +97,47 @@ function cloneRedacted<T>(value: T): Sanitized<T> {
   return { value: projected as T, changed: !isDeepStrictEqual(value, projected) };
 }
 
+type VisualRuntimeAction = Extract<QaAction, { kind: 'visual_click' | 'visual_drag' | 'visual_scroll' }>;
+
+/**
+ * Visual actions carry two different classes of data. The description and
+ * grounding are durable replay prose and must pass the redaction projection;
+ * observationId/captureSha256/point/to are ephemeral dispatch bindings and
+ * are intentionally not scenario selectors. Comparing the whole runtime
+ * object here made a redaction of a transient field exclude an otherwise
+ * replayable visual step.
+ */
+function projectVisualAction(action: VisualRuntimeAction): Sanitized<VisualRuntimeAction> {
+  const durable = action.kind === 'visual_click'
+    ? {
+        kind: action.kind,
+        targetDescription: action.targetDescription,
+        ...(action.grounding === undefined ? {} : { grounding: action.grounding }),
+      }
+    : action.kind === 'visual_drag'
+      ? {
+          kind: action.kind,
+          targetDescription: action.targetDescription,
+          toDescription: action.toDescription,
+          ...(action.grounding === undefined ? {} : { grounding: action.grounding }),
+        }
+      : {
+          kind: action.kind,
+          targetDescription: action.targetDescription,
+          direction: action.direction,
+          ...(action.amount === undefined ? {} : { amount: action.amount }),
+          ...(action.grounding === undefined ? {} : { grounding: action.grounding }),
+        };
+  const safeDurable = projectRedactedJsonValue(durable) as typeof durable;
+  return {
+    value: {
+      ...action,
+      ...safeDurable,
+    } as VisualRuntimeAction,
+    changed: !isDeepStrictEqual(durable, safeDurable),
+  };
+}
+
 function safeReason(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return redactText(raw);
@@ -229,7 +270,9 @@ export class QaTrajectoryRecorder {
       const aliased = this.#aliasAction(trajectory, action);
       const safe = action.kind === 'navigate'
         ? { value: aliased, changed: false }
-        : cloneRedacted(aliased);
+        : action.kind === 'visual_click' || action.kind === 'visual_drag' || action.kind === 'visual_scroll'
+          ? projectVisualAction(aliased as VisualRuntimeAction)
+          : cloneRedacted(aliased);
       trajectory.settlingActionId = null;
       const recorded: MutableAction = {
         actionId,
@@ -550,6 +593,7 @@ export class QaTrajectoryRecorder {
       const recorded: QaRecordedAssertion = {
         assertion: safeAssertion,
         passed,
+        actionId: trajectory.lastSettledActionId,
         decidingObservationId: trajectory.lastObservationId,
         baselineObservationId: trajectory.lastWholePageObservationId,
       };
@@ -560,6 +604,7 @@ export class QaTrajectoryRecorder {
         kind: 'assertion',
         assertion: recorded.assertion,
         passed: recorded.passed,
+        actionId: recorded.actionId,
         decidingObservationId: recorded.decidingObservationId,
         baselineObservationId: recorded.baselineObservationId,
       });

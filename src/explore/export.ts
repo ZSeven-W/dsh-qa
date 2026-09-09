@@ -55,6 +55,10 @@ function containsRedactionMarker(value: string): boolean {
   return value.includes('[REDACTED');
 }
 
+function visualDescriptionIsSafe(value: string): boolean {
+  return clean(value) !== '' && !containsRedactionMarker(value) && redactText(value) === value;
+}
+
 function predicateFor(node: QaSemanticNode, driver: QaDriverKind): QaNodePredicate | null {
   const role = clean(node.role);
   const name = clean(node.name);
@@ -174,6 +178,16 @@ function durableAction(
     };
   }
   if (action.kind === 'visual_click' || action.kind === 'visual_drag' || action.kind === 'visual_scroll') {
+    const descriptions = action.kind === 'visual_drag'
+      ? [action.targetDescription, action.toDescription]
+      : [action.targetDescription];
+    if (descriptions.some(description => !visualDescriptionIsSafe(description))) {
+      return exclusion(
+        recorded,
+        'ACTION_PAYLOAD_REDACTED',
+        'A visual replay description was rejected by redaction; no sensitive text is retained.',
+      );
+    }
     // Visual action durable form: target DESCRIPTION + provenance only. No raw
     // coordinate, capture SHA-256, observation id, or image path is serialized.
     // Replay re-grounds on a fresh screenshot. The proof assertion is built
@@ -637,6 +651,92 @@ interface SynthesisResult {
   fragileOnly: { role: string; name: string } | null;
 }
 
+/**
+ * Use an explicit passed node-value decision only when synthesis found no
+ * proof. This is deliberately narrower than the generic assertion recorder:
+ * it must name the exact most-recently-settled action, its fresh settled view,
+ * and a unique unflagged target whose value changed from before to after.
+ */
+function explicitValueProof(
+  recorded: QaRecordedAction,
+  trajectory: QaTrajectorySnapshot,
+  before: QaObservation | null,
+  after: QaObservation,
+): QaAssertion | null {
+  for (const candidate of trajectory.assertions) {
+    if (candidate.actionId !== recorded.actionId || !candidate.passed || candidate.assertion.kind !== 'node-value') continue;
+    const proof = explicitValueCandidateProof(recorded, trajectory, before, after, candidate);
+    if (proof !== null) return proof;
+  }
+  return null;
+}
+
+function explicitValueCandidateProof(
+  recorded: QaRecordedAction,
+  trajectory: QaTrajectorySnapshot,
+  before: QaObservation | null,
+  after: QaObservation,
+  candidate: import('./types.ts').QaRecordedAssertion,
+): QaAssertion | null {
+  if (recorded.action.kind !== 'click'
+    && recorded.action.kind !== 'visual_click'
+    && recorded.action.kind !== 'visual_drag'
+    && recorded.action.kind !== 'visual_scroll') return null;
+  if (recorded.receipt === null || !recorded.receipt.dispatched || recorded.receipt.status === 'rejected' || recorded.receipt.status === 'failed') return null;
+  if (recorded.afterObservationId === null || candidate.decidingObservationId === null) return null;
+  const deciding = trajectory.observations[candidate.decidingObservationId];
+  if (deciding === undefined) return null;
+  const observationSequence = new Map(
+    trajectory.events.filter(event => event.kind === 'observation').map(event => [event.observationId, event.sequence]),
+  );
+  const afterSequence = observationSequence.get(recorded.afterObservationId);
+  const decidingSequence = observationSequence.get(candidate.decidingObservationId);
+  if (afterSequence === undefined || decidingSequence === undefined || decidingSequence < afterSequence) return null;
+  if (trajectory.events.some(event => event.kind === 'action' && event.sequence > afterSequence && event.sequence <= decidingSequence && event.actionId !== recorded.actionId)) return null;
+  const assertionSequence = trajectory.events.find(event => event.kind === 'assertion'
+    && event.actionId === recorded.actionId
+    && event.decidingObservationId === candidate.decidingObservationId
+    && JSON.stringify(event.assertion) === JSON.stringify(candidate.assertion)
+    && event.passed)?.sequence;
+  if (assertionSequence === undefined) return null;
+  if (trajectory.events.some(event => event.kind === 'action' && event.sequence > decidingSequence
+    && event.sequence < assertionSequence && event.actionId !== recorded.actionId)) return null;
+  if (!trajectory.events.some(event => event.kind === 'settle'
+    && event.observationId === candidate.decidingObservationId
+    && event.stable === true
+    && (event.actionId === null || event.actionId === recorded.actionId)
+    && event.sequence > decidingSequence
+    && event.sequence < assertionSequence)) return null;
+  if (recorded.afterObservationStable !== true || before === null || before.scope !== undefined || after.scope !== undefined || deciding.scope !== undefined) return null;
+  const expected = candidate.assertion.expected as QaNodePredicate & { value?: unknown };
+  if (typeof expected.value !== 'string' || expected.value.includes('[REDACTED') || redactText(expected.value) !== expected.value) return null;
+  const stableIdentifier = (typeof expected.tag === 'string' && expected.tag.trim() !== '')
+    || (typeof expected.identifier === 'string' && expected.identifier.trim() !== '');
+  // A truncated view cannot prove whole-tree absence or uniqueness by a weak
+  // role/name selector. A positive value on one stable tag/identifier is
+  // still directly observable and replayable, so retain that narrow proof and
+  // let the existing truncation weakness disclosure describe the boundary.
+  if ((before.truncated || after.truncated || deciding.truncated) && !stableIdentifier) return null;
+  const predicate: QaNodePredicate = { ...expected };
+  delete (predicate as QaNodePredicate & { value?: unknown }).value;
+  const beforeMatches = before.nodes.filter(node => matchesPredicate(node, predicate));
+  const afterMatches = after.nodes.filter(node => matchesPredicate(node, predicate));
+  const decidingMatches = deciding.nodes.filter(node => matchesPredicate(node, predicate));
+  if (beforeMatches.length !== 1 || afterMatches.length !== 1 || decidingMatches.length !== 1) return null;
+  const beforeNode = beforeMatches[0];
+  const afterNode = afterMatches[0];
+  const decidingNode = decidingMatches[0];
+  if (beforeNode === undefined || afterNode === undefined || decidingNode === undefined) return null;
+  if (beforeNode.secure === true || beforeNode.valueWithheld === true || beforeNode.valueTruncated === true) return null;
+  if (afterNode.secure === true || afterNode.valueWithheld === true || afterNode.valueTruncated === true) return null;
+  if (decidingNode.secure === true || decidingNode.valueWithheld === true || decidingNode.valueTruncated === true) return null;
+  if (typeof beforeNode.value !== 'string' || beforeNode.value === expected.value) return null;
+  if (evaluateAssertion(candidate.assertion, before).passed) return null;
+  if (!evaluateAssertion(candidate.assertion, after).passed) return null;
+  if (!evaluateAssertion(candidate.assertion, deciding).passed) return null;
+  return candidate.assertion;
+}
+
 function synthesizeAssertion(
   before: QaObservation | null,
   after: QaObservation,
@@ -704,6 +804,9 @@ function synthesizeAssertion(
 const TRUNCATED_PROOF_WEAKNESS =
   'the proof observation was truncated at the driver node budget, so nodes outside the returned window were never seen '
   + '(an apparently new node may have been there all along, and the semantic target may not be unique)';
+
+const TRUNCATED_EXPLICIT_VALUE_WEAKNESS =
+  'the positive node-value proof was observed in a truncated view; the matching stable target/value is proven, but the full accessibility tree is not claimed complete';
 
 /** True when either view this step's proof rests on was budget-truncated. */
 function proofWasTruncated(before: QaObservation | null, after: QaObservation): boolean {
@@ -1560,6 +1663,9 @@ function buildScenario(
     const synthesized: SynthesisResult = scrollIntoView && candidate.target !== null
       ? { assertion: { assertion: synthesizeScrollAssertion(candidate.target), weakness: null }, fragileOnly: null }
       : synthesizeAssertion(candidate.before, after, candidate.target, stepAction, trajectory.driver);
+    const explicitProof = (synthesized.assertion === null || !evaluateAssertion(synthesized.assertion.assertion, after).passed)
+      ? explicitValueProof(recorded, trajectory, candidate.before, after)
+      : null;
     if (synthesized.fragileOnly !== null) {
       // The only observable change was an ordering-fragile container whose
       // accessible name concatenates its children's text. Exporting it would
@@ -1574,7 +1680,8 @@ function buildScenario(
       ));
       continue;
     }
-    if (synthesized.assertion === null || !evaluateAssertion(synthesized.assertion.assertion, after).passed) {
+    if ((synthesized.assertion === null && explicitProof === null)
+      || (synthesized.assertion !== null && !evaluateAssertion(synthesized.assertion.assertion, after).passed)) {
       // A scroll-by-target step whose node-in-viewport proof failed must say
       // WHY (target outside the window, or returned but not in the viewport):
       // the click/fill "no semantic state change or URL change" wording would
@@ -1590,6 +1697,15 @@ function buildScenario(
       ));
       continue;
     }
+    const proofAssertion = explicitProof ?? synthesized.assertion?.assertion ?? null;
+    if (proofAssertion === null || !evaluateAssertion(proofAssertion, after).passed) {
+      excluded.push(exclusion(
+        recorded,
+        'ASSERTION_NOT_PROVABLE',
+        'The explicit post-action assertion did not pass on the recorded settled observation.',
+      ));
+      continue;
+    }
     // A distant delta is still exported (dropping it would silently lose the
     // step), but the weakness is recorded in the intent so a human can see why
     // the assertion looks unrelated to the action. A proof observation that was
@@ -1600,7 +1716,7 @@ function buildScenario(
     const scopedBeforeWeakness = scopedPrecedingViewWeakness(candidate.before);
     const anchored = anchoredScrollProof(recorded, after);
     const scopePath = scopePathFor(trajectory, after, candidate.before);
-    const scopedStep = withProofScope(synthesized.assertion.assertion, after, candidate.before, anchored, scopePath, trajectory.observations);
+    const scopedStep = withProofScope(proofAssertion, after, candidate.before, anchored, scopePath, trajectory.observations);
     if (scopedStep.notDurable !== null) {
       // QA-BL-054: a scoped proof whose container is not proven durable (and
       // is not an identity-anchored scroll proof) is EXCLUDED, never
@@ -1609,9 +1725,12 @@ function buildScenario(
       continue;
     }
     const intent = normalizeIntent(intentWithWeaknesses(intentFor(stepAction), [
-      ...(synthesized.assertion.weakness === null ? [] : [synthesized.assertion.weakness]),
-      ...(proofWasTruncated(candidate.before, after) && truncationWeakensProof(synthesized.assertion.assertion)
+      ...(synthesized.assertion === null || synthesized.assertion.weakness === null ? [] : [synthesized.assertion.weakness]),
+      ...(proofWasTruncated(candidate.before, after) && truncationWeakensProof(proofAssertion)
         ? [TRUNCATED_PROOF_WEAKNESS]
+        : []),
+      ...(explicitProof !== null && proofWasTruncated(candidate.before, after)
+        ? [TRUNCATED_EXPLICIT_VALUE_WEAKNESS]
         : []),
       ...(scopedBeforeWeakness === null ? [] : [scopedBeforeWeakness]),
       ...(scopedStep.weakness === null ? [] : [scopedStep.weakness]),

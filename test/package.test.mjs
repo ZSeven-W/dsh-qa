@@ -110,3 +110,10 @@ test('sibling drivers are absent from runtime dependencies', () => {
     assert.equal(pkg.dependencies?.[name], undefined, `${name} must not be a runtime dependency`);
   }
 });
+
+test('the pack smoke gate is hooked to both pack and publish paths', () => {
+  // npm pack runs prepack but NOT prepublishOnly; the plain-npm clean-install
+  // gate (scripts/smoke-pack.mjs) must therefore be wired to BOTH so a pack
+  // and a publish are each covered (references/publishing.md).
+  assert.equal(pkg.scripts?.prepublishOnly, 'npm run smoke:pack', 'prepublishOnly must run the pack smoke');
+});

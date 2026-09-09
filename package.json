@@ -48,7 +48,8 @@
     "smoke:bundle": "node scripts/smoke-bundle.mjs",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "example": "node scripts/run-example.mjs",
-    "prepack": "npm run build && npm run typecheck && npm test"
+    "prepack": "npm run build && npm run typecheck && npm test",
+    "prepublishOnly": "npm run smoke:pack"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",

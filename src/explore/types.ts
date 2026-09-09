@@ -137,6 +137,8 @@ export interface QaTrajectoryAssertionEvent {
   assertion: QaAssertion;
   /** Whether the live decision passed (only passed assertions export). */
   passed: boolean;
+  /** Exact settled action this assertion was recorded for, when any. */
+  actionId: string | null;
   decidingObservationId: string | null;
   baselineObservationId: string | null;
 }
@@ -159,6 +161,8 @@ export interface QaRecordedAssertion {
   assertion: QaAssertion;
   /** Whether the live decision passed (only passed assertions export). */
   passed: boolean;
+  /** Exact settled action this assertion was recorded for, when any. */
+  actionId: string | null;
   /** The DECIDING observation; null when no observation was recorded. */
   decidingObservationId: string | null;
   /** The latest WHOLE-PAGE observation recorded before the assertion. */

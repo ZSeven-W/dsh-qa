@@ -1,4 +1,24 @@
-# dsh-qa
+<h1 align="center">DSH QA</h1>
+
+<p align="center">
+  <strong>Explore real apps, capture evidence, and turn verified actions into repeatable QA scenarios.</strong><br />
+  <sub>Agent-Led Exploration &bull; Evidence-Backed Assertions &bull; Deterministic Replay &bull; Browser, Desktop, iOS &amp; Android</sub>
+</p>
+
+<p align="center">
+  <sub>Package: <code>@zseven-w/dsh-qa</code> &middot; Checkout version: <code>0.1.0</code> &middot; Manifest: <code>private: true</code></sub>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> &middot; <a href="#safety-and-limitations">Safety and limitations</a> &middot; <a href="#development">Development</a> &middot; <a href="#documentation">Documentation</a>
+</p>
+
+<p align="center">
+  <img src="./docs/images/dsh-qa-replay-report.png" alt="Real QA browser replay report with two passing steps, final assertions, and bounded evidence" width="100%" />
+</p>
+<p align="center"><sub>Actual output from the shipped browser example: two steps and final assertions passed. This is a typeset view of the unedited Markdown report, not a built-in dashboard or a claim of four-platform coverage.</sub></p>
+
+## Why DSH QA
 
 QA orchestrator plugin for DeepSeek Harness: an agent **explores** your App like a
 real user (with evidence-backed findings), then the explored path is exported as a
@@ -24,10 +44,79 @@ deterministic **Replay** scenario that runs on every release.
   fallback; Android `type` remains append-faithful after real focus
   verification and Android `fill` remains `FILL_PRIMITIVE_UNAVAILABLE`.
 
-Status: **private, v0.1 in development** (WP1 scaffold, WP2 QA session core,
-WP4 deterministic Replay, WP5 Computer driver, WP6 Explore→Replay loop).
+QA coordinates four independent drivers; it does not replace them or grant
+broader access. A passing fixture, unit suite, or device acceptance run is
+evidence for that tested scope, not a claim that every app is supported or that
+the package has been published.
 
-## Session core (WP2)
+## Quick start
+
+This is a **source-checkout workflow**, not an npm registry installation guide:
+[`package.json`](./package.json) still sets `private: true`. Use Node.js
+**24.11.0 or later** and **pnpm 10.34.5**, and place the four sibling driver
+repositories alongside this checkout. Their `link:` development dependencies
+must resolve and their own build/runtime prerequisites must be satisfied.
+
+| Driver | Responsibility | Setup |
+| --- | --- | --- |
+| Browser (BU) | Browser observation and interaction | [DSH Browser](https://github.com/ZSeven-W/dsh-browser) |
+| Computer (CU) | Native desktop observation and interaction | [DSH Computer](https://github.com/ZSeven-W/dsh-computer) |
+| iOS | Explicit-device mobile sessions | [DSH iOS](https://github.com/ZSeven-W/dsh-ios) |
+| Android | Explicit-device mobile sessions | [DSH Android](https://github.com/ZSeven-W/dsh-android) |
+
+From the `dsh-qa` checkout:
+
+```bash
+pnpm install
+npm run build
+npm run example -- --output-dir ./dsh-qa-example-report
+```
+
+The example uses a local web fixture and the Browser driver; it does not touch
+a mobile device. It launches a headless browser, then writes JSON, Markdown,
+and JSONL reports. See [the shipped example](#running-the-shipped-example) for
+its expected output and packed-artifact usage.
+
+For DSH-host usage, install or update DSH with:
+
+```bash
+npm install -g @deepseek-ai/dsh@latest
+```
+
+Installing DSH does **not** install or activate this local plugin. Its host
+entry is declared in [`cordis.patch.yml`](./cordis.patch.yml); the standalone
+stdio MCP entry is [`src/server.mjs`](./src/server.mjs), also exposed by
+`npm run mcp` and [`.mcp.json`](./.mcp.json). Configure the chosen host to load
+the local plugin/server and provide the required drivers before starting a
+session. Follow the [Explore playbook](./skills/qa-explore/SKILL.md) for the
+observe → act → assert → evidence → export workflow.
+
+## Safety and limitations
+
+- **No false green:** `unknown` action receipts need fresh proof. Runs report
+  `pass`, `inconclusive`, or `fail`; missing coverage is not absence.
+- **No authority escalation:** driver approvals remain in force. Secure fields
+  and `EXTERNAL_COMMIT_TARGET` are refused; mobile sessions require an explicit
+  device id, with no default-device fallback.
+- **Replay needs durable targets:** coordinates, ephemeral references, and
+  ambiguous selectors are not promoted into durable scenarios. An action with
+  no settled, provable outcome is excluded from export.
+- **Vision is advisory:** visual assertions assist triage but do not determine
+  the run status. Model narration is not observed fact.
+- **Mobile support is conditional:** iOS text input requires live native
+  element-bound primitives and identifiers. Android `type` verifies real focus;
+  Android `fill` remains unavailable.
+- **Evidence needs care:** structured reports use fail-closed redaction, but
+  screenshots can still contain private content. Use synthetic test data and
+  inspect artifacts before sharing. Login-state injection requires explicit
+  owner authorization for exact origins; see [login state](./docs/LOGIN_STATE.md).
+
+## Implementation reference
+
+<details>
+<summary>Session semantics, replay, observation coverage, and host integration</summary>
+
+### Session core
 
 `src/session/` implements the QA loop `observe -> act -> re-observe -> evaluate ->
 evidence -> cleanup` on top of a driver adapter interface, with these hard rules:
@@ -53,7 +142,7 @@ decision (QA-BL-042, 2026-09-05)**: it is a signed macOS app bundle built from
 Computer driver's permanent secure-field rejection ("Secure password",
 `fixture.securePassword`) and is exercised by `test/computer-integration.test.mjs`.
 
-## Replay (WP4)
+### Replay
 
 Declarative `QaScenario` files (lossless JSON, `{ meta, target, steps[],
 assertions[] }`) are executed deterministically by `src/replay/runner.ts` on
@@ -66,7 +155,7 @@ redacted `report.json` / `report.md` / append-only `report.jsonl` through
 the fail-closed v2 engine in `src/redaction`.
 See `scenarios/examples/` and `qa_assert` / `qa_replay_run`.
 
-## Explore → Replay (WP6)
+### Explore → Replay
 
 `src/explore/` wraps the existing driver adapter as a passive recorder. It records
 ordered observations, actions, receipts, and evidence references after applying the
@@ -95,7 +184,7 @@ the plugin actually registers through the optional skill service — the
 `QA_SKILL_CONTENT` template literal in `src/skill.ts`, registered under the
 name `qa-orchestration` via `ctx.inject(['skills'], …)`.
 
-## Bounded settle (asynchronous UIs)
+### Bounded settle (asynchronous UIs)
 
 Real UIs are asynchronous, so a single proof observation taken immediately after
 an action is a race: it can miss the outcome that has not rendered yet, or catch
@@ -122,7 +211,7 @@ or the `DSH_QA_SETTLE_BUDGET_MS` / `DSH_QA_SETTLE_QUIET_MS` / `DSH_QA_SETTLE_INT
 environment overrides. Full rationale, both reproduced real-world failure modes,
 and the regression fixtures: `docs/SETTLE.md`.
 
-## A truncated view is incomplete, not empty
+### A truncated view is incomplete, not empty
 
 Observations are budget-limited and carry `truncated`. A node beyond the budget
 still exists, so **an absence can never be proven from a truncated view**:
@@ -155,7 +244,7 @@ verified (N nodes probed). K hidden candidates excluded." A returned matching
 node still fails `node-absent` normally, and `INCONCLUSIVE_TRUNCATED`
 semantics are unchanged.
 
-## Scoped observation (browser driver contract v9)
+### Scoped observation (browser driver contract v9)
 
 The browser clamp stays at 100 nodes while real pages exceed it, so `qa_observe`
 accepts `within_ref` — an opaque ref from the caller's CURRENT observation — and
@@ -206,7 +295,7 @@ explicitly PROVISIONAL (the step intent says so) when uniqueness is unproven,
 and every other scoped assertion is excluded with `SCOPE_NOT_DURABLE` —
 never silently exported as a whole-page proof. See `docs/TRUNCATION.md`.
 
-## Visual assertions (advisory)
+### Visual assertions (advisory)
 
 `qa_assert kind:"visual"` captures the current screen and asks the host vision
 model one question. The verdict is **advisory**: it is recorded in the report and
@@ -237,28 +326,34 @@ Two rules come from live use against `deepseek-v4-flash-vision-exp`:
   `observationId`) is never silently refreshed: the pin is honored and a stale
   pin is refused by the driver, by design.
 
-## dshHostRuntime
+### Host runtime
 
 This package declares **zero host packages** in `dependencies`/`peerDependencies`.
-The DSH host provides the runtime services below itself; a plain
-`npm i @zseven-w/dsh-qa` installs with no `@deepseek-ai/*` packages at all
-(enforced by `scripts/smoke-pack.mjs`).
+The DSH host provides the runtime services below itself. A plain npm install
+of the locally packed artifact must install no `@deepseek-ai/*` packages
+(enforced by [`scripts/smoke-pack.mjs`](./scripts/smoke-pack.mjs)); this is a
+packaging invariant, not a claim of registry availability.
 
 ```json
-"dshHostRuntime": {
-  "services": ["tools", "attachments", "llm"],
-  "typing": "structural"
+{
+  "dshHostRuntime": {
+    "services": ["tools", "attachments", "llm", "approval"],
+    "typing": "structural"
+  }
 }
 ```
 
 The optional skill service is registered exclusively through
 `ctx.inject(['skills'], cb)` and torn down with `fiber.dispose()`.
 
+</details>
+
 ## Running the shipped example
 
-The package ships a self-contained browser example:
-`scenarios/examples/fixture-web.json` drives the `fixtures/web/` page. After
-`npm pack` and a plain install, run it from the installed copy — no files from
+The package payload includes a self-contained browser example:
+[`scenarios/examples/fixture-web.json`](./scenarios/examples/fixture-web.json)
+drives the [`fixtures/web/`](./fixtures/web/) page. After locally packing and
+installing the artifact with its Browser driver, run it from the installed copy — no files from
 this repository's working tree are needed:
 
 ```bash
@@ -279,17 +374,41 @@ it headlessly through the browser driver, and writes `report.json` / `report.md`
 
 Exit code is `0` iff `status === "pass"`; pass `--output-dir <dir>` to choose
 where reports go (default `./dsh-qa-example-report`). The browser driver is
-host-provided in a DSH install; on a plain npm install, install
-`@zseven-w/dsh-browser` alongside it. `scripts/smoke-pack.mjs` runs this exact
+host-provided in a DSH install; in a standalone installation, make
+`@zseven-w/dsh-browser` available alongside it. `scripts/smoke-pack.mjs` runs this exact
 command from the packed tarball and asserts `status: "pass"`.
 
 ## Development
 
+Use the prerequisites and sibling layout from [Quick start](#quick-start).
+
 ```bash
 pnpm install
-npm run build:mcp     # esbuild single-file bundle -> lib/server.mjs (committed)
+npm run build        # build both the MCP server and plugin entry
 npm run typecheck
 npm test
 npm run smoke:bundle  # real stdio handshake from a node_modules-free copy
-npm run smoke:pack    # npm pack -> fresh-dir install -> handshake
+npm run smoke:pack    # prepack gates -> pack -> fresh install -> handshake + example
 ```
+
+The full suite and package smoke checks can exercise browser/native runtime
+requirements. Inspect test prerequisites before running on a working desktop;
+local checks are not a substitute for scoped real-device acceptance. Do not
+publish generated reports, login state, device identifiers, or signing material.
+
+## Documentation
+
+- [Explore playbook](./skills/qa-explore/SKILL.md) — agent workflow and export rules.
+- [Bounded settle](./docs/SETTLE.md) — asynchronous outcomes and proof timing.
+- [Observation completeness](./docs/TRUNCATION.md) — truncation, scope, and absence assertions.
+- [Login-state injection](./docs/LOGIN_STATE.md) — explicit-owner authorization and exact origins.
+- [Redaction specification](./docs/REDACTION_SPEC.md) — report boundaries and advisory provenance.
+- [Example scenarios](./scenarios/examples/) — declarative replay inputs.
+
+These links target the source checkout; `docs/` is not currently included in
+the package payload. Release publication and device acceptance are tracked
+separately from these usage and implementation references.
+
+## License
+
+[MIT](./LICENSE).

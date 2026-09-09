@@ -8,4 +8,21 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createQaMcpServer } from './mcp-server.ts';
 
 const server = createQaMcpServer();
-await server.connect(new StdioServerTransport());
+let shutdownPromise;
+const transport = new StdioServerTransport();
+const shutdown = () => {
+  if (shutdownPromise !== undefined) return shutdownPromise;
+  shutdownPromise = (async () => {
+    await server.close();
+    await server.dispose();
+  })();
+  return shutdownPromise;
+};
+const reportShutdownFailure = (error) => {
+  console.error('[dsh-qa] shutdown failed');
+  process.exitCode = 1;
+};
+process.stdin.once('end', () => { void shutdown().catch(reportShutdownFailure); });
+process.on('SIGTERM', () => { void shutdown().catch(reportShutdownFailure); });
+process.on('SIGINT', () => { void shutdown().catch(reportShutdownFailure); });
+await server.connect(transport);
