@@ -1,0 +1,38 @@
+name: DSHQAFixture
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    GENERATE_INFOPLIST_FILE: NO
+    CODE_SIGN_STYLE: Manual
+targets:
+  DSHQAFixture:
+    type: application
+    platform: iOS
+    sources:
+      - path: DSHQAFixture
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zseven.qa.fixture.ios
+        PRODUCT_NAME: DSHQAFixture
+        INFOPLIST_FILE: DSHQAFixture/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 1.0
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        ENABLE_DEBUG_DYLIB: NO
+        ENABLE_PREVIEWS: NO
+schemes:
+  DSHQAFixture:
+    build:
+      targets:
+        DSHQAFixture: all
+    run:
+      config: Debug
+    archive:
+      config: Release
