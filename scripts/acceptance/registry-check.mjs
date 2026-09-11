@@ -108,7 +108,8 @@ report.publishedPayloadChecks['@zseven-w/dsh-android@' + (report.candidates['@zs
 
 // Host-peer reachability: the android/ios manifests pin these on the public
 // registry. Measure whether the public registry actually has them.
-const HOST_PEERS = ['@deepseek-ai/cordis', '@deepseek-ai/dsh-tools', '@deepseek-ai/dsh-sandbox-policy', '@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-session'];
+// dsh-client-runtime was removed by DSH 0.1.5; ctx.slots now lives in dsh-client-ui-renderer.
+const HOST_PEERS = ['@deepseek-ai/cordis', '@deepseek-ai/dsh-tools', '@deepseek-ai/dsh-sandbox-policy', '@deepseek-ai/dsh-client-ui-renderer', '@deepseek-ai/dsh-session'];
 for (const pkg of HOST_PEERS) {
   report.hostPeerReachability[pkg] = viewJson(pkg, ['versions', 'dist-tags']);
 }

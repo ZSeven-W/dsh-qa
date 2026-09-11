@@ -67,7 +67,8 @@ function run(cmd, args, { cwd, timeoutMs = 300_000, env = {} } = {}) {
     const tail = (s) => (s || '').slice(-4000);
     fail(cmd + ' ' + args.join(' ') + ' failed in ' + cwd +
       '\n--- stdout tail ---\n' + tail(err.stdout) +
-      '\n--- stderr tail ---\n' + tail(err.stderr));
+      '\n--- stderr tail ---\n' + tail(err.stderr) +
+      '\n--- note: ' + (err.killed ? 'process was KILLED (timeout ' + timeoutMs + ' ms)' : 'exit code ' + err.status) + ' ---');
   }
 }
 
@@ -156,10 +157,11 @@ async function handshake() {
 console.log('[smoke:pack] 1/5 build + typecheck + test (prepack gate) ...');
 run('npm', ['run', 'build'], { cwd: ROOT });
 run('npm', ['run', 'typecheck'], { cwd: ROOT });
-// The full suite (browser integration + the 50k redaction fuzz) now runs
-// longer than the default 300s budget; give it a 10-minute ceiling so the
+// The full suite (browser integration, the 50k redaction fuzz and the
+// four-platform replay tests, 649 tests / ~11 min on the reference Mac) runs
+// far longer than the default 300s budget; give it a 30-minute ceiling so the
 // pack smoke does not false-fail at step 1 on a healthy tree.
-run('npm', ['run', 'test'], { cwd: ROOT, timeoutMs: 600_000 });
+run('npm', ['run', 'test'], { cwd: ROOT, timeoutMs: 1_800_000 });
 
 // ---------------------------------------------------------------------------
 // 2. Pack the REAL repository root. The tarball is what `npm publish` (or a
