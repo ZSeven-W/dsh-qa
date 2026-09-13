@@ -180,15 +180,15 @@ test('continuous churn still yields stable:false at budget (unchanged)', async (
 test('env var: valid override applied; below quietMs clamps up; above budget clamps down; garbage → default', () => {
   const defaults = resolveSettlePolicy()
   try {
-    process.env.DSH_QA_SETTLE_POST_CHANGE_QUIET_MS = '500'
+    process.env.DSHPLUGIN_QA_SETTLE_POST_CHANGE_QUIET_MS = '500'
     assert.equal(resolveSettlePolicy().postChangeQuietMs, 500, 'valid override applied')
-    process.env.DSH_QA_SETTLE_POST_CHANGE_QUIET_MS = '50'
+    process.env.DSHPLUGIN_QA_SETTLE_POST_CHANGE_QUIET_MS = '50'
     assert.equal(resolveSettlePolicy().postChangeQuietMs, defaults.quietMs, 'below quietMs clamps up to quietMs')
-    process.env.DSH_QA_SETTLE_POST_CHANGE_QUIET_MS = '99999'
+    process.env.DSHPLUGIN_QA_SETTLE_POST_CHANGE_QUIET_MS = '99999'
     assert.equal(resolveSettlePolicy().postChangeQuietMs, defaults.budgetMs, 'above budget clamps down to budgetMs')
-    process.env.DSH_QA_SETTLE_POST_CHANGE_QUIET_MS = 'whenever'
+    process.env.DSHPLUGIN_QA_SETTLE_POST_CHANGE_QUIET_MS = 'whenever'
     assert.equal(resolveSettlePolicy().postChangeQuietMs, 2 * defaults.quietMs, 'garbage → default (2 × quietMs)')
   } finally {
-    delete process.env.DSH_QA_SETTLE_POST_CHANGE_QUIET_MS
+    delete process.env.DSHPLUGIN_QA_SETTLE_POST_CHANGE_QUIET_MS
   }
 })

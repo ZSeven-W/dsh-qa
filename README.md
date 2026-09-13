@@ -207,7 +207,7 @@ assertion on the target whenever the settled view shows it carrying the typed
 text.
 
 Configure it with `new QaToolHost({ settle: ... })`, `runScenario(..., { settle: ... })`,
-or the `DSH_QA_SETTLE_BUDGET_MS` / `DSH_QA_SETTLE_QUIET_MS` / `DSH_QA_SETTLE_INTERVAL_MS`
+or the `DSHPLUGIN_QA_SETTLE_BUDGET_MS` / `DSHPLUGIN_QA_SETTLE_QUIET_MS` / `DSHPLUGIN_QA_SETTLE_INTERVAL_MS`
 environment overrides. Full rationale, both reproduced real-world failure modes,
 and the regression fixtures: `docs/SETTLE.md`.
 

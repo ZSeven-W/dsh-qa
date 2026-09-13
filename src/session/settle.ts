@@ -41,6 +41,7 @@
 import type { QaObservation, QaSemanticNode, QaSettleReport, QaSettleWidened } from './adapter.ts';
 import { QA_SETTLE_SCHEMA_BUDGET_MAX } from '../contracts.ts';
 import type { QaNodePredicate } from '../contracts.ts';
+import { pluginEnv } from '../plugin-env.ts';
 
 /**
  * Normalize an intended value write exactly like the browser driver normalizes
@@ -162,7 +163,7 @@ export interface QaSettlePolicy {
    * churning at `budgetMs`. Clamped to [budgetMs, QA_SETTLE_SCHEMA_BUDGET_MAX];
    * 0 disables adaptation (a value <= budgetMs is a no-op: nothing to widen).
    * `qa_session_start` exposes it as `settle_adaptive_budget_ms` and the env
-   * override is `DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS` (`off` or `0` disables).
+   * override is `DSHPLUGIN_QA_SETTLE_ADAPTIVE_BUDGET_MS` (`off` or `0` disables).
    */
   adaptiveBudgetMs: number;
 }
@@ -235,8 +236,8 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function fromEnv(name: string): number | undefined {
-  const raw = process.env[name];
+function fromEnv(suffix: string): number | undefined {
+  const raw = pluginEnv(suffix);
   if (raw === undefined || raw.trim() === '') return undefined;
   const parsed = Number(raw);
   // Fail-safe, not fail-open: garbage falls back to the default constant.
@@ -249,8 +250,8 @@ function fromEnv(name: string): number | undefined {
  * the string `off` (case-insensitive) and the number 0 both DISABLE adaptation
  * rather than falling back to the default. Garbage still falls back.
  */
-function adaptiveEnvValue(name: string): number | undefined {
-  const raw = process.env[name];
+function adaptiveEnvValue(suffix: string): number | undefined {
+  const raw = pluginEnv(suffix);
   if (raw === undefined || raw.trim() === '') return undefined;
   const trimmed = raw.trim();
   if (trimmed.toLowerCase() === 'off') return 0;
@@ -268,7 +269,7 @@ function adaptiveEnvValue(name: string): number | undefined {
 function resolveAdaptiveBudgetMs(explicit: number | undefined, budgetMs: number): number {
   const raw = explicit !== undefined
     ? explicit
-    : adaptiveEnvValue('DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS') ?? QA_SETTLE_ADAPTIVE_BUDGET_MS;
+    : adaptiveEnvValue('QA_SETTLE_ADAPTIVE_BUDGET_MS') ?? QA_SETTLE_ADAPTIVE_BUDGET_MS;
   if (raw === 0) return 0; // disabled
   if (!Number.isFinite(raw) || raw < 0) return QA_SETTLE_ADAPTIVE_BUDGET_MS; // garbage → default
   return clamp(raw, budgetMs, QA_SETTLE_SCHEMA_BUDGET_MAX);
@@ -276,9 +277,9 @@ function resolveAdaptiveBudgetMs(explicit: number | undefined, budgetMs: number)
 
 /**
  * Resolve the settle policy: explicit options first, then the
- * DSH_QA_SETTLE_BUDGET_MS / DSH_QA_SETTLE_QUIET_MS /
- * DSH_QA_SETTLE_POST_CHANGE_QUIET_MS / DSH_QA_SETTLE_INTERVAL_MS /
- * DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS environment overrides, then the named
+ * DSHPLUGIN_QA_SETTLE_BUDGET_MS / DSHPLUGIN_QA_SETTLE_QUIET_MS /
+ * DSHPLUGIN_QA_SETTLE_POST_CHANGE_QUIET_MS / DSHPLUGIN_QA_SETTLE_INTERVAL_MS /
+ * DSHPLUGIN_QA_SETTLE_ADAPTIVE_BUDGET_MS environment overrides, then the named
  * defaults. Every value is clamped, the quiet window can never exceed the
  * budget, the post-change quiet window is clamped to [quietMs, budgetMs], the
  * poll interval can never exceed the quiet window (so a window always gets
@@ -286,9 +287,9 @@ function resolveAdaptiveBudgetMs(explicit: number | undefined, budgetMs: number)
  * [budgetMs, QA_SETTLE_SCHEMA_BUDGET_MAX] (`0` / `off` disables it).
  */
 export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettlePolicy {
-  const budgetRaw = options?.budgetMs ?? fromEnv('DSH_QA_SETTLE_BUDGET_MS') ?? QA_SETTLE_BUDGET_MS;
-  const quietRaw = options?.quietMs ?? fromEnv('DSH_QA_SETTLE_QUIET_MS') ?? QA_SETTLE_QUIET_MS;
-  const intervalRaw = options?.intervalMs ?? fromEnv('DSH_QA_SETTLE_INTERVAL_MS') ?? QA_SETTLE_INTERVAL_MS;
+  const budgetRaw = options?.budgetMs ?? fromEnv('QA_SETTLE_BUDGET_MS') ?? QA_SETTLE_BUDGET_MS;
+  const quietRaw = options?.quietMs ?? fromEnv('QA_SETTLE_QUIET_MS') ?? QA_SETTLE_QUIET_MS;
+  const intervalRaw = options?.intervalMs ?? fromEnv('QA_SETTLE_INTERVAL_MS') ?? QA_SETTLE_INTERVAL_MS;
   const budgetMs = clamp(Number.isFinite(budgetRaw) ? budgetRaw : QA_SETTLE_BUDGET_MS, BUDGET_MIN_MS, BUDGET_MAX_MS);
   const quietMs = Math.min(
     clamp(Number.isFinite(quietRaw) ? quietRaw : QA_SETTLE_QUIET_MS, QUIET_MIN_MS, QUIET_MAX_MS),
@@ -303,7 +304,7 @@ export function resolveSettlePolicy(options?: Partial<QaSettlePolicy>): QaSettle
   // [quietMs, budgetMs]: it can never be shorter than the pre-change quiet
   // window nor longer than the budget. Garbage falls back to the default.
   const postChangeRaw = options?.postChangeQuietMs
-    ?? fromEnv('DSH_QA_SETTLE_POST_CHANGE_QUIET_MS')
+    ?? fromEnv('QA_SETTLE_POST_CHANGE_QUIET_MS')
     ?? 2 * quietMs;
   const postChangeQuietMs = clamp(
     Number.isFinite(postChangeRaw) ? postChangeRaw : 2 * quietMs,

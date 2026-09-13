@@ -1,0 +1,87 @@
+{
+  "assertions": [],
+  "driver": "browser",
+  "evidence": {
+    "bounded": true,
+    "console": [],
+    "dropped": {
+      "console": 0,
+      "network": 0
+    },
+    "network": [
+      {
+        "at": "2026-09-01T07:39:59.742Z",
+        "kind": "response",
+        "method": "GET",
+        "resourceType": "document",
+        "sequence": 1,
+        "status": 301,
+        "url": "[REDACTED_URL]"
+      },
+      {
+        "at": "2026-09-01T07:40:00.094Z",
+        "kind": "response",
+        "method": "GET",
+        "resourceType": "document",
+        "sequence": 2,
+        "status": 200,
+        "url": "[REDACTED_URL]"
+      }
+    ]
+  },
+  "failure": {
+    "message": "no observable node matches the action target",
+    "reproduction": [
+      {
+        "action": {
+          "kind": "click",
+          "target": {
+            "name": "DeepSeek",
+            "role": "option"
+          }
+        },
+        "expected": {
+          "url": "[REDACTED_URL]"
+        },
+        "index": 1,
+        "intent": "Click \"DeepSeek\".",
+        "observed": null,
+        "receipt": null
+      }
+    ],
+    "stepIndex": 1
+  },
+  "finishedAt": "2026-09-01T07:40:00.918Z",
+  "scenario": "wikipedia-deepseek-search-v2",
+  "schemaVersion": 1,
+  "startedAt": "2026-09-01T07:39:56.486Z",
+  "status": "fail",
+  "steps": [
+    {
+      "action": {
+        "kind": "click",
+        "target": {
+          "name": "DeepSeek",
+          "role": "option"
+        }
+      },
+      "assertion": {
+        "description": "Fresh post-action observation reached the recorded URL.",
+        "expected": {
+          "url": "[REDACTED_URL]"
+        },
+        "kind": "page-url"
+      },
+      "assertionPassed": false,
+      "expected": {
+        "url": "[REDACTED_URL]"
+      },
+      "index": 1,
+      "intent": "Click \"DeepSeek\".",
+      "observed": null,
+      "outcome": "failed",
+      "receipt": null,
+      "status": "fail"
+    }
+  ]
+}

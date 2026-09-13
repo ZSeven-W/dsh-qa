@@ -1,0 +1,60 @@
+{
+  "meta": {
+    "name": "wikipedia-deepseek-search",
+    "description": "Search Wikipedia for DeepSeek and land on the article page",
+    "driver": "browser",
+    "createdAt": "2026-09-01T07:36:10.440Z"
+  },
+  "target": {
+    "launch": "https://en.wikipedia.org/"
+  },
+  "steps": [
+    {
+      "index": 1,
+      "intent": "Fill \"Search Wikipedia\".",
+      "action": {
+        "kind": "fill",
+        "target": {
+          "role": "textbox",
+          "name": "Search Wikipedia"
+        },
+        "text": "DeepSeek"
+      },
+      "assert": {
+        "kind": "node-present",
+        "expected": {
+          "role": "link",
+          "name": "You're encouraged to log in; however, it's not mandatory. [ctrl-option-o]"
+        },
+        "description": "Fresh post-action observation exposed a new semantic state."
+      }
+    },
+    {
+      "index": 2,
+      "intent": "Click \"DeepSeek\".",
+      "action": {
+        "kind": "click",
+        "target": {
+          "role": "option",
+          "name": "DeepSeek"
+        }
+      },
+      "assert": {
+        "kind": "page-url",
+        "expected": {
+          "url": "https://en.wikipedia.org/wiki/DeepSeek"
+        },
+        "description": "Fresh post-action observation reached the recorded URL."
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "page-url",
+      "expected": {
+        "url": "https://en.wikipedia.org/wiki/DeepSeek"
+      },
+      "description": "Fresh post-action observation reached the recorded URL."
+    }
+  ]
+}

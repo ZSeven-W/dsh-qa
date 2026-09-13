@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "name": "wikipedia-deepseek-search-v2",
+    "description": "Search Wikipedia for DeepSeek and land on the article page (settled page)",
+    "driver": "browser",
+    "createdAt": "2026-09-01T07:38:25.950Z"
+  },
+  "target": {
+    "launch": "https://en.wikipedia.org/"
+  },
+  "steps": [
+    {
+      "index": 1,
+      "intent": "Click \"DeepSeek\".",
+      "action": {
+        "kind": "click",
+        "target": {
+          "role": "option",
+          "name": "DeepSeek"
+        }
+      },
+      "assert": {
+        "kind": "page-url",
+        "expected": {
+          "url": "https://en.wikipedia.org/wiki/DeepSeek"
+        },
+        "description": "Fresh post-action observation reached the recorded URL."
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "page-url",
+      "expected": {
+        "url": "https://en.wikipedia.org/wiki/DeepSeek"
+      },
+      "description": "Fresh post-action observation reached the recorded URL."
+    }
+  ]
+}

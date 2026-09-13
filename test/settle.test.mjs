@@ -170,17 +170,17 @@ test('the settle policy is a named, clamped, configurable constant set', () => {
     intervalMs: 10,
     adaptiveBudgetMs: 6000,
   })
-  process.env.DSH_QA_SETTLE_BUDGET_MS = '900'
-  process.env.DSH_QA_SETTLE_QUIET_MS = '120'
+  process.env.DSHPLUGIN_QA_SETTLE_BUDGET_MS = '900'
+  process.env.DSHPLUGIN_QA_SETTLE_QUIET_MS = '120'
   try {
     assert.equal(resolveSettlePolicy().budgetMs, 900)
     assert.equal(resolveSettlePolicy().quietMs, 120)
     assert.equal(resolveSettlePolicy().postChangeQuietMs, 240, 'the default post-change quiet scales with the resolved quietMs (2 × 120)')
-    process.env.DSH_QA_SETTLE_BUDGET_MS = 'whenever'
+    process.env.DSHPLUGIN_QA_SETTLE_BUDGET_MS = 'whenever'
     assert.equal(resolveSettlePolicy().budgetMs, QA_SETTLE_BUDGET_MS, 'garbage falls back, never fails open')
   } finally {
-    delete process.env.DSH_QA_SETTLE_BUDGET_MS
-    delete process.env.DSH_QA_SETTLE_QUIET_MS
+    delete process.env.DSHPLUGIN_QA_SETTLE_BUDGET_MS
+    delete process.env.DSHPLUGIN_QA_SETTLE_QUIET_MS
   }
 })
 
