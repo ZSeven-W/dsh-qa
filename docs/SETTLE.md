@@ -275,9 +275,9 @@ runScenario(scenario, adapter, { settle: { budgetMs: 5_000 } }) // Replay direct
 ```
 
 Environment overrides (clamped, garbage falls back to the defaults, never fails
-open): `DSH_QA_SETTLE_BUDGET_MS`, `DSH_QA_SETTLE_QUIET_MS`,
-`DSH_QA_SETTLE_POST_CHANGE_QUIET_MS`, `DSH_QA_SETTLE_INTERVAL_MS`,
-`DSH_QA_SETTLE_ADAPTIVE_BUDGET_MS` (the string `off` or the number `0` disables
+open): `DSHPLUGIN_QA_SETTLE_BUDGET_MS`, `DSHPLUGIN_QA_SETTLE_QUIET_MS`,
+`DSHPLUGIN_QA_SETTLE_POST_CHANGE_QUIET_MS`, `DSHPLUGIN_QA_SETTLE_INTERVAL_MS`,
+`DSHPLUGIN_QA_SETTLE_ADAPTIVE_BUDGET_MS` (the string `off` or the number `0` disables
 adaptation).
 
 An agent can widen the budget for a heavy site at Explore time with
