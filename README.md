@@ -6,11 +6,15 @@
 </p>
 
 <p align="center">
-  <sub>Package: <code>@zseven-w/dsh-qa</code> &middot; Checkout version: <code>0.1.0</code> &middot; Manifest: <code>private: true</code></sub>
+  <sub>Package: <code>@zseven-w/dsh-qa</code> &middot; Version: <code>0.1.0</code> &middot; Developer release</sub>
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> &middot; <a href="#safety-and-limitations">Safety and limitations</a> &middot; <a href="#development">Development</a> &middot; <a href="#documentation">Documentation</a>
+  <a href="./README.md"><b>English</b></a> &middot; <a href="./README.zh.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> &middot; <a href="#safety-and-limitations">Safety and limitations</a> &middot; <a href="#known-gaps">Known gaps</a> &middot; <a href="#development">Development</a> &middot; <a href="#documentation">Documentation</a>
 </p>
 
 <p align="center">
@@ -46,36 +50,42 @@ deterministic **Replay** scenario that runs on every release.
 
 QA coordinates four independent drivers; it does not replace them or grant
 broader access. A passing fixture, unit suite, or device acceptance run is
-evidence for that tested scope, not a claim that every app is supported or that
-the package has been published.
+evidence for that tested scope, not a claim that every app is supported.
 
 ## Quick start
 
-This is a **source-checkout workflow**, not an npm registry installation guide:
-[`package.json`](./package.json) still sets `private: true`. Use Node.js
-**24.11.0 or later** and **pnpm 10.34.5**, and place the four sibling driver
-repositories alongside this checkout. Their `link:` development dependencies
-must resolve and their own build/runtime prerequisites must be satisfied.
-
-| Driver | Responsibility | Setup |
-| --- | --- | --- |
-| Browser (BU) | Browser observation and interaction | [DSH Browser](https://github.com/ZSeven-W/dsh-browser) |
-| Computer (CU) | Native desktop observation and interaction | [DSH Computer](https://github.com/ZSeven-W/dsh-computer) |
-| iOS | Explicit-device mobile sessions | [DSH iOS](https://github.com/ZSeven-W/dsh-ios) |
-| Android | Explicit-device mobile sessions | [DSH Android](https://github.com/ZSeven-W/dsh-android) |
-
-From the `dsh-qa` checkout:
+Requires Node.js **24.11.0 or later**. QA orchestrates drivers it does not
+contain: it loads each one lazily, by package name, only when a session asks
+for that platform. **Installing `@zseven-w/dsh-qa` alone gives you no
+drivers** — `qa_session_start` will report the driver as not installed. Install
+the ones you need alongside it:
 
 ```bash
-pnpm install
-npm run build
-npm run example -- --output-dir ./dsh-qa-example-report
+npm install @zseven-w/dsh-qa           # the orchestrator
+npm install @zseven-w/dsh-browser      # browser sessions
+npm install @zseven-w/dsh-computer     # macOS desktop sessions
+npm install @zseven-w/dsh-ios          # iOS device/simulator sessions
+npm install @zseven-w/dsh-android      # Android device/emulator sessions
 ```
 
-The example uses a local web fixture and the Browser driver; it does not touch
-a mobile device. It launches a headless browser, then writes JSON, Markdown,
-and JSONL reports. See [the shipped example](#running-the-shipped-example) for
-its expected output and packed-artifact usage.
+| Driver | Package | Responsibility | Extra prerequisites |
+| --- | --- | --- | --- |
+| Browser (BU) | [`@zseven-w/dsh-browser`](https://github.com/ZSeven-W/dsh-browser) | Browser observation and interaction | An installed Chrome / Edge / Chromium; the driver discovers one and never downloads it |
+| Computer (CU) | [`@zseven-w/dsh-computer`](https://github.com/ZSeven-W/dsh-computer) | Native desktop observation and interaction | macOS; a locally built + granted Helper (Accessibility + Screen Recording) — see [Known gaps](#known-gaps) |
+| iOS | [`@zseven-w/dsh-ios`](https://github.com/ZSeven-W/dsh-ios) | Explicit-device mobile sessions | macOS + Xcode; an explicit device id |
+| Android | [`@zseven-w/dsh-android`](https://github.com/ZSeven-W/dsh-android) | Explicit-device mobile sessions | adb; an explicit device id |
+
+Verify the install by replaying the shipped browser example, which needs
+nothing but `dsh-qa`, `dsh-browser`, and a local browser:
+
+```bash
+node node_modules/@zseven-w/dsh-qa/scripts/run-example.mjs
+```
+
+It serves the packaged web fixture on an ephemeral loopback port, replays a
+two-step scenario headlessly, and writes JSON / Markdown / JSONL reports. A
+working install prints `[example] status: pass`. See
+[Running the shipped example](#running-the-shipped-example) for the details.
 
 For DSH-host usage, install or update DSH with:
 
@@ -83,13 +93,13 @@ For DSH-host usage, install or update DSH with:
 npm install -g @deepseek-ai/dsh@latest
 ```
 
-Installing DSH does **not** install or activate this local plugin. Its host
-entry is declared in [`cordis.patch.yml`](./cordis.patch.yml); the standalone
-stdio MCP entry is [`src/server.mjs`](./src/server.mjs), also exposed by
-`npm run mcp` and [`.mcp.json`](./.mcp.json). Configure the chosen host to load
-the local plugin/server and provide the required drivers before starting a
-session. Follow the [Explore playbook](./skills/qa-explore/SKILL.md) for the
-observe → act → assert → evidence → export workflow.
+Installing DSH does **not** activate this plugin. Its host entry is declared in
+[`cordis.patch.yml`](./cordis.patch.yml); the standalone stdio MCP entry is
+[`src/server.mjs`](./src/server.mjs), also exposed by `npm run mcp` and
+[`.mcp.json`](./.mcp.json). Configure the chosen host to load the plugin/server
+and provide the required drivers before starting a session. Follow the
+[Explore playbook](./skills/qa-explore/SKILL.md) for the observe → act → assert
+→ evidence → export workflow.
 
 ## Safety and limitations
 
@@ -110,6 +120,41 @@ observe → act → assert → evidence → export workflow.
   screenshots can still contain private content. Use synthetic test data and
   inspect artifacts before sharing. Login-state injection requires explicit
   owner authorization for exact origins; see [login state](./docs/LOGIN_STATE.md).
+
+## Known gaps
+
+This is a developer release. The main path — Explore → evidence → Export →
+Replay on browser and desktop — is exercised by the suite on every change, but
+these are open, and knowing them is part of using the package honestly.
+
+- **The Computer helper is not notarized.** It is ad-hoc signed with no
+  TeamIdentifier and no stapled ticket, so there is no "install and go"
+  desktop experience: you build the helper from the
+  [`dsh-computer`](https://github.com/ZSeven-W/dsh-computer) checkout and grant
+  it Accessibility + Screen Recording yourself. Developer ID signing and
+  notarization are not done.
+- **Closed shadow roots can make a scoped `node-absent` assertion wrong.** The
+  browser driver pierces open shadow roots only; a closed root's content is
+  never collected and no truncation reason counts it, so a scope whose light
+  tree fits reports itself complete and `node-absent` can PASS on a container
+  that does contain the node. Do not rely on absence assertions against UIs
+  built on closed shadow roots.
+- **Deep targets on large pages stay inconclusive.** Beyond the driver's
+  100-node observation window, a scoped scroll proof can only reach
+  `INCONCLUSIVE_SCOPE`, never `pass`. This is honest, not broken — but it means
+  deep flows on big pages do not produce a green gate today.
+- **Visual assertions are advisory and the live vision path is unverified
+  here.** Vision never changes a Replay's pass/fail by design. The seam to a
+  real host vision service (`ctx.llm` / `attachments`) is covered only by a
+  fake in the suite; it has not been run against a live vision model.
+- **Mobile drivers carry no contract version.** Browser pins contract v9 and
+  Computer v5, but `dsh-ios` / `dsh-android` export no version from `/driver`;
+  QA loads them structurally, so a drift is caught after the fact rather than
+  at load.
+
+Replay verifies five kinds of semantic assertion. A `pass` means those
+assertions held on fresh observations — not that the app is correct, not that
+the screen looks right, and not that coverage was complete.
 
 ## Implementation reference
 
@@ -329,10 +374,10 @@ Two rules come from live use against `deepseek-v4-flash-vision-exp`:
 ### Host runtime
 
 This package declares **zero host packages** in `dependencies`/`peerDependencies`.
-The DSH host provides the runtime services below itself. A plain npm install
-of the locally packed artifact must install no `@deepseek-ai/*` packages
-(enforced by [`scripts/smoke-pack.mjs`](./scripts/smoke-pack.mjs)); this is a
-packaging invariant, not a claim of registry availability.
+The DSH host provides the runtime services below itself. `npm install
+@zseven-w/dsh-qa` must pull in no `@deepseek-ai/*` packages at all — a
+packaging invariant enforced against a real packed install by
+[`scripts/smoke-pack.mjs`](./scripts/smoke-pack.mjs).
 
 ```json
 {
@@ -352,9 +397,9 @@ The optional skill service is registered exclusively through
 
 The package payload includes a self-contained browser example:
 [`scenarios/examples/fixture-web.json`](./scenarios/examples/fixture-web.json)
-drives the [`fixtures/web/`](./fixtures/web/) page. After locally packing and
-installing the artifact with its Browser driver, run it from the installed copy — no files from
-this repository's working tree are needed:
+drives the [`fixtures/web/`](./fixtures/web/) page. With `@zseven-w/dsh-qa`
+and `@zseven-w/dsh-browser` installed, run it from the installed copy — no
+files from this repository's working tree are needed:
 
 ```bash
 node node_modules/@zseven-w/dsh-qa/scripts/run-example.mjs
@@ -380,21 +425,32 @@ command from the packed tarball and asserts `status: "pass"`.
 
 ## Development
 
-Use the prerequisites and sibling layout from [Quick start](#quick-start).
+Development uses **pnpm 10.34.5** and a sibling checkout layout: the four
+driver repositories are `link:` dev dependencies, so clone them next to this
+one (`dsh-browser`, `dsh-computer`, `dsh-ios`, `dsh-android`) and satisfy each
+one's own build prerequisites. CI does not clone them — it materializes the
+same directories from the published tarballs
+(`.github/scripts/fetch-drivers.sh`), which is also how you reproduce a CI
+failure locally against released driver bytes.
 
 ```bash
 pnpm install
 npm run build        # build both the MCP server and plugin entry
 npm run typecheck
-npm test
-npm run smoke:bundle  # real stdio handshake from a node_modules-free copy
-npm run smoke:pack    # prepack gates -> pack -> fresh install -> handshake + example
+npm test             # everything; see the prerequisite note below
+npm run test:ci      # everything a machine without a granted helper can run
+npm run smoke:bundle # real stdio handshake from a node_modules-free copy
+npm run smoke:pack   # prepack gates -> pack -> fresh install -> handshake + example
 ```
 
-The full suite and package smoke checks can exercise browser/native runtime
-requirements. Inspect test prerequisites before running on a working desktop;
-local checks are not a substitute for scoped real-device acceptance. Do not
-publish generated reports, login state, device identifiers, or signing material.
+`npm test` is the acceptance command and it does not skip: it needs macOS, a
+built and granted DSH Computer Helper (Accessibility + Screen Recording), and
+an installed browser. `test/computer-integration.test.mjs` fails loudly rather
+than passing vacuously when the grant is missing, which is why `test:ci`
+excludes that one file by name rather than guarding inside it — a hosted-CI
+green says "everything except that named suite passed", never "the suite
+passed". Do not publish generated reports, login state, device identifiers, or
+signing material.
 
 ## Documentation
 
@@ -405,9 +461,8 @@ publish generated reports, login state, device identifiers, or signing material.
 - [Redaction specification](./docs/REDACTION_SPEC.md) — report boundaries and advisory provenance.
 - [Example scenarios](./scenarios/examples/) — declarative replay inputs.
 
-These links target the source checkout; `docs/` is not currently included in
-the package payload. Release publication and device acceptance are tracked
-separately from these usage and implementation references.
+`docs/` and the Explore playbook ship inside the package, so these references
+are readable from an installed copy as well as from the repository.
 
 ## License
 

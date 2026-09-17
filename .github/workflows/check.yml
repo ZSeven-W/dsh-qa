@@ -1,0 +1,100 @@
+# Build and run the suites a hosted runner can actually satisfy.
+#
+# dsh-qa keeps its four drivers as `link:../dsh-*` dev dependencies, and none
+# of those repositories commits its build output. Rather than check them out
+# and build them here — dsh-computer's build needs a Swift toolchain, the
+# mobile ones need their client bundlers — each sibling directory is
+# materialized from its PUBLISHED tarball, which already ships a built `lib/`.
+# The side effect is the useful one: this runs dsh-qa against exactly the
+# driver combination a user installs from the registry.
+#
+# Two jobs, cheapest first:
+#
+#   static   build, typecheck, and the node_modules-free stdio handshake
+#   suite    `pnpm run test:ci` on Linux and macOS
+#
+# A green check is NOT a claim that the Computer driver acceptance passed.
+# `test/computer-integration.test.mjs` fails loudly rather than skipping when
+# Accessibility / Screen Recording are missing, so it is excluded by name (see
+# scripts/run-tests.mjs) and is covered by a human running the full `pnpm test`
+# on a granted macOS machine. Live vision is likewise uncovered here: it needs
+# host `ctx.llm` / `attachments` services no runner provides.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: ['main']
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: Node ${{ matrix.node }} / build + typecheck + bundle smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24.11.0', '26']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Materialize the driver siblings from the registry
+        run: bash .github/scripts/fetch-drivers.sh
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Bundle smoke (real stdio handshake, no node_modules)
+        run: pnpm run smoke:bundle
+
+  suite:
+    name: ${{ matrix.os }} / test:ci
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.11.0'
+          cache: pnpm
+
+      - name: Materialize the driver siblings from the registry
+        run: bash .github/scripts/fetch-drivers.sh
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      # The browser driver discovers a system Chrome and never downloads one.
+      # Both runner images ship Google Chrome.
+      - name: Suites a hosted runner can satisfy
+        run: pnpm run test:ci

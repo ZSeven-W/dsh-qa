@@ -22,11 +22,30 @@ export const QA_TOOL_NAMES = [
   'qa_session_stop',
 ].sort();
 
-test('package identity is the private dsh-qa plugin', () => {
+test('package identity is the published dsh-qa plugin', () => {
   assert.equal(pkg.name, '@zseven-w/dsh-qa');
   assert.equal(pkg.version, manifest.version);
-  assert.equal(pkg.private, true, 'v0.1 starts private');
   assert.equal(pkg.license, 'MIT');
+
+  // The package went public in 0.1.0. `private: true` would make every
+  // publish a silent no-op, and a scoped package without an explicit
+  // `access: public` is published RESTRICTED by default — both fail as a
+  // release that looks fine locally and is unusable from the registry.
+  assert.equal(pkg.private, undefined, 'a private package cannot be published');
+  assert.equal(pkg.publishConfig?.access, 'public', 'scoped packages default to restricted');
+  assert.match(pkg.repository?.url ?? '', /github\.com\/ZSeven-W\/dsh-qa/);
+});
+
+test('the docs the README links are inside the published payload', () => {
+  // README points at docs/ for settle, truncation, login state and redaction.
+  // Shipping without them leaves an installed copy full of dead links.
+  assert.ok(pkg.files.includes('docs'), 'docs/ must be in the package files');
+  for (const doc of ['SETTLE.md', 'TRUNCATION.md', 'LOGIN_STATE.md', 'REDACTION_SPEC.md']) {
+    assert.ok(
+      existsSync(join(ROOT, 'docs', doc)),
+      `docs/${doc} is referenced by the README and must exist`,
+    );
+  }
 });
 
 test('zero host packages in dependencies or peerDependencies', () => {

@@ -1,9 +1,19 @@
 {
   "name": "@zseven-w/dsh-qa",
   "version": "0.1.0",
-  "private": true,
-  "description": "QA orchestrator plugin for DeepSeek Harness: agent-driven Explore mode plus deterministic Replay scenarios for Browser (BU) and Computer (CU) drivers",
+  "description": "QA orchestrator plugin for DeepSeek Harness: an agent explores your app and leaves evidence, then the explored path replays deterministically. Drives the browser, macOS desktop, iOS and Android drivers.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZSeven-W/dsh-qa.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ZSeven-W/dsh-qa/issues"
+  },
+  "homepage": "https://github.com/ZSeven-W/dsh-qa#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "packageManager": "pnpm@10.34.5",
   "keywords": [
@@ -35,6 +45,8 @@
     "cordis.patch.yml",
     ".mcp.json",
     ".claude-plugin",
+    "docs",
+    "README.*.md",
     "README.md",
     "LICENSE"
   ],
@@ -45,6 +57,7 @@
     "build:entry": "node scripts/build-entry.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test --test-concurrency=1 test/*.test.mjs test/*.test.ts",
+    "test:ci": "node scripts/run-tests.mjs --exclude-native",
     "smoke:bundle": "node scripts/smoke-bundle.mjs",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "example": "node scripts/run-example.mjs",
