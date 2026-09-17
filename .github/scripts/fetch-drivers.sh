@@ -43,6 +43,17 @@ for name in browser computer ios android; do
   tar -xzf "$tarball" --strip-components=1 -C "$dir"
   rm -rf "$work"
 
+  # pnpm resolves a `link:` dependency to this directory but does NOT install
+  # what the linked package itself depends on — locally those directories are
+  # dev checkouts with their own node_modules. An unpacked tarball has none, so
+  # dsh-browser would load and then die on `Cannot find package
+  # 'playwright-core'` deep inside a test. Install each driver's RUNTIME deps
+  # here. --omit=dev keeps it to what a consumer gets; --ignore-scripts because
+  # nothing here should run a driver's install hooks.
+  if [ "$(node -p "Object.keys(require('$dir/package.json').dependencies || {}).length")" != "0" ]; then
+    ( cd "$dir" && npm install --omit=dev --ignore-scripts --no-audit --no-fund --silent )
+  fi
+
   # A driver whose entry is missing would surface much later as a confusing
   # module-resolution error inside a test, so fail here instead.
   entry="$(node -p "const p=require('$dir/package.json'); p.main || (p.exports && p.exports['.'] && (p.exports['.'].default || p.exports['.'])) || ''")"
