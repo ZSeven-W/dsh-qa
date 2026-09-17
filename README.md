@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <sub>Package: <code>@zseven-w/dsh-qa</code> &middot; Version: <code>0.1.0</code> &middot; Developer release</sub>
+  <sub>Package: <code>@zseven-w/dsh-qa</code> &middot; Version: <code>0.1.0-rc.1</code> &middot; Prerelease</sub>
 </p>
 
 <p align="center">

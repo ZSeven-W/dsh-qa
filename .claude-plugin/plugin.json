@@ -1,6 +1,6 @@
 {
   "name": "dsh-qa",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "QA orchestrator plugin: Explore + Replay acceptance across browser, macOS desktop, iOS and Android drivers",
   "author": {
     "name": "ZSeven-W"

@@ -1,6 +1,6 @@
 {
   "name": "@zseven-w/dsh-qa",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "QA orchestrator plugin for DeepSeek Harness: an agent explores your app and leaves evidence, then the explored path replays deterministically. Drives the browser, macOS desktop, iOS and Android drivers.",
   "license": "MIT",
   "repository": {

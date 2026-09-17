@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <sub>包名：<code>@zseven-w/dsh-qa</code> &middot; 版本：<code>0.1.0</code> &middot; 开发者版本</sub>
+  <sub>包名：<code>@zseven-w/dsh-qa</code> &middot; 版本：<code>0.1.0-rc.1</code> &middot; 预发布阶段</sub>
 </p>
 
 <p align="center">

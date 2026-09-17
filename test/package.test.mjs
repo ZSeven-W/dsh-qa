@@ -27,7 +27,7 @@ test('package identity is the published dsh-qa plugin', () => {
   assert.equal(pkg.version, manifest.version);
   assert.equal(pkg.license, 'MIT');
 
-  // The package went public in 0.1.0. `private: true` would make every
+  // The package went public in 0.1.0-rc.1. `private: true` would make every
   // publish a silent no-op, and a scoped package without an explicit
   // `access: public` is published RESTRICTED by default — both fail as a
   // release that looks fine locally and is unusable from the registry.
