@@ -47,11 +47,30 @@ for name in browser computer ios android; do
   # what the linked package itself depends on — locally those directories are
   # dev checkouts with their own node_modules. An unpacked tarball has none, so
   # dsh-browser would load and then die on `Cannot find package
-  # 'playwright-core'` deep inside a test. Install each driver's RUNTIME deps
-  # here. --omit=dev keeps it to what a consumer gets; --ignore-scripts because
-  # nothing here should run a driver's install hooks.
+  # 'playwright-core'` deep inside a test.
+  #
+  # Installing here is NOT what a consumer does: `npm install @zseven-w/dsh-ios`
+  # in your own project never looks at that package's devDependencies, but
+  # `npm install` INSIDE its directory does — and dsh-ios keeps the mutually
+  # pinned @deepseek-ai/* host stack there, which ERESOLVEs against itself
+  # (`peer @deepseek-ai/dsh-session@"^0.1.5-rc.2" from dsh-sandbox@0.1.5-rc.2`
+  # vs. the rc.1 the manifest pins). --omit=dev does not help: npm still
+  # resolves the dev tree to validate peers.
+  #
+  # So drop devDependencies from this scratch copy first. That does not weaken
+  # anything — it makes the directory match what a consumer actually resolves,
+  # which is the manifest's `dependencies` and nothing else. --legacy-peer-deps
+  # would have been the other way out, and it would have papered over a real
+  # conflict instead of removing an artificial one.
   if [ "$(node -p "Object.keys(require('$dir/package.json').dependencies || {}).length")" != "0" ]; then
-    ( cd "$dir" && npm install --omit=dev --ignore-scripts --no-audit --no-fund --silent )
+    node -e "
+      const fs = require('fs')
+      const file = '$dir/package.json'
+      const pkg = JSON.parse(fs.readFileSync(file, 'utf8'))
+      delete pkg.devDependencies
+      fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n')
+    "
+    ( cd "$dir" && npm install --ignore-scripts --no-audit --no-fund --silent )
   fi
 
   # A driver whose entry is missing would surface much later as a confusing
