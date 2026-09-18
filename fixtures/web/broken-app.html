@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Deliberately broken app</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+  fieldset { margin-bottom: 1.5rem; }
+  .status { padding: .4rem .6rem; border: 1px solid #999; display: inline-block; }
+</style>
+</head>
+<body>
+<h1>Deliberately broken app</h1>
+<p>
+  Every control here dispatches successfully and then fails to do its job. It
+  exists so acceptance can assert that a known-bad application stays
+  <strong>non-green</strong>: a driver receipt proves dispatch, never the
+  application's outcome.
+</p>
+
+<!-- 1. INEFFECTIVE FILL ------------------------------------------------
+     Typing is accepted by the browser and then reverted by the page, so the
+     field ends where it started. A proof that reads "the target holds the
+     typed text" must not be satisfiable here.
+
+     A second, pre-filled field holds the SAME text all along. That is the
+     shape that let export bind its proof to the wrong element: the acted
+     field is empty, an unrelated field already matches. -->
+<fieldset>
+  <legend>Ineffective fill</legend>
+  <label for="primary">Primary</label>
+  <input id="primary" type="text" value="" />
+  <label for="backup">Backup</label>
+  <input id="backup" type="text" value="hello" />
+</fieldset>
+
+<!-- 2. DEAD BUTTON ----------------------------------------------------
+     Clicking it changes nothing observable. The receipt will be confirmed or
+     unknown; either way there is no semantic delta to prove an outcome. -->
+<fieldset>
+  <legend>Dead button</legend>
+  <button id="submit" type="button">Submit order</button>
+  <span id="order-status" class="status" role="status">Not submitted</span>
+</fieldset>
+
+<!-- 3. CONTROL THAT VANISHES ON USE -----------------------------------
+     Acting replaces the control with a different one of the same role. Replay
+     that re-resolves by predicate would find the REPLACEMENT and could call
+     that success. -->
+<fieldset>
+  <legend>Control replaced on use</legend>
+  <div id="swap-host">
+    <button id="apply" type="button">Apply changes</button>
+  </div>
+</fieldset>
+
+<script>
+  // The fill is reverted SYNCHRONOUSLY, so the field is empty no matter when
+  // the observation lands. A frame-delayed revert made this fixture racy: the
+  // settle window sometimes caught the value before it was discarded, which
+  // made the test flaky rather than the app deterministic-broken.
+  const primary = document.getElementById('primary');
+  primary.addEventListener('input', () => { primary.value = ''; });
+
+  // The submit button dispatches fine and does nothing at all.
+  document.getElementById('submit').addEventListener('click', () => {
+    /* intentionally empty: the order is never submitted */
+  });
+
+  // Applying swaps in a DIFFERENT button that happens to share the role.
+  document.getElementById('apply').addEventListener('click', () => {
+    const host = document.getElementById('swap-host');
+    host.innerHTML = '';
+    const replacement = document.createElement('button');
+    replacement.type = 'button';
+    replacement.id = 'apply-replacement';
+    replacement.textContent = 'Apply changes';
+    host.appendChild(replacement);
+  });
+</script>
+</body>
+</html>
