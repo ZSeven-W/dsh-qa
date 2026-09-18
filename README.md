@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <sub>Package: <code>@zseven-w/dsh-qa</code> &middot; Version: <code>0.1.0-rc.1</code> &middot; Prerelease</sub>
+  <sub>Package: <code>@zseven-w/dsh-qa</code> &middot; Version: <code>0.1.0-rc.2</code> &middot; Prerelease</sub>
 </p>
 
 <p align="center">
@@ -133,12 +133,14 @@ these are open, and knowing them is part of using the package honestly.
   [`dsh-computer`](https://github.com/ZSeven-W/dsh-computer) checkout and grant
   it Accessibility + Screen Recording yourself. Developer ID signing and
   notarization are not done.
-- **Closed shadow roots can make a scoped `node-absent` assertion wrong.** The
-  browser driver pierces open shadow roots only; a closed root's content is
-  never collected and no truncation reason counts it, so a scope whose light
-  tree fits reports itself complete and `node-absent` can PASS on a container
-  that does contain the node. Do not rely on absence assertions against UIs
-  built on closed shadow roots.
+- **Absence is hard to prove, and comes back inconclusive rather than passing.**
+  `node-absent` passes only when the deciding view is complete AND the browser
+  driver's bounded closed-shadow-root probe verified its coverage. When that
+  probe finds a closed root, exceeds its node budget, or cannot open a CDP
+  session, the result is `COVERAGE_UNVERIFIED` / `INCONCLUSIVE_TRUNCATED`,
+  naming `closed-shadow-root` or `shadow-coverage-unverified` — never a pass.
+  That is the safe direction to fail, but on shadow-DOM-heavy or very large
+  pages you should expect "not proven" instead of a green absence.
 - **Deep targets on large pages stay inconclusive.** Beyond the driver's
   100-node observation window, a scoped scroll proof can only reach
   `INCONCLUSIVE_SCOPE`, never `pass`. This is honest, not broken — but it means

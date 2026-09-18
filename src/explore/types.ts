@@ -176,7 +176,13 @@ export interface QaRecordedAssertion {
  * as an unscoped one (QA-BL-054 rules unchanged).
  */
 export interface QaAssertionExportExclusion {
-  reason: 'SCOPE_NOT_DURABLE' | 'OBSERVATION_RECORDING_FAILED';
+  /**
+   * ASSERTION_FAILED_AT_RECORD_TIME: the explorer wrote this acceptance
+   * criterion and it did NOT hold. It is not exported — a scenario re-proves
+   * the proven trajectory — but dropping it silently loses the criterion the
+   * user actually cared about from a file they commit and re-run.
+   */
+  reason: 'SCOPE_NOT_DURABLE' | 'OBSERVATION_RECORDING_FAILED' | 'ASSERTION_FAILED_AT_RECORD_TIME';
   detail: string;
 }
 

@@ -575,7 +575,24 @@ function valueDiscriminator(
  * TARGET synthesized; it outranks every delta candidate, including a closer-
  * scoring distant delta.
  */
+/**
+ * Identify an assertion in an exclusion message without echoing value bytes:
+ * kind plus the expected predicate's role/name only. Values (and anything a
+ * redaction projection would mask) stay out.
+ */
+function describeAssertionForExclusion(assertion: QaAssertion): string {
+  const expected = (assertion as { expected?: { role?: unknown; name?: unknown } }).expected;
+  const role = typeof expected?.role === 'string' ? expected.role : null;
+  const name = typeof expected?.name === 'string' ? expected.name : null;
+  const identity = [
+    role === null ? null : 'role ' + JSON.stringify(role),
+    name === null ? null : 'name ' + JSON.stringify(name),
+  ].filter((part): part is string => part !== null).join(', ');
+  return assertion.kind + (identity === '' ? '' : ' (' + identity + ')');
+}
+
 function synthesizeValueAssertion(
+  before: QaObservation | null,
   after: QaObservation,
   target: QaNodePredicate | null,
   action: QaScenarioAction | null,
@@ -596,12 +613,27 @@ function synthesizeValueAssertion(
     // the renamed field alone. Several candidates holding the value with no
     // unique identity fall through (no guess); a flagged
     // (withheld/secure/truncated) value is never asserted.
+    // A node that ALREADY held the expected value before the action proves
+    // nothing about the action: replaying against an app where the fill does
+    // nothing would still find that value sitting there. This matters most for
+    // the name-agnostic role branch below, which otherwise accepts any unique
+    // same-role node holding the text — so a fill on a field that VANISHED got
+    // "proven" by an unrelated textbox that was pre-filled all along.
+    const heldBefore = (candidate: QaSemanticNode): boolean => {
+      if (before === null) return false;
+      return before.nodes.some((prior) =>
+        prior.role === candidate.role
+        && prior.name === candidate.name
+        && typeof prior.value === 'string'
+        && prior.value === expected);
+    };
     const candidates = after.nodes.filter((candidate) =>
       typeof candidate.value === 'string'
       && candidate.value === expected
       && candidate.valueWithheld !== true
       && candidate.secure !== true
       && candidate.valueTruncated !== true
+      && !heldBefore(candidate)
       && (
         (target.name !== undefined && candidate.name === target.name)
         || (target.role !== undefined && candidate.role === target.role)
@@ -745,7 +777,7 @@ function synthesizeAssertion(
   driver: QaDriverKind,
 ): SynthesisResult {
   // A fill proven by its own value outranks every other candidate.
-  const valueAssertion = synthesizeValueAssertion(after, target, action);
+  const valueAssertion = synthesizeValueAssertion(before, after, target, action);
   if (valueAssertion !== null) return { assertion: valueAssertion, fragileOnly: null };
   if (before !== null && before.page.url !== after.page.url && clean(after.page.url) !== '') {
     return {
@@ -1763,7 +1795,18 @@ function buildScenario(
   // stays the last step's proof copy, exactly as before.
   const recordedAssertions: QaAssertion[] = [];
   for (const recorded of trajectory.assertions) {
-    if (!recorded.passed) continue;
+    if (!recorded.passed) {
+      // Not exported (the scenario re-proves the PROVEN trajectory), but never
+      // silently: a committed scenario must still carry the fact that this
+      // criterion was written and failed, or the export quietly edits the
+      // user's test down to the part that happened to pass.
+      excludedAssertions.push({
+        reason: 'ASSERTION_FAILED_AT_RECORD_TIME',
+        detail: 'the recorded qa_assert did NOT hold when it was decided, so it is not exported as a'
+          + ' scenario assertion: ' + describeAssertionForExclusion(recorded.assertion),
+      });
+      continue;
+    }
     const deciding = recorded.decidingObservationId === null
       ? null
       : trajectory.observations[recorded.decidingObservationId] ?? null;

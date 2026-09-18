@@ -1381,6 +1381,18 @@ type ScopedScrollProofOutcome =
       targetResolution: QaTargetResolutionDisclosure | null;
       refusal?: { reason: string };
     }
+  /**
+   * The declared assertion was DISPROVEN on a view good enough to disprove it
+   * (proven container, complete subtree, verified coverage). That is a definite
+   * negative, not missing evidence, so it must aggregate as `fail` and must NOT
+   * be stamped INCONCLUSIVE_SCOPE.
+   */
+  | {
+      kind: 'disproven';
+      observed: unknown;
+      completeness: QaViewCompleteness;
+      targetResolution: QaTargetResolutionDisclosure | null;
+    }
   | { kind: 'failure'; error: Error };
 
 /**
@@ -1468,7 +1480,24 @@ function decideScopedScrollProof(
   }
   const subtreeComplete = !view.truncated;
   const coverageVerified = view.coverage?.verified === true;
-  if (scoped.resolution === 'proven' && subtreeComplete && coverageVerified && targetNode.inViewport === true) {
+  const fullyProven = scoped.resolution === 'proven' && subtreeComplete && coverageVerified;
+  // The anchor proves what happened to the element replay SCROLLED. It does
+  // NOT prove the step's own assertion, which may name a different node: the
+  // action target and assertion.expected are independent predicates. Without
+  // this gate a step that scrolled "Actual target" reported pass for an
+  // assertion about "Missing target", with observed: [] in the same report.
+  if (!evaluation.passed) {
+    const detail = fullyProven
+      ? 'the scoped scroll was anchor-verified, but the step\'s own assertion does NOT hold in that view'
+        + ' — the container was resolved PROVEN (' + levelSummary(scoped.levels) + '), the subtree is complete'
+        + ' with verified coverage, so the assertion is DISPROVEN, not merely unproven.'
+      : 'the step\'s own assertion does not hold in the scoped view, and the view is not good enough to'
+        + ' disprove it either (' + QA_INCONCLUSIVE_SCOPE + ').';
+    return fullyProven
+      ? { kind: 'disproven', observed: evaluation.observed, completeness: { ...completenessBase, detail }, targetResolution }
+      : { kind: 'inconclusive', observed: evaluation.observed, completeness: { ...completenessBase, detail }, targetResolution };
+  }
+  if (fullyProven && targetNode.inViewport === true) {
     return {
       kind: 'pass',
       observed: evaluation.observed,
@@ -1808,6 +1837,14 @@ export async function runScenario(
     // exported from it (scenario.assertions[0] === the last step's assert) is
     // decided under the same provisional scope gate.
     let lastScrollProofStep: { action: QaScenarioAction; assert: QaScenario['steps'][number]['assert'] } | null = null;
+    /**
+     * Index of the step `lastScrollProofStep` came from. Inheriting a scroll
+     * proof into a matching final assertion is only sound when NOTHING ran
+     * afterwards; a later step can move the target back out of the viewport,
+     * and the inherited verdict would then describe a view that no longer
+     * exists.
+     */
+    let lastScrollProofStepIndex = -1;
     // The LAST scoped scroll-proof step's decision: the final assertion copied
     // from it INHERITS its outcome (QA-BL-062) instead of being re-decided.
     let lastScrollProofDecision: QaRetriedDecision | null = null;
@@ -1823,7 +1860,10 @@ export async function runScenario(
         ...(step.escalationRefused === undefined ? {} : { escalationRefused: step.escalationRefused }),
       };
       const scopedScrollProof = scopedScrollProofStep(step);
-      if (scopedScrollProof) lastScrollProofStep = step;
+      if (scopedScrollProof) {
+        lastScrollProofStep = step;
+        lastScrollProofStepIndex = stepIndex;
+      }
 
       let resolved: QaAction;
       // QA-BL-064: disclosed on the step when the name-only fallback resolved
@@ -2172,7 +2212,10 @@ export async function runScenario(
               observed: outcome.observed,
               observation: verifying.observation,
               completeness: outcome.completeness,
-              ...(outcome.kind === 'pass' ? {} : { reason: QA_INCONCLUSIVE_SCOPE }),
+              // 'disproven' carries NO inconclusive reason on purpose: the
+              // assertion was refuted on a view good enough to refute it, so
+              // the run must aggregate to fail, not inconclusive.
+              ...(outcome.kind === 'pass' || outcome.kind === 'disproven' ? {} : { reason: QA_INCONCLUSIVE_SCOPE }),
               ...(outcome.kind === 'inconclusive' && outcome.refusal !== undefined
                 ? { scopeRefusal: outcome.refusal }
                 : {}),
@@ -2334,7 +2377,11 @@ export async function runScenario(
         // re-decision could never be more proven than the step's own
         // anchor-verified decision, and re-anchoring would bind whatever
         // action happened last).
-        if (lastScrollProofStep !== null && lastScrollProofDecision !== null) {
+        // Only the LAST executed step may hand its decision to a matching final
+        // assertion. When a later step ran, the final view is the only honest
+        // authority and the assertion is re-decided below like any other.
+        const scrollProofWasLastStep = lastScrollProofStepIndex === scenario.steps.length - 1;
+        if (lastScrollProofStep !== null && lastScrollProofDecision !== null && scrollProofWasLastStep) {
           const scrollProofStep = lastScrollProofStep;
           const stepDecision = lastScrollProofDecision;
           // QA-BL-064: the copy is matched against the step's ASSERTION
