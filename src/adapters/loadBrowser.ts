@@ -13,6 +13,9 @@ import type { ZSevenBrowserDriver } from '@zseven-w/dsh-browser';
 
 export const BROWSER_DRIVER_SPECIFIER = '@zseven-w/dsh-browser';
 
+/** Browser driver contract this build is written against (BROWSER_DRIVER_CONTRACT_VERSION). */
+export const SUPPORTED_BROWSER_CONTRACT_VERSION = 9;
+
 export interface LoadBrowserManagerOptions {
   rootDir?: string;
   allowedOrigins?: readonly string[];
@@ -37,13 +40,52 @@ export function missingBrowserDriverMessage(cause: unknown): string {
   );
 }
 
+/**
+ * Refuse a driver whose contract version is not the one this build was written
+ * against. A contract bump can change what an observation MEANS — which nodes
+ * are emitted, what `truncated` covers, whether absence can be proven — so an
+ * unknown driver does not degrade gracefully: it produces verdicts nobody can
+ * interpret. Types cannot catch this, because they describe the sibling present
+ * at build time while the loader imports whatever is installed at run time.
+ *
+ * Older is refused as firmly as newer. Browser contract v9 is what introduced
+ * the closed-shadow-root coverage probe `node-absent` depends on; a v8 driver
+ * would silently change what a passing absence assertion means.
+ */
+export function assertDriverContract(
+  driver: { contractVersion?: unknown },
+  supported: number,
+  packageName: string,
+  hint: string,
+): void {
+  const found = driver.contractVersion;
+  if (found === supported) return;
+  const describe = typeof found === 'number' ? String(found) : 'none (the driver reports no contractVersion)';
+  throw new Error(
+    'Refusing to use ' + packageName + ': it reports driver contract version ' + describe
+    + ', and this build of @zseven-w/dsh-qa supports exactly version ' + String(supported) + '. '
+    + 'A different contract can change what an observation means, so the evidence behind every '
+    + 'verdict would be uninterpretable rather than merely degraded. ' + hint,
+  );
+}
+
 export async function loadBrowserManager(
   specifier: string = BROWSER_DRIVER_SPECIFIER,
   options?: LoadBrowserManagerOptions,
+  /** Seam for tests: substitute the dynamic import. */
+  deps?: { importModule?: (specifier: string) => Promise<{ BrowserManager: new (options?: LoadBrowserManagerOptions) => ZSevenBrowserDriver }> },
 ): Promise<ZSevenBrowserDriver> {
   try {
-    const { BrowserManager } = await import(specifier);
-    return new BrowserManager(options);
+    const importModule = deps?.importModule ?? ((id: string) => import(id));
+    const { BrowserManager } = await importModule(specifier);
+    const driver = new BrowserManager(options);
+    assertDriverContract(
+      driver as unknown as { contractVersion?: unknown },
+      SUPPORTED_BROWSER_CONTRACT_VERSION,
+      BROWSER_DRIVER_SPECIFIER,
+      'Install a @zseven-w/dsh-browser release whose contract matches, or upgrade @zseven-w/dsh-qa.',
+    );
+    return driver;
   } catch (error) {
     if (isModuleNotFoundError(error)) {
       throw new Error(missingBrowserDriverMessage(error), { cause: error });

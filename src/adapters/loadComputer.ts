@@ -14,6 +14,9 @@ import { isModuleNotFoundError } from './loadBrowser.ts';
 
 export const COMPUTER_DRIVER_SPECIFIER = '@zseven-w/dsh-computer';
 
+/** Computer driver contract this build is written against (COMPUTER_DRIVER_CONTRACT_VERSION). */
+export const SUPPORTED_COMPUTER_CONTRACT_VERSION = 5;
+
 export function missingComputerDriverMessage(cause: unknown): string {
   const detail = cause instanceof Error ? cause.message : String(cause);
   return (
@@ -26,12 +29,24 @@ export function missingComputerDriverMessage(cause: unknown): string {
   );
 }
 
+import { assertDriverContract } from './loadBrowser.ts';
+
 export async function loadComputerDriver(
   specifier: string = COMPUTER_DRIVER_SPECIFIER,
+  /** Seam for tests: substitute the dynamic import. */
+  deps?: { importModule?: (specifier: string) => Promise<{ ComputerController: new () => ComputerDriver }> },
 ): Promise<ComputerDriver> {
   try {
-    const { ComputerController } = await import(specifier);
-    return new ComputerController();
+    const importModule = deps?.importModule ?? ((id: string) => import(id));
+    const { ComputerController } = await importModule(specifier);
+    const driver = new ComputerController();
+    assertDriverContract(
+      driver as unknown as { contractVersion?: unknown },
+      SUPPORTED_COMPUTER_CONTRACT_VERSION,
+      COMPUTER_DRIVER_SPECIFIER,
+      'Install a @zseven-w/dsh-computer release whose contract matches, or upgrade @zseven-w/dsh-qa.',
+    );
+    return driver;
   } catch (error) {
     if (isModuleNotFoundError(error)) {
       throw new Error(missingComputerDriverMessage(error), { cause: error });

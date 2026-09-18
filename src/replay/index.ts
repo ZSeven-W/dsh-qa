@@ -24,6 +24,7 @@ export {
   validateScenario,
   validateVisualAssertion,
 } from './loader.ts';
+export { QA_SCENARIO_SCHEMA_VERSION } from '../contracts.ts';
 export { normalizeReportForDeterminism } from './determinism.ts';
 export { runScenario, type ReplayRunOptions } from './runner.ts';
 export {

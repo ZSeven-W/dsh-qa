@@ -11,7 +11,12 @@ import type {
   QaSettleOverride,
   QaStep,
 } from '../contracts.ts';
-import { QA_SCOPE_NOT_DURABLE, QA_SETTLE_SCHEMA_BUDGET_MAX, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
+import {
+  QA_SCENARIO_SCHEMA_VERSION,
+  QA_SCOPE_NOT_DURABLE,
+  QA_SETTLE_SCHEMA_BUDGET_MAX,
+  QA_TARGET_NOT_UNIQUE,
+} from '../contracts.ts';
 import { projectArtifactPath, redactText } from '../redaction/index.ts';
 import { evaluateAssertion, loadScenarioFromPath, validateScenario } from '../replay/index.ts';
 import type { QaObservation, QaSemanticNode } from '../session/adapter.ts';
@@ -1840,6 +1845,11 @@ function buildScenario(
   // page with the same budget/quiet windows (omitted when it is the default).
   const settleOverride = scenarioSettleOverride(trajectory.settlePolicy);
   const rawScenario: QaScenario = {
+    // Every newly written scenario declares the contract it was written
+    // against, so a future build can refuse it instead of replaying it under
+    // rules that have since changed. Files exported before this existed carry
+    // no field and are read as this same version.
+    schemaVersion: QA_SCENARIO_SCHEMA_VERSION,
     meta: {
       name: redactText(options.name?.trim() || fallbackName),
       description: redactText(

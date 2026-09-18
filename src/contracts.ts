@@ -408,7 +408,25 @@ export interface QaStep {
   escalationRefused?: { code?: string; reason: string };
 }
 
+/**
+ * Version of the SCENARIO file contract — distinct from QaRunReport's own
+ * `schemaVersion`, which versions the report. It covers interpretation, not
+ * just syntax: bump it when the same JSON would resolve a target, select a
+ * proof, or decide a verdict differently, NOT when a field is merely added.
+ *
+ * Scenarios written before versioning existed carry no field at all and are
+ * read as this version. A scenario declaring a HIGHER version is refused
+ * rather than replayed under today's rules — the loader validates syntax and
+ * can never notice that unchanged JSON has started meaning something else.
+ */
+export const QA_SCENARIO_SCHEMA_VERSION = 1;
+
 export interface QaScenario {
+  /**
+   * Absent on scenarios exported before versioning; written on every new
+   * export. See QA_SCENARIO_SCHEMA_VERSION.
+   */
+  schemaVersion?: number;
   meta: QaScenarioMeta;
   target: QaScenarioTarget;
   steps: QaStep[];

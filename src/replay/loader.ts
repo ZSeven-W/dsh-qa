@@ -5,7 +5,7 @@
 // is refused.
 
 import { readFileSync } from 'node:fs';
-import { QA_SETTLE_SCHEMA_BUDGET_MAX } from '../contracts.ts';
+import { QA_SCENARIO_SCHEMA_VERSION, QA_SETTLE_SCHEMA_BUDGET_MAX } from '../contracts.ts';
 import type {
   QaAssertion,
   QaAssertionKind,
@@ -94,7 +94,7 @@ function assertLossless(value: unknown, position: string): void {
 
 const DRIVER_KINDS: readonly QaDriverKind[] = ['browser', 'computer', 'ios', 'android'];
 const ASSERTION_KINDS: readonly QaAssertionKind[] = ['node-present', 'node-absent', 'page-url', 'node-in-viewport', 'node-value'];
-const ROOT_FIELDS = ['meta', 'target', 'steps', 'assertions', 'advisory'] as const;
+const ROOT_FIELDS = ['schemaVersion', 'meta', 'target', 'steps', 'assertions', 'advisory'] as const;
 const META_FIELDS = ['name', 'description', 'driver', 'createdAt', 'notes', 'settle'] as const;
 const SETTLE_OVERRIDE_FIELDS = ['budgetMs', 'quietMs', 'postChangeQuietMs', 'intervalMs', 'adaptiveBudgetMs'] as const;
 const TARGET_FIELDS = ['launch', 'loginState', 'windowTitle', 'deviceId'] as const;
@@ -598,12 +598,46 @@ function validateAssertions(value: unknown, position: string): QaAssertion[] {
 export function validateScenario(value: unknown): QaScenario {
   const root = expectObject(value, '$');
   assertKnownFields(root, ROOT_FIELDS, '$');
+  const schemaVersion = validateSchemaVersion(root.schemaVersion, 'schemaVersion');
   const meta = validateMeta(root.meta, 'meta');
   const target = validateTarget(root.target, 'target', meta.driver);
   const steps = validateSteps(root.steps, 'steps');
   const assertions = validateAssertions(root.assertions, 'assertions');
   const advisory = root.advisory === undefined ? undefined : validateAdvisory(root.advisory, 'advisory');
-  return { meta, target, steps, assertions, ...(advisory === undefined ? {} : { advisory }) };
+  return {
+    ...(schemaVersion === undefined ? {} : { schemaVersion }),
+    meta,
+    target,
+    steps,
+    assertions,
+    ...(advisory === undefined ? {} : { advisory }),
+  };
+}
+
+/**
+ * A scenario may declare the contract version it was written against. Absent
+ * means "written before versioning existed" and is read as version 1, because
+ * those files are already committed in user repositories.
+ *
+ * A HIGHER version is refused. Replaying it under today's rules would produce a
+ * confident verdict about a file this build does not understand — and the rest
+ * of this loader could not catch that, because it validates syntax, not
+ * meaning.
+ */
+function validateSchemaVersion(value: unknown, position: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    fail(position, 'schemaVersion must be a positive integer');
+  }
+  if ((value as number) > QA_SCENARIO_SCHEMA_VERSION) {
+    fail(
+      position,
+      'schemaVersion ' + String(value) + ' is newer than this build understands ('
+      + String(QA_SCENARIO_SCHEMA_VERSION) + '). Replaying it under the current rules could report a'
+      + ' confident verdict for a scenario whose meaning has changed; upgrade @zseven-w/dsh-qa instead.',
+    );
+  }
+  return value as number;
 }
 
 function jsonPosition(error: unknown): string {
