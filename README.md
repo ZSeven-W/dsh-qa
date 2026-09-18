@@ -127,24 +127,22 @@ This is a developer release. The main path — Explore → evidence → Export �
 Replay on browser and desktop — is exercised by the suite on every change, but
 these are open, and knowing them is part of using the package honestly.
 
-- **The Computer helper is not notarized.** It is ad-hoc signed with no
-  TeamIdentifier and no stapled ticket, so there is no "install and go"
-  desktop experience: you build the helper from the
+- **The Computer helper is built by you, by design.** It ships ad-hoc signed
+  with no TeamIdentifier and no stapled ticket: you build it from the
   [`dsh-computer`](https://github.com/ZSeven-W/dsh-computer) checkout and grant
-  it Accessibility + Screen Recording yourself. Developer ID signing and
-  notarization are not done.
-- **An absence that cannot be proven fails the run, and that is deliberate.**
-  `node-absent` passes only when the deciding view is complete AND the browser
-  driver's bounded closed-shadow-root probe verified its coverage. When that
-  probe finds a closed root, exceeds its node budget, or cannot open a CDP
-  session, the assertion carries `COVERAGE_UNVERIFIED` or
-  `INCONCLUSIVE_TRUNCATED` and the **run status is `fail`** — it fails closed.
-  Note the asymmetry: a provisionally resolved SCOPE yields run status
-  `inconclusive`, while an unprovable ABSENCE yields `fail`, even though both
-  mean "could not prove". Read the assertion's `reason` and `completeness`
-  block, not just the status, to tell "the node is still there" from "the view
-  could not support the claim". On shadow-DOM-heavy or very large pages, expect
-  the latter.
+  it Accessibility + Screen Recording yourself. This is a settled decision, not
+  a pending task — there is no Developer ID notarization planned, so do not
+  wait for an "install and go" desktop build. The browser, iOS and Android
+  drivers are unaffected.
+- **Absence is often unproven rather than proven, and that shows up as
+  `inconclusive`.** `node-absent` passes only when the deciding view is complete
+  AND the browser driver's bounded closed-shadow-root probe verified its
+  coverage. When that probe finds a closed root, exceeds its node budget, or
+  cannot open a CDP session, the assertion carries `COVERAGE_UNVERIFIED` or
+  `INCONCLUSIVE_TRUNCATED` and the run is `inconclusive` — never `pass`. On
+  shadow-DOM-heavy or very large pages, expect that instead of a green absence.
+  `fail` is reserved for a real defect: a node that IS observed disproves
+  `node-absent` and fails normally, whatever the coverage state.
 - **Deep targets on large pages stay inconclusive.** Beyond the driver's
   100-node observation window, a scoped scroll proof can only reach
   `INCONCLUSIVE_SCOPE`, never `pass`. This is honest, not broken — but it means

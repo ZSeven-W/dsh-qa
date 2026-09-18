@@ -438,15 +438,28 @@ export interface QaScenario {
 
 /**
  * Three-state run status (QA-BL-062, Codex consult #2 decision (b), amended
- * QA-BL-069): 'pass' requires every required step AND final assertion to be
- * fully proven; 'inconclusive' means at least one result is PROVISIONAL
- * (scopeResolution: 'provisional' / INCONCLUSIVE_SCOPE) OR a scoped
- * container could not be located in a still-truncated view
- * (INCONCLUSIVE_TRUNCATED from the scope resolution — nothing definitely
- * failed) while nothing definitely failed; 'fail' is everything else that
- * is not 'blocked'. PASS is reserved for proven resolution: a provisionally
- * resolved container can never produce a green, because replay may have
- * selected the wrong counterpart.
+ * QA-BL-069, unified by owner decision 2026-09-18).
+ *
+ * 'pass' requires every required step AND final assertion to be fully proven.
+ *
+ * 'inconclusive' means at least one result COULD NOT BE PROVEN while nothing
+ * was definitely wrong — a provisionally resolved scope (INCONCLUSIVE_SCOPE),
+ * a container the truncated view could not locate, a settle window that never
+ * stabilized (INCONCLUSIVE_UNSTABLE), a view too truncated to support an
+ * absence (INCONCLUSIVE_TRUNCATED), or coverage the driver never verified
+ * (COVERAGE_UNVERIFIED). These used to split between 'inconclusive' and
+ * 'fail' even though they all mean the same thing, so a tool that could not
+ * see told users their application had regressed.
+ *
+ * 'fail' is reserved for a DEFECT the run actually observed — an assertion
+ * refuted by evidence, a rejected or failed receipt. Presence is sound
+ * evidence whatever the coverage state, so a node that IS observed disproves
+ * `node-absent` and fails normally.
+ *
+ * 'inconclusive' is never green: a gate keyed on `status === 'pass'` refuses
+ * it. PASS stays reserved for proven resolution — a provisionally resolved
+ * container can never produce a green, because replay may have selected the
+ * wrong counterpart.
  */
 export type QaRunStatus = 'pass' | 'inconclusive' | 'fail' | 'blocked';
 

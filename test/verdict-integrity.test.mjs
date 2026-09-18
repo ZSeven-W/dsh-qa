@@ -421,3 +421,76 @@ test('a FAILED explicit assertion is disclosed as an export exclusion, never sil
   }
 })
 
+
+test('every "could not prove" aggregates to inconclusive, and only a real defect fails', async () => {
+  // Owner decision, 2026-09-18. Before it, a provisionally resolved scope was
+  // `inconclusive` while an unprovable absence was `fail` — both mean "could
+  // not prove", so the same situation got two different words and the harsher
+  // one told users their app had regressed.
+  //
+  // Nothing is softened: `inconclusive` is not `pass`, so a gate keyed on
+  // `status === 'pass'` still refuses. The last case below is the guard that
+  // keeps this honest — a node that IS present still fails.
+  const stay = { role: 'button', name: 'Stay' }
+  const scenario = {
+    meta: { name: 'unproven vs disproven', description: 'd', driver: 'browser', createdAt: '2026-09-18T06:00:00.000Z' },
+    target: { launch: LAUNCH },
+    steps: [{
+      index: 1,
+      intent: 'Click "Stay".',
+      action: { kind: 'click', target: stay },
+      assert: { kind: 'node-present', expected: stay },
+    }],
+    assertions: [{ kind: 'node-absent', expected: { role: 'alert', name: 'Gone' } }],
+  }
+
+  const adapterFor = (truncated, coverage) => ({
+    kind: 'browser',
+    async start() { return { page: page(), headless: true } },
+    async observe() {
+      return {
+        page: page(),
+        nodes: [
+          node('r-page', 'region', 'Page', 'section', { inViewport: true }),
+          node('r-stay', 'button', 'Stay', 'button', { inViewport: true }),
+        ],
+        truncated,
+        ...(coverage === null ? {} : { coverage }),
+      }
+    },
+    async act() { return { status: 'confirmed', dispatched: true } },
+    async evidence() {
+      return { console: [], network: [], bounded: true, dropped: { console: 0, network: 0 } }
+    },
+    async stop() { return { stopped: true, reason: 'requested' } },
+  })
+
+  const truncatedRun = await runScenario(scenario, adapterFor(true, null), {
+    ownerId: 'verdict-absent-truncated', settle: SETTLE,
+  })
+  assert.equal(truncatedRun.status, 'inconclusive', 'a truncated view could not prove absence — it did not disprove it')
+  assert.notEqual(truncatedRun.assertions[0].passed, true)
+
+  const unverifiedRun = await runScenario(scenario, adapterFor(false, null), {
+    ownerId: 'verdict-absent-unverified', settle: SETTLE,
+  })
+  assert.equal(unverifiedRun.status, 'inconclusive')
+  assert.equal(unverifiedRun.assertions[0].reason, 'COVERAGE_UNVERIFIED', 'and the report still says why')
+
+  const provenRun = await runScenario(
+    scenario,
+    adapterFor(false, { verified: true, closedShadowRoots: 0, probedNodes: 2 }),
+    { ownerId: 'verdict-absent-proven', settle: SETTLE },
+  )
+  assert.equal(provenRun.status, 'pass', 'a proven absence is still a pass')
+
+  // The guard: presence is sound evidence whatever the coverage state, so a
+  // node that IS there disproves absence and must still FAIL. Without this,
+  // unifying the wording could have quietly turned real defects amber.
+  const presentRun = await runScenario(
+    { ...scenario, assertions: [{ kind: 'node-absent', expected: stay }] },
+    adapterFor(false, { verified: true, closedShadowRoots: 0, probedNodes: 2 }),
+    { ownerId: 'verdict-absent-present', settle: SETTLE },
+  )
+  assert.equal(presentRun.status, 'fail', 'a node that IS there is a real defect, not an unproven claim')
+})

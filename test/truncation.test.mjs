@@ -701,17 +701,29 @@ test('an unprovable absence is reported as INCONCLUSIVE, not as an ordinary fail
     { ownerId: 'truncation-inconclusive', settle: SETTLE },
   )
 
-  assert.equal(report.status, 'fail')
+  // Owner decision 2026-09-18: every "could not prove" aggregates to
+  // `inconclusive`, so the run no longer reports `fail` for a view that was
+  // merely too small to support the claim. The assertion is still not passed
+  // and the reason still names WHY, so nothing is softened — only the word
+  // that told users their app had regressed.
+  assert.equal(report.status, 'inconclusive')
   assert.equal(report.assertions[0].passed, false)
   assert.equal(report.assertions[0].completeness.reason, QA_INCONCLUSIVE_TRUNCATED)
-  assert.match(report.failure.message, new RegExp(QA_INCONCLUSIVE_TRUNCATED))
-  assert.match(report.failure.message, /may exist outside the returned window/)
+  assert.match(
+    report.assertions[0].completeness.detail,
+    /may exist outside the returned window/,
+    'the honest detail survives the status change',
+  )
+  assert.equal(report.failure, undefined, 'an unproven claim is not a run failure')
 })
 
 // CHANGED (QA-BL-052 / Codex Q4): the runner can no longer produce a PASS
-// for a genuinely absent node — the escalated view is complete but the
-// driver never verified its boundaries, so the run fails closed with the
-// new reason code and the honest detail.
+// for a genuinely absent node — the escalated view is complete but the driver
+// never verified its boundaries.
+// SUPERSEDED (owner decision, 2026-09-18): that unproven result now aggregates
+// to `inconclusive` rather than `fail`. It still cannot pass, and the reason
+// code and detail are unchanged; what changed is that "the tool could not
+// tell" no longer reads as "the application is broken".
 test('a genuinely absent node after escalation is still UNPROVEN without verified coverage', async () => {
   const adapter = budgetAdapter({ total: 80, deepAt: 70 })
   const report = await runScenario(
@@ -721,13 +733,13 @@ test('a genuinely absent node after escalation is still UNPROVEN without verifie
   )
 
   assert.notEqual(report.status, 'pass', 'an unverified absence must never pass the run')
+  assert.equal(report.status, 'inconclusive', 'but it is unproven, not disproven (owner decision 2026-09-18)')
   assert.equal(report.assertions[0].passed, false)
   assert.equal(report.assertions[0].completeness.escalated, true)
   assert.equal(report.assertions[0].completeness.truncated, false)
   assert.equal(report.assertions[0].completeness.reason, QA_COVERAGE_UNVERIFIED)
   assert.equal(report.assertions[0].reason, QA_COVERAGE_UNVERIFIED)
   assert.match(report.assertions[0].completeness?.detail ?? '', /closed shadow roots, slot assignment/)
-  assert.match(report.failure?.message ?? '', new RegExp(QA_COVERAGE_UNVERIFIED))
 })
 
 test('coverage.verified on the driver restores the genuinely-absent PASS (the v9 restoration path)', async () => {

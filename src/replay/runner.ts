@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { QA_ADVISORY_REASONING_TRUST, QA_INCONCLUSIVE_SCOPE, QA_INCONCLUSIVE_TRUNCATED, QA_INCONCLUSIVE_UNSTABLE, QA_NO_CONFIRMED_RECEIPTS_WARNING, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
+import { QA_ADVISORY_REASONING_TRUST, QA_COVERAGE_UNVERIFIED, QA_INCONCLUSIVE_SCOPE, QA_INCONCLUSIVE_TRUNCATED, QA_INCONCLUSIVE_UNSTABLE, QA_NO_CONFIRMED_RECEIPTS_WARNING, QA_TARGET_NOT_UNIQUE } from '../contracts.ts';
 import type {
   QaAdvisoryResult,
   QaArtifact,
@@ -1413,6 +1413,45 @@ type ScopedScrollProofOutcome =
  *   element replay SELECTED, not that replay selected the recorded
  *   counterpart.
  */
+/**
+ * Is this decision UNPROVEN rather than DISPROVEN?
+ *
+ * "We could not see well enough to decide" and "the app is wrong" are different
+ * facts. The three-state status keeps them apart: `inconclusive` means at least
+ * one result is unproven and nothing definitely failed.
+ *
+ * Owner decision, 2026-09-18: EVERY "could not prove" aggregates to
+ * `inconclusive`. Before this, a provisionally resolved scope was inconclusive
+ * while an unprovable absence was `fail`, though both mean the same thing — so
+ * a truncated view or unverified coverage told users their app had regressed
+ * when the truth was that the tool could not tell. QA-BL-052 originally chose
+ * fail-closed for absence; that choice is superseded here.
+ *
+ * This creates no false green. `inconclusive` is not `pass`, so a gate keyed on
+ * `status === 'pass'` still refuses. A node that IS observed still disproves
+ * `node-absent` and fails normally, because presence is sound evidence whatever
+ * the coverage state.
+ *
+ * The reason travels in two places: scope/stability codes on the decision
+ * itself, and completeness codes on its completeness block.
+ */
+function isUnprovenDecision(decision: {
+  reason?: string;
+  scopeNotLocated?: boolean;
+  completeness?: { reason?: string } | null;
+}): boolean {
+  const unproven = new Set<string>([
+    QA_INCONCLUSIVE_SCOPE,
+    QA_INCONCLUSIVE_UNSTABLE,
+    QA_INCONCLUSIVE_TRUNCATED,
+    QA_COVERAGE_UNVERIFIED,
+  ]);
+  if (decision.scopeNotLocated === true) return true;
+  if (decision.reason !== undefined && unproven.has(decision.reason)) return true;
+  const completenessReason = decision.completeness?.reason;
+  return completenessReason !== undefined && unproven.has(completenessReason);
+}
+
 function decideScopedScrollProof(
   assertion: QaScenario['steps'][number]['assert'],
   target: QaNodePredicate,
@@ -2488,8 +2527,7 @@ export async function runScenario(
           ...(decision.message === undefined ? {} : { message: decision.message }),
           ...(identityAccount.retries > 0 ? { targetChangedRetries: identityAccount.retries } : {}),
         });
-        if (decision.reason === QA_INCONCLUSIVE_SCOPE || decision.reason === QA_INCONCLUSIVE_UNSTABLE
-          || decision.scopeNotLocated === true) unprovenCount += 1;
+        if (isUnprovenDecision(decision)) unprovenCount += 1;
         if (assertion.scope === undefined) {
           finalObservation = decision.observation;
         } else if (i + 1 < scenario.assertions.length) {
@@ -2513,12 +2551,12 @@ export async function runScenario(
           finalObservation = refresh.observation;
         }
         if (!decision.passed) {
-          if (decision.reason === QA_INCONCLUSIVE_SCOPE || decision.reason === QA_INCONCLUSIVE_UNSTABLE
-            || decision.scopeNotLocated === true) {
-            // QA-BL-062/069/073: a PROVISIONAL final assertion, one whose
-            // container the still-truncated view could not locate, or one
-            // whose walk identity retry exhausted its settle budget is not a
-            // definite failure — the run aggregates to 'inconclusive'.
+          if (isUnprovenDecision(decision)) {
+            // Any final assertion that is UNPROVEN rather than disproven —
+            // provisional scope, an unlocatable container, an exhausted
+            // identity retry, a view too truncated to prove absence, or
+            // coverage the driver never verified — aggregates to
+            // 'inconclusive'. The reason travels on the assertion result.
           } else {
             failure = {
               stepIndex: null,
