@@ -153,10 +153,13 @@ these are open, and knowing them is part of using the package honestly.
   here.** Vision never changes a Replay's pass/fail by design. The seam to a
   real host vision service (`ctx.llm` / `attachments`) is covered only by a
   fake in the suite; it has not been run against a live vision model.
-- **Mobile drivers carry no contract version.** Browser pins contract v9 and
-  Computer v5, but `dsh-ios` / `dsh-android` export no version from `/driver`;
-  QA loads them structurally, so a drift is caught after the fact rather than
-  at load.
+- **Mobile drivers carry no contract version.** The browser and computer
+  drivers publish a contract version and QA now REFUSES to load one that is not
+  the version this build supports (browser 9, computer 5) — older and newer
+  alike, because a contract change can alter what an observation means rather
+  than merely adding to it. `dsh-ios` / `dsh-android` export no version from
+  `/driver`, so QA still loads them structurally and a drift there is caught
+  after the fact rather than at load.
 
 Replay verifies five kinds of semantic assertion. A `pass` means those
 assertions held on fresh observations — not that the app is correct, not that
@@ -345,6 +348,32 @@ the container's own subtree; the identity-anchored scroll proof is exported
 explicitly PROVISIONAL (the step intent says so) when uniqueness is unproven,
 and every other scoped assertion is excluded with `SCOPE_NOT_DURABLE` —
 never silently exported as a whole-page proof. See `docs/TRUNCATION.md`.
+
+### Scenario compatibility
+
+A `QaScenario` you commit is a contract, so it declares the version it was
+written against:
+
+```json
+{ "schemaVersion": 1, "meta": { ... }, "target": { ... }, "steps": [ ... ] }
+```
+
+`schemaVersion` versions INTERPRETATION, not syntax. It is bumped when the same
+JSON would resolve a target, select a proof, or decide a verdict differently —
+not when a field is added. Export always writes it. A scenario written before
+versioning existed carries no field and is read as version 1, because those
+files are already committed in repositories. A scenario declaring a HIGHER
+version is REFUSED, naming both numbers: replaying it under the current rules
+would produce a confident verdict about a file this build does not understand,
+and the loader validates syntax, so nothing else would catch it.
+
+Driver compatibility is enforced the same way, at load rather than at compile
+time. `@zseven-w/dsh-browser` must report contract version 9 and
+`@zseven-w/dsh-computer` version 5; anything else — including an OLDER
+version, and including a driver that reports none — is refused with both
+versions named. These are separately released packages resolved at run time, so
+a type-check against whatever sibling was linked at build time proves nothing
+about what actually loads.
 
 ### Visual assertions (advisory)
 
