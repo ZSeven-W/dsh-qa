@@ -133,14 +133,18 @@ these are open, and knowing them is part of using the package honestly.
   [`dsh-computer`](https://github.com/ZSeven-W/dsh-computer) checkout and grant
   it Accessibility + Screen Recording yourself. Developer ID signing and
   notarization are not done.
-- **Absence is hard to prove, and comes back inconclusive rather than passing.**
+- **An absence that cannot be proven fails the run, and that is deliberate.**
   `node-absent` passes only when the deciding view is complete AND the browser
   driver's bounded closed-shadow-root probe verified its coverage. When that
   probe finds a closed root, exceeds its node budget, or cannot open a CDP
-  session, the result is `COVERAGE_UNVERIFIED` / `INCONCLUSIVE_TRUNCATED`,
-  naming `closed-shadow-root` or `shadow-coverage-unverified` — never a pass.
-  That is the safe direction to fail, but on shadow-DOM-heavy or very large
-  pages you should expect "not proven" instead of a green absence.
+  session, the assertion carries `COVERAGE_UNVERIFIED` or
+  `INCONCLUSIVE_TRUNCATED` and the **run status is `fail`** — it fails closed.
+  Note the asymmetry: a provisionally resolved SCOPE yields run status
+  `inconclusive`, while an unprovable ABSENCE yields `fail`, even though both
+  mean "could not prove". Read the assertion's `reason` and `completeness`
+  block, not just the status, to tell "the node is still there" from "the view
+  could not support the claim". On shadow-DOM-heavy or very large pages, expect
+  the latter.
 - **Deep targets on large pages stay inconclusive.** Beyond the driver's
   100-node observation window, a scoped scroll proof can only reach
   `INCONCLUSIVE_SCOPE`, never `pass`. This is honest, not broken — but it means

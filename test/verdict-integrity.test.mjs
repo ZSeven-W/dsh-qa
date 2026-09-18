@@ -420,3 +420,4 @@ test('a FAILED explicit assertion is disclosed as an export exclusion, never sil
     await rm(dir, { recursive: true, force: true })
   }
 })
+

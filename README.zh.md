@@ -81,7 +81,7 @@ npm install -g @deepseek-ai/dsh@latest
 这是一个开发者版本。主链路——浏览器与桌面上的 Explore → 证据 → Export → Replay——每次改动都会被测试套件跑一遍；但下面这些是开放问题，诚实使用这个包的前提是知道它们。
 
 - **Computer Helper 没有公证。** 它是 adhoc 签名，没有 TeamIdentifier，也没有 stapled 票据，所以桌面这半边没有「装完即用」的体验：你需要从 [`dsh-computer`](https://github.com/ZSeven-W/dsh-computer) 工作区自己构建 Helper，并自己授予辅助功能 + 屏幕录制权限。Developer ID 签名与公证都还没做。
-- **「不存在」很难证明，结果多半是 inconclusive 而不是通过。** `node-absent` 只在判定视图完整、**且**浏览器驱动的有界 closed-shadow-root 探测验证了覆盖时才通过。探测一旦发现 closed root、超出节点预算、或开不出 CDP 会话，结果就是 `COVERAGE_UNVERIFIED` / `INCONCLUSIVE_TRUNCATED`，并点名 `closed-shadow-root` 或 `shadow-coverage-unverified`——绝不会给通过。这是安全的失败方向，但在大量使用 shadow DOM 或页面很大的场景下，你应当预期拿到「未证明」而不是绿色的「不存在」。
+- **无法证明的「不存在」会让运行判 fail，这是刻意的。** `node-absent` 只在判定视图完整、**且**浏览器驱动的有界 closed-shadow-root 探测验证了覆盖时才通过。探测一旦发现 closed root、超出节点预算、或开不出 CDP 会话，断言会带上 `COVERAGE_UNVERIFIED` 或 `INCONCLUSIVE_TRUNCATED`，而**运行状态是 `fail`**——fail-closed。注意这里有个不对称：scope 暂定解析会得到 `inconclusive`，而无法证明的「不存在」得到 `fail`，尽管两者都是「没能证明」。要区分「节点还在」和「视图撑不起这个主张」，请读断言的 `reason` 和 `completeness` 块，而不是只看状态。在大量使用 shadow DOM 或页面很大的场景下，你应当预期后者。
 - **大页面上的深层目标只能是 inconclusive。** 超出驱动 100 节点观察窗口后，限定范围的滚动证明最多只能到 `INCONCLUSIVE_SCOPE`，永远拿不到 `pass`。这是诚实，不是坏掉——但它意味着大页面上的深层流程今天产不出绿色门禁。
 - **视觉断言是 advisory，而且这里的实时视觉链路未经验证。** 视觉按设计从不改变 Replay 的 pass/fail。通向真实宿主视觉服务（`ctx.llm` / `attachments`）的接缝在测试里只由 fake 覆盖，尚未对着真实视觉模型跑通。
 - **移动端驱动没有契约版本。** Browser 钉在契约 v9、Computer 钉在 v5，但 `dsh-ios` / `dsh-android` 的 `/driver` 不导出版本；QA 靠结构化鸭子类型加载它们，所以漂移只能事后发现，而不是在加载时就拦住。

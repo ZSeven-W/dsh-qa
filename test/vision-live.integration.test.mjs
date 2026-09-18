@@ -29,24 +29,41 @@ test('live vision: real capture + real ctx.llm.stream against the fixture', asyn
     t.skip('vision model host services (ctx.llm/attachments) are unavailable in this runtime; WP9 verification therefore reports "not verified" — the seam is covered by a fake llm in test/visual.test.mjs')
     return
   }
-  // A real capture is a browser/computer driver concern; here we exercise the
-  // exact model seam with a tiny in-memory PNG so a host-integrated run proves
-  // the provider route accepts an image block end to end.
+  // A DECODABLE 2x2 solid-red PNG, not just the 8-byte signature. The previous
+  // fixture could not be decoded by any model, so nothing downstream of "the
+  // request was accepted" was ever exercised.
+  const SOLID_RED_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGO4IyICRAwQCgAfngQRsu1RiQAAAABJRU5ErkJggg=='
   const capture = {
     driver: 'browser',
     observationFingerprint: 'live',
     observationId: null,
-    png: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    width: 1,
-    height: 1,
+    png: Uint8Array.from(Buffer.from(SOLID_RED_PNG_BASE64, 'base64')),
+    width: 2,
+    height: 2,
     sha256: 'live-sha',
     usable: true,
     marks: 0,
     omitted: 0,
   }
-  const finding = await evaluateVisualQuestion('Is this a solid color?', capture, services)
-  assert.ok(['yes', 'no', 'unclear'].includes(finding.verdict))
+  const finding = await evaluateVisualQuestion('Is this image a single solid color?', capture, services)
+
+  // The degradation path returns verdict 'unclear' with a receiptCode, so
+  // accepting 'unclear' accepted a run in which the vision call FAILED. This
+  // test exists to prove the live provider answered; anything else means the
+  // gap it is supposed to close is still open.
+  assert.equal(
+    finding.receiptCode,
+    undefined,
+    'a degraded finding proves nothing about the live vision path: ' + JSON.stringify(finding),
+  )
+  assert.ok(
+    finding.verdict === 'yes' || finding.verdict === 'no',
+    'the model must have actually answered, not degraded to unclear: ' + JSON.stringify(finding),
+  )
   assert.ok(typeof finding.confidence === 'number')
   assert.ok(typeof finding.reasoning === 'string')
+  // The image really is one solid colour; a live model that says otherwise is
+  // a finding worth failing on, not something to wave through.
+  assert.equal(finding.verdict, 'yes', 'a 2x2 solid-red PNG is a single solid colour: ' + JSON.stringify(finding))
 })
 
