@@ -1,16 +1,21 @@
 <!--
-PROVENANCE: This document originated in dsh-driver-bench at commit a7af98d
-(branch feat/v0.1), file docs/REDACTION_SPEC.md. It was ported verbatim into
-dsh-qa as the normative specification for the fail-closed v2 redaction engine
-in src/redaction/. The body below is preserved unchanged from the source.
+PROVENANCE: the v2 fail-closed redaction design originated in dsh-driver-bench
+(commit a7af98d, branch feat/v0.1) and was ported into dsh-qa. The threat model
+and the engine's normative rules carried over unchanged and still govern
+src/redaction/. Everything describing the SINKS was rewritten on 2026-09-18:
+the ported text still named that project's `BenchRun`, `renderJson` and
+`appendEvent` (src/reporters/events.ts) — types and a file dsh-qa does not have
+— so a reader was told about protections around functions that are not here.
 -->
 
-# Redaction Specification — v2 (Phase 1 draft)
+# Redaction Specification — v2
 
-- Repository: `dsh-driver-bench`
-- Branch: `feat/v0.1` · base commit: `fb180fd`
-- Scope of this phase: **specification only.** This document produces no code changes. Implementation (Phase 2) is forbidden until the owner approves this spec at the manual review gate.
-- Status: **DRAFT — awaiting owner review.**
+- Repository: `dsh-qa`
+- Scope: **normative.** This describes the redaction engine as implemented in
+  `src/redaction/` and the report sinks in `src/reporters/`, not a proposal.
+- Status: **implemented.** The corpus in the appendix is executed by
+  `test/redaction-corpus.test.ts` and the sink discipline by
+  `test/report-write-discipline.test.mjs`.
 
 The v1 blacklist-style engine in `src/reporters/json.ts` went through 32 adversarial rounds without
 converging. The owner-approved v2 direction is **fail-closed whole-value redaction**: instead of
@@ -23,15 +28,17 @@ with one unparameterized marker and never re-emits suspect bytes.
 
 ### 1.1 What the reporter protects
 
-The redaction layer is the last trust boundary before bench artifacts leave the process. It protects
-everything that flows to the three reporter sinks:
+The redaction layer is the last trust boundary before QA artifacts leave the process. It protects
+everything that flows to the three reporter sinks, all written by `writeReports`
+(`src/reporters/write.ts`):
 
-- **JSON report** — `renderJson` (`src/reporters/json.ts`): serializes a `BenchRun` (environment,
-  results, summary, failure messages, artifact paths, driver metadata, run identity) to a report file.
-- **JSONL event log** — `appendEvent` (`src/reporters/events.ts`): appends one compact JSON object
-  per runtime event.
-- **Markdown report** — `renderMarkdown` (`src/reporters/markdown.ts`): renders the projected run as
-  a byte-stable Markdown document.
+- **JSON report** — `renderReportJson` (`src/reporters/json.ts`): serializes a `QaRunReport` (run
+  identity, step results, assertion verdicts, completeness blocks, evidence, artifact paths, advisory
+  visual records) to `report.json`.
+- **JSONL log** — `renderReportJsonl` (`src/reporters/jsonl.ts`): renders the same run as compact
+  JSON objects, appended to `report.jsonl`.
+- **Markdown report** — `renderReportMarkdown` (`src/reporters/markdown.ts`): renders the projected
+  run as a byte-stable Markdown document.
 
 All three sinks project their input through `projectRedactedJsonValue` (`json.ts`), which is built
 on the text primitive `redactText`. Rules R1–R5 apply uniformly at that projection layer, so all
@@ -102,8 +109,16 @@ what R1–R5 explicitly say it does:
   (`serializeJsonValue`), lone surrogates rendered as visible `\uXXXX` escapes (never raw bytes),
   Markdown escaping, `__proto__`/`constructor` own data keys read through descriptors only, single
   trailing LF.
-- **`appendEvent` file discipline** — regular files only, `O_WRONLY|O_APPEND|O_CREAT` with
-  O_NONBLOCK, per-inode serialization queue, LF separation of pre-existing content, no mode widening.
+- **Sink file discipline** (`openReportSink`, `src/reporters/write.ts`) — the caller chooses the
+  output directory, so every sink is opened `O_WRONLY|O_CREAT|O_NOFOLLOW|O_NONBLOCK` (plus `O_APPEND`
+  for `report.jsonl`, `O_TRUNC` for the two per-run files), created mode `0600`, and the opened
+  DESCRIPTOR is `fstat`-checked to be a regular file before a byte is written. O_NOFOLLOW refuses a
+  symlink at the final component, which would otherwise deliver the report somewhere the caller never
+  named; O_NONBLOCK turns a FIFO into an immediate ENXIO instead of a run that blocks forever on a
+  reader that never arrives. Existing files keep their own mode — this layer never widens
+  permissions. **Not implemented here:** the source project's per-inode serialization queue. dsh-qa
+  writes each run's sinks once from a single process; concurrent writers to one `report.jsonl` are
+  not serialized by this package.
 - **Marker idempotence** — an existing `[REDACTED]` / `[REDACTED_URL]` in the input is a trusted
   boundary and passes through byte-identical (§2.6).
 
