@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "meta": {
     "name": "fixture-web-form-validation",
     "description": "Fill the release name, run validation, and assert the result region flips to PASS (reproduces the 2026-08-25 acceptance web flow).",
@@ -18,12 +19,18 @@
       "intent": "Fill the Release name input with a version string.",
       "action": {
         "kind": "fill",
-        "target": { "role": "textbox", "name": "Release name" },
+        "target": {
+          "role": "textbox",
+          "name": "Release name"
+        },
         "text": "v1.0.0"
       },
       "assert": {
         "kind": "node-present",
-        "expected": { "role": "button", "name": "Run validation" }
+        "expected": {
+          "role": "button",
+          "name": "Run validation"
+        }
       }
     },
     {
@@ -31,22 +38,33 @@
       "intent": "Click Run validation.",
       "action": {
         "kind": "click",
-        "target": { "role": "button", "name": "Run validation" }
+        "target": {
+          "role": "button",
+          "name": "Run validation"
+        }
       },
       "assert": {
         "kind": "node-present",
-        "expected": { "role": "status", "name": "PASS" }
+        "expected": {
+          "role": "status",
+          "name": "PASS"
+        }
       }
     }
   ],
   "assertions": [
     {
       "kind": "node-present",
-      "expected": { "role": "status", "name": "PASS" }
+      "expected": {
+        "role": "status",
+        "name": "PASS"
+      }
     },
     {
       "kind": "page-url",
-      "expected": { "contains": "127.0.0.1" }
+      "expected": {
+        "contains": "127.0.0.1"
+      }
     }
   ]
 }
